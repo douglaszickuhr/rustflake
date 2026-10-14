@@ -36,3 +36,14 @@ Rode antes de cada release, com o Postgres de teste (`docker start rb-pg`).
 - [ ] Nomes longos ficam numa linha só e terminam em "…"; nada se sobrepõe.
 - [ ] Coluna com tipo longo mostra o nome inteiro e corta o tipo.
 - [ ] Arrastar a divisa da barra lateral muda a largura (180–640 px).
+
+## Snowflake
+
+- [ ] Diálogo: "Snowflake" troca os campos; key-pair mostra chave e passphrase; PAT mostra o token.
+- [ ] SSO: ativar a conexão abre o navegador uma vez; abrir abas e a árvore não abre de novo.
+- [ ] Árvore: databases → schemas → Tabelas/Views/Views materializadas/Funções → colunas com PK em amarelo; sem "Índices".
+- [ ] Duplo clique abre a tabela; filtro e ordenação funcionam; aviso "Snowflake: somente leitura" e sem botões de edição.
+- [ ] WH/Role: os botões listam e trocam; um `USE ROLE` no editor atualiza os botões.
+- [ ] ⌘. cancela `call system$wait(60)`.
+- [ ] Autocomplete sugere tabelas do schema atual sem aspas (ORDERS) e com aspas quando preciso ("Order Items").
+- [ ] Deixar o app aberto > 4 h com SSO: a próxima query refaz o login.

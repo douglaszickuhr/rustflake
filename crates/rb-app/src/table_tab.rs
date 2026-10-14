@@ -8,6 +8,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, WindowExt as _, h_
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::batch::ResultSet;
+use rb_core::dialect::Dialect;
 use rb_core::metadata::MetaRequest;
 use rb_core::session::Session;
 use rb_core::table::{EditTarget, PendingEdits, build_sql, columns_match, select_sql};
@@ -97,7 +98,8 @@ impl TableTab {
         let Some(cols) = self.meta.read(cx).cache.columns.get(&key).cloned() else { return };
         self.loaded_once = true;
         let target = EditTarget { schema: self.schema.clone(), table: self.table.clone(), columns: cols };
-        let editable = !target.pk().is_empty();
+        // Snowflake não garante PK: a grade dele é sempre somente leitura.
+        let editable = !target.pk().is_empty() && self.meta.read(cx).cache.dialect == Dialect::Postgres;
         self.grid.update(cx, |t, _| t.delegate_mut().edits = editable.then(PendingEdits::default));
         self.target = Some(target);
         self.load(cx);
@@ -287,6 +289,7 @@ impl Render for TableTab {
         let rows = g.loaded_rows();
         let more = g.rs.as_ref().is_some_and(|r| r.more);
         let read_only = !editable && self.target.is_some();
+        let sf = self.meta.read(cx).cache.dialect == Dialect::Snowflake;
         v_flex()
             .key_context("TableTab")
             .track_focus(&self.focus)
@@ -327,7 +330,10 @@ impl Render for TableTab {
                     .text_sm()
                     .child(format!("{rows}{} linha(s)", if more { "+" } else { "" }))
                     .when(pending, |d| d.child(div().text_color(cx.theme().warning).child("edições pendentes")))
-                    .when(read_only, |d| d.child(div().text_color(cx.theme().muted_foreground).child("somente leitura: tabela sem chave primária")))
+                    .when(read_only, |d| {
+                        let msg = if sf { "Snowflake: somente leitura" } else { "somente leitura: tabela sem chave primária" };
+                        d.child(div().text_color(cx.theme().muted_foreground).child(msg))
+                    })
                     .child(self.status.clone()),
             )
     }

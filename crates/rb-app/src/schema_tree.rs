@@ -7,6 +7,7 @@ use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use rb_core::dialect::Dialect;
 use rb_core::metadata::{MetaCache, MetaRequest};
 
 use crate::RefreshNode;
@@ -24,6 +25,7 @@ fn loading(parent: &SharedString) -> TreeItem {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
+    Database,
     Schema,
     Group,
     Table,
@@ -41,6 +43,7 @@ pub enum Kind {
 impl Kind {
     fn icon(self, expanded: bool) -> Option<IconName> {
         Some(match self {
+            Kind::Database => IconName::Database,
             Kind::Schema => IconName::Layers,
             Kind::Group if expanded => IconName::FolderOpen,
             Kind::Group => IconName::Folder,
@@ -62,6 +65,7 @@ fn describe(node: &str, c: &MetaCache) -> (Kind, Option<String>) {
     let parts: Vec<&str> = node.split(SEP).collect();
     let kind = match parts.as_slice() {
         [.., "loading"] => Kind::Loading,
+        ["d", _] => Kind::Database,
         ["s", _] => Kind::Schema,
         ["g", ..] => Kind::Group,
         ["r", s, rel] => match c.objects.get(*s) {
@@ -117,10 +121,13 @@ impl SchemaTree {
                 self.expanded.insert(node.clone());
                 let parts: Vec<&str> = node.split(SEP).collect();
                 self.meta.update(cx, |m, cx| match parts.as_slice() {
+                    ["d", db] => m.request(MetaRequest::Schemas(db.to_string()), cx),
                     ["s", schema] => m.request(MetaRequest::Objects(schema.to_string()), cx),
                     ["r", schema, rel] => {
                         m.request(MetaRequest::Columns(schema.to_string(), rel.to_string()), cx);
-                        m.request(MetaRequest::Indexes(schema.to_string(), rel.to_string()), cx);
+                        if m.cache.dialect == Dialect::Postgres {
+                            m.request(MetaRequest::Indexes(schema.to_string(), rel.to_string()), cx);
+                        }
                     }
                     _ => {}
                 });
@@ -138,6 +145,10 @@ impl SchemaTree {
         };
         let parts: Vec<String> = node.split(SEP).map(String::from).collect();
         self.meta.update(cx, |m, cx| match parts.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+            ["d", db, ..] => {
+                m.cache.loaded_dbs.remove(*db);
+                m.request(MetaRequest::Schemas(db.to_string()), cx);
+            }
             ["s", schema, ..] | ["g", schema, ..] | ["f", schema, ..] => {
                 m.cache.invalidate_schema(schema);
                 m.request(MetaRequest::Objects(schema.to_string()), cx);
@@ -154,32 +165,49 @@ impl SchemaTree {
 
 fn build_items(c: &MetaCache, expanded: &HashSet<SharedString>) -> Vec<TreeItem> {
     let open = |id: &SharedString| expanded.contains(id);
-    c.schemas
-        .iter()
-        .map(|s| {
-            let sid = id(&["s", s]);
-            let children = match c.objects.get(s) {
-                None => vec![loading(&sid)],
-                Some(o) => {
-                    let rel_group = |key: &str, label: &str, names: &[String]| {
-                        let gid = id(&["g", s, key]);
-                        let rels = names.iter().map(|n| relation(c, s, n, expanded)).collect::<Vec<_>>();
-                        TreeItem::new(gid.clone(), format!("{label} ({})", names.len())).expanded(open(&gid)).children(rels)
-                    };
-                    let fid = id(&["g", s, "functions"]);
-                    vec![
-                        rel_group("tables", "Tabelas", &o.tables),
-                        rel_group("views", "Views", &o.views),
-                        rel_group("matviews", "Views materializadas", &o.matviews),
-                        TreeItem::new(fid.clone(), format!("Funções ({})", o.functions.len()))
-                            .expanded(open(&fid))
-                            .children(o.functions.iter().map(|f| TreeItem::new(id(&["f", s, f]), f.clone()))),
-                    ]
-                }
+    if c.dialect == Dialect::Snowflake {
+        return c
+            .databases
+            .iter()
+            .map(|db| {
+                let did = id(&["d", db]);
+                let prefix = format!("{db}.");
+                let children = if c.loaded_dbs.contains(db) {
+                    c.schemas.iter().filter_map(|k| k.strip_prefix(&prefix).map(|s| schema_item(c, k, s, expanded))).collect()
+                } else {
+                    vec![loading(&did)]
+                };
+                TreeItem::new(did.clone(), db.clone()).expanded(open(&did)).children(children)
+            })
+            .collect();
+    }
+    c.schemas.iter().map(|s| schema_item(c, s, s, expanded)).collect()
+}
+
+/// Nó de schema: `key` é a chave do cache (no Snowflake, `DB.SCHEMA`), `label` o que aparece.
+fn schema_item(c: &MetaCache, s: &str, label: &str, expanded: &HashSet<SharedString>) -> TreeItem {
+    let open = |id: &SharedString| expanded.contains(id);
+    let sid = id(&["s", s]);
+    let children = match c.objects.get(s) {
+        None => vec![loading(&sid)],
+        Some(o) => {
+            let rel_group = |key: &str, label: &str, names: &[String]| {
+                let gid = id(&["g", s, key]);
+                let rels = names.iter().map(|n| relation(c, s, n, expanded)).collect::<Vec<_>>();
+                TreeItem::new(gid.clone(), format!("{label} ({})", names.len())).expanded(open(&gid)).children(rels)
             };
-            TreeItem::new(sid.clone(), s.clone()).expanded(open(&sid)).children(children)
-        })
-        .collect()
+            let fid = id(&["g", s, "functions"]);
+            vec![
+                rel_group("tables", "Tabelas", &o.tables),
+                rel_group("views", "Views", &o.views),
+                rel_group("matviews", "Views materializadas", &o.matviews),
+                TreeItem::new(fid.clone(), format!("Funções ({})", o.functions.len()))
+                    .expanded(open(&fid))
+                    .children(o.functions.iter().map(|f| TreeItem::new(id(&["f", s, f]), f.clone()))),
+            ]
+        }
+    };
+    TreeItem::new(sid.clone(), label.to_string()).expanded(open(&sid)).children(children)
 }
 
 fn relation(c: &MetaCache, schema: &str, rel: &str, expanded: &HashSet<SharedString>) -> TreeItem {
@@ -191,7 +219,9 @@ fn relation(c: &MetaCache, schema: &str, rel: &str, expanded: &HashSet<SharedStr
             let mut groups = vec![TreeItem::new(cg.clone(), format!("Colunas ({})", cols.len())).expanded(expanded.contains(&cg)).children(
                 cols.iter().map(|col| TreeItem::new(id(&["c", schema, rel, &col.name]), col.name.clone())),
             )];
-            if let Some(idx) = idx {
+            if c.dialect == Dialect::Postgres
+                && let Some(idx) = idx
+            {
                 let ig = id(&["ig", schema, rel]);
                 groups.push(
                     TreeItem::new(ig.clone(), format!("Índices ({})", idx.len()))
@@ -279,6 +309,20 @@ mod tests {
         };
         c.columns.insert(("public".into(), "t".into()), vec![col("id", true), col("n", false)]);
         c
+    }
+
+    #[::core::prelude::v1::test]
+    fn snowflake_tree_starts_at_databases() {
+        let mut c = cache();
+        c.dialect = rb_core::dialect::Dialect::Snowflake;
+        c.databases = vec!["DB".into(), "OUTRO".into()];
+        c.schemas = vec!["DB.PUBLIC".into()];
+        c.loaded_dbs.insert("DB".into());
+        let items = build_items(&c, &HashSet::new());
+        assert_eq!(items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["DB", "OUTRO"]);
+        assert_eq!(items[0].children.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["PUBLIC"]);
+        assert_eq!(describe(&id(&["d", "DB"]), &c).0, Kind::Database);
+        assert_eq!(items[1].children[0].label.to_string(), "carregando…");
     }
 
     #[::core::prelude::v1::test]

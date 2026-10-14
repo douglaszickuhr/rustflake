@@ -10,6 +10,8 @@ use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, h_resizable,
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::config::{self, ConfigFile, ConnectionConfig};
+use rb_core::dialect::Dialect;
+use rb_core::lexer::quote_always;
 use rb_core::secrets;
 use rb_core::session::Credentials;
 use rb_core::ssh::{self, SshEnv};
@@ -386,6 +388,38 @@ impl Workspace {
         });
     }
 
+    /// Lista warehouses ou roles (`SHOW …`) e roda `USE …` na escolhida; a sessão é compartilhada.
+    fn pick_context(&mut self, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(meta) = self.active.as_ref().map(|a| a.meta.clone()) else { return };
+        let session = meta.read(cx).session.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let listed = session.query_named(&format!("show {kind}s")).await.map(|(n, rows)| rb_core::snowflake::first_named(&n, &rows, "name"));
+            cx.update(|window, cx| match listed {
+                Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+                Ok(names) => window.open_dialog(cx, move |dialog, _, _| {
+                    let list = names.iter().enumerate().fold(v_flex().gap_1(), |l, (i, n)| {
+                        let (session, meta, sql) = (session.clone(), meta.clone(), format!("use {kind} {}", quote_always(n)));
+                        l.child(Button::new(("ctx", i)).label(n.clone()).ghost().on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let (session, meta, sql) = (session.clone(), meta.clone(), sql.clone());
+                            window
+                                .spawn(cx, async move |cx| {
+                                    let res = session.execute(sql).await;
+                                    cx.update(|window, cx| match res {
+                                        Ok(_) => meta.update(cx, |m, cx| m.reload_roots(cx)),
+                                        Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+                                    })
+                                })
+                                .detach();
+                        }))
+                    });
+                    dialog.title(format!("Escolher {kind}")).w(px(360.)).child(list)
+                }),
+            })
+        })
+        .detach();
+    }
+
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = v_flex().gap_1();
         for (ix, c) in self.connections.iter().enumerate() {
@@ -417,6 +451,17 @@ impl Workspace {
             )
             .child(list)
             .when(self.connecting, |d| d.child("conectando…"))
+            .when_some(self.active.as_ref().filter(|a| a.meta.read(cx).cache.dialect == Dialect::Snowflake), |d, a| {
+                let c = &a.meta.read(cx).cache;
+                let wh = c.warehouse.clone().unwrap_or_else(|| "—".into());
+                let role = c.role.clone().unwrap_or_else(|| "—".into());
+                d.child(
+                    h_flex()
+                        .gap_1()
+                        .child(Button::new("pick-wh").label(format!("WH: {wh}")).ghost().on_click(cx.listener(|ws, _, w, cx| ws.pick_context("warehouse", w, cx))))
+                        .child(Button::new("pick-role").label(format!("Role: {role}")).ghost().on_click(cx.listener(|ws, _, w, cx| ws.pick_context("role", w, cx)))),
+                )
+            })
             .when_some(self.active.as_ref().map(|a| a.tree.clone()), |d, tree| d.child(div().flex_1().child(tree)))
     }
 }

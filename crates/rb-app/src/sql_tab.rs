@@ -28,8 +28,11 @@ pub struct SqlTab {
     pub editor: Entity<EditorState>,
     table: Entity<TableState<ResultGrid>>,
     conn: ConnTarget,
+    meta: Entity<MetaStore>,
     session: Option<Arc<Session>>,
     running: bool,
+    /// O último run teve `USE …`: o contexto (database/schema/warehouse/role) mudou.
+    ran_use: bool,
     status: SharedString,
     _save: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -39,7 +42,7 @@ impl SqlTab {
     pub fn new(path: PathBuf, conn: ConnTarget, meta: Entity<MetaStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let editor = cx.new(|cx| EditorState::new(window, cx).language("sql").default_value(text));
-        editor.update(cx, |ed, _| ed.lsp_mut().completion_provider = Some(std::rc::Rc::new(SqlCompletion::new(meta))));
+        editor.update(cx, |ed, _| ed.lsp_mut().completion_provider = Some(std::rc::Rc::new(SqlCompletion::new(meta.clone()))));
         let table = cx.new(|cx| TableState::new(ResultGrid::new(false), window, cx).cell_selectable(true));
         let subs = vec![
             cx.subscribe_in(&editor, window, |this, _, ev: &InputEvent, _, cx| {
@@ -55,8 +58,10 @@ impl SqlTab {
             editor,
             table,
             conn,
+            meta,
             session: None,
             running: false,
+            ran_use: false,
             status: "".into(),
             _save: None,
             _subs: subs,
@@ -99,6 +104,7 @@ impl SqlTab {
         if ranges.is_empty() {
             return;
         }
+        self.ran_use = ranges.iter().any(|r| src[r.clone()].trim_start().get(..4).is_some_and(|w| w.eq_ignore_ascii_case("use ")));
         self.running = true;
         self.status = "executando…".into();
         cx.notify();
@@ -129,6 +135,9 @@ impl SqlTab {
 
     fn finish_ok(&mut self, last: Option<ExecOutcome>, session: Arc<Session>, cx: &mut Context<Self>) {
         self.running = false;
+        if self.ran_use {
+            self.meta.update(cx, |m, cx| m.reload_roots(cx));
+        }
         let Some(out) = last else { return };
         let ms = out.elapsed.as_millis();
         self.status = match out.affected {
