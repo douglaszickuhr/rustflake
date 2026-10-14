@@ -178,3 +178,37 @@ fn sessions_of_one_connection_share_one_login() {
     assert_eq!(texts(&b, "select current_schema()")[0][0].as_deref(), Some(schema.rsplit('.').next().unwrap().trim_matches('"')));
     drop_schema(&a, &schema);
 }
+
+#[test]
+fn metadata_of_test_schema() {
+    let Some(e) = env() else { return skip() };
+    let s = connect(&e);
+    let schema = scratch_schema(&e, &s, "meta");
+    block_on(s.execute(format!("create table {schema}.T (ID number primary key, \"nome\" varchar)"))).unwrap();
+    block_on(s.execute(format!("create view {schema}.V as select ID from {schema}.T"))).unwrap();
+    let key = format!("{}.RB_TEST_{}_META", e.database, std::process::id());
+
+    let dbs = block_on(rb_core::metadata::databases(&s)).unwrap();
+    assert!(dbs.contains(&e.database), "{dbs:?}");
+    assert!(block_on(rb_core::metadata::db_schemas(&s, &e.database)).unwrap().contains(&key));
+    let o = block_on(rb_core::metadata::objects(&s, &key)).unwrap();
+    assert_eq!((o.tables, o.views), (vec!["T".to_string()], vec!["V".to_string()]));
+    let cols = block_on(rb_core::metadata::columns(&s, &key, "T")).unwrap();
+    assert_eq!(cols.iter().map(|c| (c.name.as_str(), c.is_pk)).collect::<Vec<_>>(), vec![("ID", true), ("nome", false)]);
+    assert_eq!(block_on(rb_core::metadata::columns(&s, &key, "V")).unwrap().len(), 1);
+    drop_schema(&s, &schema);
+}
+
+#[test]
+fn use_role_and_warehouse_change_context() {
+    let Some(e) = env() else { return skip() };
+    let s = connect(&e);
+    let wh = e.cfg.snowflake.as_ref().unwrap().warehouse.clone().unwrap();
+    block_on(s.execute(format!("use warehouse \"{wh}\""))).unwrap();
+    block_on(s.execute(format!("use database \"{}\"", e.database))).unwrap();
+    block_on(s.execute("use schema INFORMATION_SCHEMA".into())).unwrap();
+    let ctx = block_on(rb_core::metadata::context(&s)).unwrap();
+    assert_eq!(ctx.warehouse.as_deref(), Some(wh.as_str()));
+    assert_eq!(ctx.search_path, vec![format!("{}.INFORMATION_SCHEMA", e.database)]);
+    assert!(ctx.role.is_some());
+}

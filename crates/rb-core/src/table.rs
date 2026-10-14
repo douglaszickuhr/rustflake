@@ -32,8 +32,8 @@ pub fn qualified(schema: &str, table: &str) -> String {
 
 /// SELECT da aba de tabela. O filtro é uma expressão WHERE crua digitada pelo usuário;
 /// vai entre parênteses e com quebra de linha para que um `--` não engula o ORDER BY.
-pub fn select_sql(schema: &str, table: &str, filter: Option<&str>, order: Option<(&str, bool)>) -> String {
-    let mut sql = format!("SELECT * FROM {}", qualified(schema, table));
+pub fn select_sql(from: &str, filter: Option<&str>, order: Option<(&str, bool)>) -> String {
+    let mut sql = format!("SELECT * FROM {from}");
     if let Some(f) = filter.map(str::trim).filter(|f| !f.is_empty()) {
         sql += &format!(" WHERE ({f}\n)");
     }
@@ -216,18 +216,18 @@ mod tests {
 
     #[test]
     fn select_sql_quotes_identifiers() {
-        assert_eq!(select_sql("Sales", "Order Items", None, None), r#"SELECT * FROM "Sales"."Order Items""#);
+        assert_eq!(select_sql(&qualified("Sales", "Order Items"), None, None), r#"SELECT * FROM "Sales"."Order Items""#);
         assert_eq!(
-            select_sql("public", "t", Some(" a > 1 -- x "), Some(("Name", false))),
+            select_sql(&qualified("public", "t"), Some(" a > 1 -- x "), Some(("Name", false))),
             "SELECT * FROM \"public\".\"t\" WHERE (a > 1 -- x\n) ORDER BY \"Name\" DESC"
         );
-        assert_eq!(select_sql("public", "t", Some("   "), Some(("id", true))), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC"#);
+        assert_eq!(select_sql(&qualified("public", "t"), Some("   "), Some(("id", true))), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC"#);
     }
 
     #[test]
     fn generated_sql_always_quotes_identifiers() {
         assert_eq!(
-            select_sql("public", "t", None, Some(("current_date", true))),
+            select_sql(&qualified("public", "t"), None, Some(("current_date", true))),
             r#"SELECT * FROM "public"."t" ORDER BY "current_date" ASC"#
         );
         let t = EditTarget { schema: "public".into(), table: "t".into(), columns: vec![col("left", "integer", true, false), col("full", "text", false, false)] };

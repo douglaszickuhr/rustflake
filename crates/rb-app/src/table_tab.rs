@@ -118,7 +118,8 @@ impl TableTab {
             let name = self.target.as_ref()?.columns.get(c)?.name.clone();
             Some((name, asc))
         });
-        let sql = select_sql(&self.schema, &self.table, Some(&filter), order_col.as_ref().map(|(n, a)| (n.as_str(), *a)));
+        let from = self.meta.read(cx).cache.dialect.qualified(&self.schema, &self.table);
+        let sql = select_sql(&from, Some(&filter), order_col.as_ref().map(|(n, a)| (n.as_str(), *a)));
         let conn = self.conn.clone();
         let existing = self.session.clone();
         let engine = cx.global::<Db>().0.clone();

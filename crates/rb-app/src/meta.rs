@@ -24,6 +24,7 @@ enum Loaded {
     Objects(SchemaObjects),
     Columns(Vec<ColumnMeta>),
     Indexes(Vec<IndexMeta>),
+    Schemas(Vec<String>),
 }
 
 impl MetaStore {
@@ -63,6 +64,7 @@ impl MetaStore {
                 MetaRequest::Objects(schema) => metadata::objects(&s, schema).await.map(Loaded::Objects),
                 MetaRequest::Columns(schema, t) => metadata::columns(&s, schema, t).await.map(Loaded::Columns),
                 MetaRequest::Indexes(schema, t) => metadata::indexes(&s, schema, t).await.map(Loaded::Indexes),
+                MetaRequest::Schemas(db) => metadata::db_schemas(&s, db).await.map(Loaded::Schemas),
             };
             this.update(cx, |m, cx| {
                 m.inflight.remove(&req);
@@ -75,6 +77,13 @@ impl MetaStore {
                     }
                     (Ok(Loaded::Indexes(i)), MetaRequest::Indexes(schema, t)) => {
                         m.cache.indexes.insert((schema, t), i);
+                    }
+                    (Ok(Loaded::Schemas(list)), MetaRequest::Schemas(db)) => {
+                        let prefix = format!("{db}.");
+                        m.cache.schemas.retain(|s| !s.starts_with(&prefix));
+                        m.cache.schemas.extend(list);
+                        m.cache.schemas.sort();
+                        m.cache.loaded_dbs.insert(db);
                     }
                     (Err(e), _) => m.error = Some(e.to_string()),
                     _ => unreachable!("resposta sempre corresponde ao pedido"),

@@ -1,7 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::DbError;
+use crate::dialect::Dialect;
+use crate::lexer::quote_always;
 use crate::session::Session;
+use crate::snowflake::{first_named, parse_describe, parse_functions, parse_objects};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SchemaObjects {
@@ -43,6 +46,8 @@ pub enum MetaRequest {
     Objects(String),
     Columns(String, String),
     Indexes(String, String),
+    /// Schemas de uma database Snowflake.
+    Schemas(String),
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +57,12 @@ pub struct MetaCache {
     pub objects: HashMap<String, SchemaObjects>,
     pub columns: HashMap<(String, String), Vec<ColumnMeta>>,
     pub indexes: HashMap<(String, String), Vec<IndexMeta>>,
+    pub dialect: Dialect,
+    /// Snowflake: databases da conta e quais já tiveram os schemas carregados.
+    pub databases: Vec<String>,
+    pub loaded_dbs: HashSet<String>,
+    pub warehouse: Option<String>,
+    pub role: Option<String>,
 }
 
 impl MetaCache {
@@ -60,6 +71,20 @@ impl MetaCache {
             MetaRequest::Objects(s) => self.objects.contains_key(s),
             MetaRequest::Columns(s, t) => self.columns.contains_key(&(s.clone(), t.clone())),
             MetaRequest::Indexes(s, t) => self.indexes.contains_key(&(s.clone(), t.clone())),
+            MetaRequest::Schemas(db) => self.loaded_dbs.contains(db),
+        }
+    }
+
+    /// Database atual no Snowflake (início do search_path `DB.SCHEMA`).
+    pub fn current_db(&self) -> Option<&str> {
+        self.search_path.first().and_then(|s| s.split_once('.')).map(|(db, _)| db)
+    }
+
+    /// Chave de schema como está no cache: no Snowflake, `SCHEMA` vira `DB_ATUAL.SCHEMA`.
+    pub fn schema_key(&self, s: &str) -> String {
+        match (self.dialect, self.current_db()) {
+            (Dialect::Snowflake, Some(db)) if !s.contains('.') => format!("{db}.{s}"),
+            _ => s.to_string(),
         }
     }
 
@@ -115,7 +140,50 @@ fn first_column(rows: Vec<Vec<Option<String>>>) -> Vec<String> {
     rows.iter().map(|r| text(r, 0)).collect()
 }
 
+fn sf_schema(key: &str) -> String {
+    match key.split_once('.') {
+        Some((db, s)) => format!("{}.{}", quote_always(db), quote_always(s)),
+        None => quote_always(key),
+    }
+}
+
+pub struct Context {
+    pub search_path: Vec<String>,
+    pub warehouse: Option<String>,
+    pub role: Option<String>,
+}
+
+pub async fn databases(s: &Session) -> Result<Vec<String>, DbError> {
+    let (names, rows) = s.query_named("show databases").await?;
+    Ok(first_named(&names, &rows, "name"))
+}
+
+pub async fn db_schemas(s: &Session, db: &str) -> Result<Vec<String>, DbError> {
+    let (names, rows) = s.query_named(&format!("show schemas in database {}", quote_always(db))).await?;
+    Ok(first_named(&names, &rows, "name").into_iter().map(|n| format!("{db}.{n}")).collect())
+}
+
+pub async fn context(s: &Session) -> Result<Context, DbError> {
+    match s.dialect() {
+        Dialect::Postgres => Ok(Context { search_path: search_path(s).await?, warehouse: None, role: None }),
+        Dialect::Snowflake => {
+            let (_, rows) = s.query_named("select current_database(), current_schema(), current_warehouse(), current_role()").await?;
+            let r = rows.into_iter().next().unwrap_or_default();
+            let get = |i: usize| r.get(i).cloned().flatten();
+            let search_path = match (get(0), get(1)) {
+                (Some(db), Some(sc)) => vec![format!("{db}.{sc}")],
+                _ => Vec::new(),
+            };
+            Ok(Context { search_path, warehouse: get(2), role: get(3) })
+        }
+    }
+}
+
 pub async fn schemas(s: &Session) -> Result<Vec<String>, DbError> {
+    // No Snowflake a árvore parte das databases.
+    if s.dialect() == Dialect::Snowflake {
+        return Ok(Vec::new());
+    }
     Ok(first_column(s.query_text(SCHEMAS_SQL, &[]).await?))
 }
 
@@ -124,6 +192,13 @@ pub async fn search_path(s: &Session) -> Result<Vec<String>, DbError> {
 }
 
 pub async fn objects(s: &Session, schema: &str) -> Result<SchemaObjects, DbError> {
+    if s.dialect() == Dialect::Snowflake {
+        let (n, rows) = s.query_named(&format!("show objects in schema {}", sf_schema(schema))).await?;
+        let mut o = parse_objects(&n, &rows);
+        let (n, rows) = s.query_named(&format!("show user functions in schema {}", sf_schema(schema))).await?;
+        o.functions = parse_functions(&n, &rows);
+        return Ok(o);
+    }
     let mut o = SchemaObjects::default();
     for r in s.query_text(OBJECTS_SQL, &[schema]).await? {
         let name = text(&r, 0);
@@ -138,6 +213,15 @@ pub async fn objects(s: &Session, schema: &str) -> Result<SchemaObjects, DbError
 }
 
 pub async fn columns(s: &Session, schema: &str, table: &str) -> Result<Vec<ColumnMeta>, DbError> {
+    if s.dialect() == Dialect::Snowflake {
+        let name = format!("{}.{}", sf_schema(schema), quote_always(table));
+        let (n, rows) = match s.query_named(&format!("describe table {name}")).await {
+            Ok(r) => r,
+            // DESCRIBE TABLE recusa views; a view tem o próprio DESCRIBE.
+            Err(_) => s.query_named(&format!("describe view {name}")).await?,
+        };
+        return Ok(parse_describe(&n, &rows));
+    }
     Ok(s.query_text(COLUMNS_SQL, &[schema, table])
         .await?
         .into_iter()
@@ -154,6 +238,9 @@ pub async fn columns(s: &Session, schema: &str, table: &str) -> Result<Vec<Colum
 }
 
 pub async fn indexes(s: &Session, schema: &str, table: &str) -> Result<Vec<IndexMeta>, DbError> {
+    if s.dialect() == Dialect::Snowflake {
+        return Ok(Vec::new());
+    }
     Ok(s.query_text(INDEXES_SQL, &[schema, table])
         .await?
         .into_iter()

@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use crate::lexer::{TokKind, Token, ident_text, is_unterminated, quote_ident, tokenize};
+use crate::dialect::Dialect;
+use crate::lexer::{TokKind, Token, ident_text, is_unterminated, tokenize};
 use crate::metadata::{MetaCache, MetaRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -72,7 +73,7 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
         None => (cursor..cursor, String::new()),
     };
     let before: Vec<&Token> = stmt.iter().filter(|t| t.end <= replace.start).collect();
-    let refs = table_refs(src, &stmt);
+    let refs = table_refs(src, &stmt, cache.dialect);
     let mut out = Completion { replace: replace.clone(), ..Default::default() };
     let is_punct = |t: &Token, p: &str| t.kind == TokKind::Punct && &src[t.start..t.end] == p;
 
@@ -82,11 +83,12 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
         && matches!(q.kind, TokKind::Word | TokKind::QuotedIdent)
         && q.end == dot.start
     {
-        let qual = ident_text(&src[q.start..q.end]);
+        let qual = cache.dialect.fold(&src[q.start..q.end]);
+        let key = cache.schema_key(&qual);
         if let Some(r) = refs.iter().find(|r| r.alias.as_deref() == Some(qual.as_str())) {
             push_columns(&mut out, cache, r);
-        } else if cache.schemas.contains(&qual) {
-            push_objects(&mut out, cache, &qual);
+        } else if cache.schemas.contains(&key) {
+            push_objects(&mut out, cache, &key);
         } else if let Some(r) = refs.iter().find(|r| r.table == qual) {
             push_columns(&mut out, cache, r);
         }
@@ -97,7 +99,15 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
             push_objects(&mut out, cache, s);
         }
         for s in &cache.schemas {
-            out.candidates.push(Candidate { label: s.clone(), insert: quote_ident(s), kind: CandidateKind::Schema, detail: None });
+            // No Snowflake, só os schemas do database atual, sem o prefixo `DB.`.
+            let label = match (cache.dialect, cache.current_db()) {
+                (Dialect::Snowflake, Some(db)) => match s.strip_prefix(db).and_then(|r| r.strip_prefix('.')) {
+                    Some(rest) => rest.to_string(),
+                    None => continue,
+                },
+                _ => s.clone(),
+            };
+            out.candidates.push(Candidate { insert: cache.dialect.quote(&label), label, kind: CandidateKind::Schema, detail: None });
         }
     } else {
         for r in &refs {
@@ -128,11 +138,11 @@ fn resolve_schema(cache: &MetaCache, table: &str) -> String {
 }
 
 fn push_columns(out: &mut Completion, cache: &MetaCache, r: &TableRef) {
-    let schema = r.schema.clone().unwrap_or_else(|| resolve_schema(cache, &r.table));
+    let schema = r.schema.as_deref().map(|s| cache.schema_key(s)).unwrap_or_else(|| resolve_schema(cache, &r.table));
     match cache.columns.get(&(schema.clone(), r.table.clone())) {
         Some(cols) => out.candidates.extend(cols.iter().map(|c| Candidate {
             label: c.name.clone(),
-            insert: quote_ident(&c.name),
+            insert: cache.dialect.quote(&c.name),
             kind: CandidateKind::Column,
             detail: Some(c.type_name.clone()),
         })),
@@ -145,12 +155,12 @@ fn push_objects(out: &mut Completion, cache: &MetaCache, schema: &str) {
         out.missing.push(MetaRequest::Objects(schema.to_string()));
         return;
     };
-    let rel = |name: &String, kind| Candidate { label: name.clone(), insert: quote_ident(name), kind, detail: None };
+    let rel = |name: &String, kind| Candidate { label: name.clone(), insert: cache.dialect.quote(name), kind, detail: None };
     out.candidates.extend(o.tables.iter().map(|t| rel(t, CandidateKind::Table)));
     out.candidates.extend(o.views.iter().chain(&o.matviews).map(|v| rel(v, CandidateKind::View)));
     out.candidates.extend(o.functions.iter().map(|f| {
         let name = f.split('(').next().unwrap_or(f);
-        Candidate { label: f.clone(), insert: format!("{}(", quote_ident(name)), kind: CandidateKind::Function, detail: None }
+        Candidate { label: f.clone(), insert: format!("{}(", cache.dialect.quote(name)), kind: CandidateKind::Function, detail: None }
     }));
 }
 
@@ -163,8 +173,11 @@ fn filter_and_rank(c: &mut Vec<Candidate>, prefix: &str) {
     c.truncate(200);
 }
 
-fn table_refs(src: &str, toks: &[Token]) -> Vec<TableRef> {
-    let word = |t: &Token| matches!(t.kind, TokKind::Word | TokKind::QuotedIdent).then(|| ident_text(&src[t.start..t.end]));
+/// Palavras-chave são comparadas em minúsculas (`word`); nomes guardados seguem o dialeto (`name`).
+fn table_refs(src: &str, toks: &[Token], d: Dialect) -> Vec<TableRef> {
+    let raw = |t: &Token| matches!(t.kind, TokKind::Word | TokKind::QuotedIdent).then(|| &src[t.start..t.end]);
+    let word = |t: &Token| raw(t).map(ident_text);
+    let name = |t: &Token| raw(t).map(|r| d.fold(r));
     let punct = |t: &Token, p: &str| t.kind == TokKind::Punct && &src[t.start..t.end] == p;
     let mut out = Vec::new();
     let mut i = 0;
@@ -179,12 +192,12 @@ fn table_refs(src: &str, toks: &[Token]) -> Vec<TableRef> {
             if NOT_ALIAS.contains(&first.as_str()) {
                 break;
             }
-            let mut r = TableRef { schema: None, table: first, alias: None };
+            let mut r = TableRef { schema: None, table: toks.get(i).and_then(name).unwrap_or(first), alias: None };
             i += 1;
             if toks.get(i).is_some_and(|t| punct(t, "."))
-                && let Some(name) = toks.get(i + 1).and_then(word)
+                && let Some(n) = toks.get(i + 1).and_then(name)
             {
-                r.schema = Some(std::mem::replace(&mut r.table, name));
+                r.schema = Some(std::mem::replace(&mut r.table, n));
                 i += 2;
             }
             if toks.get(i).and_then(word).as_deref() == Some("as") {
@@ -193,7 +206,7 @@ fn table_refs(src: &str, toks: &[Token]) -> Vec<TableRef> {
             if let Some(a) = toks.get(i).and_then(word)
                 && !NOT_ALIAS.contains(&a.as_str())
             {
-                r.alias = Some(a);
+                r.alias = toks.get(i).and_then(name);
                 i += 1;
             }
             out.push(r);
@@ -268,6 +281,44 @@ mod tests {
         assert_eq!(c.missing, vec![MetaRequest::Columns("public".into(), "orders".into())]);
     }
 
+    fn snowflake_cache() -> MetaCache {
+        let mut c = MetaCache { dialect: crate::dialect::Dialect::Snowflake, ..Default::default() };
+        c.search_path = vec!["DB.PUBLIC".into()];
+        c.schemas = vec!["DB.PUBLIC".into(), "DB.RAW".into()];
+        c.objects.insert(
+            "DB.PUBLIC".into(),
+            SchemaObjects { tables: vec!["ORDERS".into(), "Order Items".into()], ..Default::default() },
+        );
+        c.objects.insert("DB.RAW".into(), SchemaObjects { tables: vec!["EVENTS".into()], ..Default::default() });
+        c.columns.insert(("DB.PUBLIC".into(), "ORDERS".into()), vec![col("ID", "NUMBER(38,0)"), col("status", "VARCHAR")]);
+        c
+    }
+
+    #[test]
+    fn snowflake_tables_and_columns_use_its_case_rules() {
+        let c = snowflake_cache();
+        let src = "select * from or";
+        let got = complete(src, src.len(), &c);
+        let inserts: Vec<&str> = got.candidates.iter().map(|x| x.insert.as_str()).collect();
+        assert!(inserts.contains(&"ORDERS") && inserts.contains(&r#""Order Items""#), "{inserts:?}");
+
+        let src = "select o. from orders o";
+        let got = complete(src, "select o.".len(), &c);
+        let inserts: Vec<&str> = got.candidates.iter().map(|x| x.insert.as_str()).collect();
+        assert_eq!(inserts, vec!["ID", r#""status""#]);
+    }
+
+    #[test]
+    fn snowflake_schema_qualifier_is_relative_to_current_database() {
+        let c = snowflake_cache();
+        let src = "select * from raw.";
+        let got = complete(src, src.len(), &c);
+        assert_eq!(got.candidates.iter().map(|x| x.insert.as_str()).collect::<Vec<_>>(), vec!["EVENTS"]);
+        let src = "select * from ";
+        let labels: Vec<String> = complete(src, src.len(), &c).candidates.iter().filter(|x| x.kind == CandidateKind::Schema).map(|x| x.label.clone()).collect();
+        assert_eq!(labels, vec!["PUBLIC".to_string(), "RAW".to_string()]);
+    }
+
     #[test]
     fn schema_qualifier_lists_objects_or_requests_them() {
         let src = "select * from \"Sales\".";
@@ -324,7 +375,7 @@ mod tests {
     fn table_refs_parse_schema_alias_and_lists() {
         let src = r#"select * from public.users as u, orders o join "Sales"."Deals" d on true"#;
         let toks = tokenize(src);
-        let refs = table_refs(src, &toks);
+        let refs = table_refs(src, &toks, Dialect::Postgres);
         assert_eq!(
             refs,
             vec![
