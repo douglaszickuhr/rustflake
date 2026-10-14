@@ -1,5 +1,6 @@
 mod conn_dialog;
 mod meta;
+mod schema_tree;
 mod workspace;
 
 use std::time::Instant;
@@ -31,6 +32,7 @@ fn main() {
             KeyBinding::new("cmd-t", NewSqlTab, Some("Workspace")),
             KeyBinding::new("cmd-w", CloseTab, Some("Workspace")),
             KeyBinding::new("f5", RefreshNode, Some("SchemaTree")),
+            KeyBinding::new("cmd-r", RefreshNode, Some("SchemaTree")),
             KeyBinding::new("cmd-c", CopyCells, Some("ResultGrid")),
             KeyBinding::new("cmd-q", Quit, None),
         ]);

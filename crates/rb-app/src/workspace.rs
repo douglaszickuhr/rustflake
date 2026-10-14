@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -9,11 +10,13 @@ use rb_core::config::{self, ConfigFile, ConnectionConfig};
 use rb_core::secrets;
 
 use crate::meta::{ConnTarget, MetaStore};
+use crate::schema_tree::SchemaTree;
 use crate::{CloseTab, Db, NewSqlTab, conn_dialog};
 
 pub struct Active {
     pub conn: ConnTarget,
     pub meta: Entity<MetaStore>,
+    pub tree: Entity<SchemaTree>,
 }
 
 pub struct Workspace {
@@ -80,7 +83,12 @@ impl Workspace {
                     Ok((conn, session)) => {
                         let meta = cx.new(|cx| MetaStore::new(Arc::new(session), cx));
                         cx.observe(&meta, |_, _, cx| cx.notify()).detach();
-                        ws.active = Some(Active { conn, meta });
+                        let ws_weak = cx.entity().downgrade();
+                        let open: Rc<dyn Fn(String, String, &mut Window, &mut App)> = Rc::new(move |schema, table, window, cx| {
+                            ws_weak.update(cx, |ws, cx| ws.open_table(schema, table, window, cx)).ok();
+                        });
+                        let tree = cx.new(|cx| SchemaTree::new(meta.clone(), open, cx));
+                        ws.active = Some(Active { conn, meta, tree });
                         ws.on_connected(window, cx);
                     }
                     Err(e) => window.push_notification(Notification::error(format!("Falha ao conectar: {e}")), cx),
@@ -90,6 +98,8 @@ impl Workspace {
         })
         .detach();
     }
+
+    pub fn open_table(&mut self, _schema: String, _table: String, _window: &mut Window, _cx: &mut Context<Self>) {}
 
     /// Ponto de extensão: Tarefas 12 e 14 criam a árvore e as abas aqui.
     fn on_connected(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
@@ -116,6 +126,7 @@ impl Workspace {
             )
             .child(list)
             .when(self.connecting, |d| d.child("conectando…"))
+            .when_some(self.active.as_ref().map(|a| a.tree.clone()), |d, tree| d.child(div().flex_1().child(tree)))
     }
 }
 
