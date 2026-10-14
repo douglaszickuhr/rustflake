@@ -84,7 +84,8 @@ expirar, a próxima chamada refaz o login (no SSO, o navegador abre de novo).
 **Execução e paginação.** `execute` envia o statement e devolve as primeiras `FETCH_ROWS` (1.000)
 linhas; o cursor fica no ator. `fetch_more` entrega as próximas 1.000 do bloco atual e só baixa o
 próximo bloco do conector quando o atual acaba. Um `fetch_more` com `exec_id` antigo devolve vazio
-(como no Postgres). Statements sem linhas devolvem `affected`.
+(como no Postgres). No Snowflake todo statement devolve linhas (DML devolve "number of rows
+inserted", DDL devolve "status"), então o resultado é sempre mostrado na grade e `affected` fica vazio.
 
 **Conversão.** Cada `CellValue` vira texto num `Batch` com colunas `Type::TEXT`:
 - NULL → célula nula; booleano → `true`/`false`; inteiro e decimal → texto exato (decimal sem `f64`)
@@ -104,8 +105,8 @@ devolve `DbError::Unsupported("Snowflake: somente leitura")`.
 
 **Divisão de statements.** Lexer atual (`'…'`, `"…"`, `$$…$$`, `--`, `/* */`).
 
-**Erros.** Variante nova `DbError::Snowflake { code: String, sql_state: Option<String>, message:
-String }`, exibida como `[code] message`. Falha de login e de rede vira `DbError::Connection`.
+**Erros.** Variante nova `DbError::Snowflake { code: String, message: String }`, exibida como
+`[code] message` (o conector não expõe o SQLSTATE). Falha de login e de rede vira `DbError::Connection`.
 
 ## 4. Metadados, árvore e autocomplete
 
