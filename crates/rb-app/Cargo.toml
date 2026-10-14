@@ -14,3 +14,9 @@ lsp-types = "0.97"
 rb-core = { path = "../rb-core" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Ícone do Dock em tempo de execução (o app roda sem pacote .app); já vêm com o gpui.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }

@@ -45,6 +45,19 @@ impl AssetSource for AppAssets {
     }
 }
 
+/// Ícone do Dock: o binário roda sem pacote .app, então o macOS não acha um .icns.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::AnyThread as _;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(include_bytes!("../assets/app-icon.png"));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+    }
+}
+
 fn main() {
     let started = Instant::now();
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
@@ -52,6 +65,8 @@ fn main() {
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
+        #[cfg(target_os = "macos")]
+        set_dock_icon();
         cx.set_global(Db(engine));
         cx.bind_keys([
             KeyBinding::new("cmd-enter", RunStatement, Some("SqlTab > Input")),
