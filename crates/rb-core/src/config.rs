@@ -15,6 +15,19 @@ pub enum SslMode {
     Require,
 }
 
+/// Túnel SSH de uma conexão. Campos vazios vêm do `~/.ssh/config` ou dos padrões do OpenSSH.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SshConfig {
+    /// Alias do `~/.ssh/config` ou hostname.
+    pub host: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub identity_file: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub id: String,
@@ -25,6 +38,9 @@ pub struct ConnectionConfig {
     pub user: String,
     #[serde(default)]
     pub ssl: SslMode,
+    /// Com túnel, `host`/`port` são resolvidos pelo bastion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshConfig>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,7 +161,28 @@ mod tests {
             database: "app".into(),
             user: "postgres".into(),
             ssl: SslMode::Require,
+            ssh: None,
         }
+    }
+
+    #[test]
+    fn ssh_block_round_trips_and_old_files_still_load() {
+        let path = tmp("ssh");
+        let mut c = sample();
+        c.ssh = Some(SshConfig {
+            host: "prod-bastion".into(),
+            user: Some("deploy".into()),
+            port: None,
+            identity_file: Some("~/.ssh/id_ed25519".into()),
+        });
+        let cfg = ConfigFile { connections: vec![c] };
+        save(&path, &cfg).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[connection.ssh]") && text.contains("host = \"prod-bastion\""), "{text}");
+        assert_eq!(load(&path).unwrap(), cfg);
+
+        std::fs::write(&path, "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 5432\ndatabase = \"d\"\nuser = \"u\"\n").unwrap();
+        assert_eq!(load(&path).unwrap().connections[0].ssh, None);
     }
 
     #[test]

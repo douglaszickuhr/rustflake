@@ -37,6 +37,7 @@ impl Fields {
             database: v(&self.database),
             user: v(&self.user),
             ssl,
+            ssh: None,
         };
         if cfg.name.is_empty() || cfg.host.is_empty() || cfg.database.is_empty() || cfg.user.is_empty() {
             return Err("preencha nome, host, banco e usuário".into());

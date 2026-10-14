@@ -18,6 +18,10 @@ pub enum DbError {
     Io(String),
     Edit(String),
     Unsupported(String),
+    /// Falha no túnel SSH (conexão, autenticação, canal, known_hosts).
+    Ssh(String),
+    /// Host SSH fora do known_hosts. `key` é a chave pública em formato OpenSSH, para `ssh::trust_host`.
+    HostKeyUnknown { host: String, port: u16, fingerprint: String, key: String },
 }
 
 impl fmt::Display for DbError {
@@ -39,6 +43,10 @@ impl fmt::Display for DbError {
             DbError::Io(m) => write!(f, "E/S: {m}"),
             DbError::Edit(m) => write!(f, "edição: {m}"),
             DbError::Unsupported(m) => write!(f, "não suportado: {m}"),
+            DbError::Ssh(m) => write!(f, "SSH: {m}"),
+            DbError::HostKeyUnknown { host, port, fingerprint, .. } => {
+                write!(f, "SSH: host {host}:{port} não está no known_hosts ({fingerprint})")
+            }
         }
     }
 }
