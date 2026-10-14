@@ -270,7 +270,15 @@ impl Workspace {
             TabView::Sql(t) => t.clone().into_any_element(),
             TabView::Table(t) => t.clone().into_any_element(),
         };
-        v_flex().flex_1().h_full().child(bar).child(div().flex_1().child(content)).into_any_element()
+        // min_w_0: sem ele o item flex mede no mínimo a largura do conteúdo (todas as colunas da
+        // grade) e vaza da janela em vez de deixar a grade rolar na horizontal.
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(bar)
+            .child(div().flex_1().min_w_0().min_h_0().child(content))
+            .into_any_element()
     }
 
     fn confirm_remove(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
