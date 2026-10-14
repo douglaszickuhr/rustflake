@@ -275,6 +275,12 @@ impl Session {
         self.dialect
     }
 
+    /// As duas sessões usam a mesma sessão Snowflake (um único login)?
+    #[doc(hidden)]
+    pub fn shares_snowflake_with(&self, other: &Session) -> bool {
+        matches!((&self._snowflake, &other._snowflake), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
+    }
+
     /// Linhas e nomes de coluna (usado nos `SHOW`/`DESCRIBE` do Snowflake).
     pub async fn query_named(&self, sql: &str) -> Result<(Vec<String>, Vec<Vec<Option<String>>>), DbError> {
         let sql = sql.to_string();

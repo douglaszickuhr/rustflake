@@ -46,4 +46,6 @@ Rode antes de cada release, com o Postgres de teste (`docker start rb-pg`).
 - [ ] WH/Role: os botões listam e trocam; um `USE ROLE` no editor atualiza os botões.
 - [ ] ⌘. cancela `call system$wait(60)`.
 - [ ] Autocomplete sugere tabelas do schema atual sem aspas (ORDERS) e com aspas quando preciso ("Order Items").
-- [ ] Deixar o app aberto > 4 h com SSO: a próxima query refaz o login.
+- [ ] Expiração: rodar uma query, esperar 65 min, rodar outra. Anotar se o login é refeito (o conector não renova o token; com SSO o navegador abre de novo) e se WH/role/schema escolhidos continuam valendo (os `USE` são refeitos).
+- [ ] SSO que demora mais de 60 s no navegador: o app mostra "login Snowflake não concluído em 90 s" e não trava.
+- [ ] Query de mais de 5 min (`call system$wait(310)`) termina normalmente.

@@ -2,9 +2,8 @@
 
 use std::collections::VecDeque;
 use std::future::Future;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use snowflake_connector_rs as sf;
 use snowflake_connector_rs::{CellValue, VectorValue};
@@ -142,11 +141,18 @@ pub fn parse_describe(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<Col
         .collect()
 }
 
-static LOGINS: AtomicUsize = AtomicUsize::new(0);
+/// O conector espera o retorno do SSO por 60 s e depois cai para ler a URL do stdin, o que num app
+/// de janela trava (terminal) ou falha (Finder). Damos um pouco mais e desistimos com mensagem clara.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Quantos logins Snowflake o processo fez (testes verificam o compartilhamento).
-pub fn login_count() -> usize {
-    LOGINS.load(Ordering::Relaxed)
+/// O padrão do conector (300 s) derruba queries longas sem cancelá-las no Snowflake.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(48 * 3600);
+
+async fn create_session(client: &sf::Client) -> Result<sf::Session, DbError> {
+    match tokio::time::timeout(LOGIN_TIMEOUT, client.create_session()).await {
+        Ok(r) => r.map_err(sf_err),
+        Err(_) => Err(DbError::Connection("login Snowflake não concluído em 90 s (o SSO precisa terminar em até 60 s)".into())),
+    }
 }
 
 pub(crate) fn sf_err(e: sf::Error) -> DbError {
@@ -173,6 +179,7 @@ impl Chunks for sf::ResultCursor {
 pub(crate) struct SfShared {
     client: sf::Client,
     session: AsyncMutex<Arc<sf::Session>>,
+    uses: Mutex<UseLog>,
 }
 
 impl SfShared {
@@ -208,10 +215,10 @@ impl SfShared {
         if let Some(r) = set(&s.role) {
             session = session.with_role(r);
         }
-        let client = sf::Client::new(sf::ClientConfig::new(&cfg.user, &s.account, auth).with_session(session)).map_err(sf_err)?;
-        let first = client.create_session().await.map_err(sf_err)?;
-        LOGINS.fetch_add(1, Ordering::Relaxed);
-        Ok(SfShared { client, session: AsyncMutex::new(Arc::new(first)) })
+        let query = sf::QueryConfig::new().with_query_response_timeout(QUERY_TIMEOUT);
+        let client = sf::Client::new(sf::ClientConfig::new(&cfg.user, &s.account, auth).with_session(session).with_query(query)).map_err(sf_err)?;
+        let first = create_session(&client).await?;
+        Ok(SfShared { client, session: AsyncMutex::new(Arc::new(first)), uses: Mutex::default() })
     }
 
     pub(crate) async fn current(&self) -> Arc<sf::Session> {
@@ -223,10 +230,47 @@ impl SfShared {
         let mut cur = self.session.lock().await;
         if Arc::ptr_eq(&cur, stale) {
             tracing::info!("sessão Snowflake expirada; novo login");
-            *cur = Arc::new(self.client.create_session().await.map_err(sf_err)?);
-            LOGINS.fetch_add(1, Ordering::Relaxed);
+            let fresh = create_session(&self.client).await?;
+            // O login novo volta ao contexto da configuração: refaz os USE da sessão anterior.
+            let replay = self.uses.lock().expect("mutex dos USE").replay();
+            for sql in replay {
+                let res = match fresh.query_handle(sql.clone()) {
+                    Ok(h) => h.execute().await.map(|_| ()),
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = res {
+                    tracing::warn!("não refez `{sql}` após novo login: {e}");
+                }
+            }
+            *cur = Arc::new(fresh);
         }
         Ok(cur.clone())
+    }
+}
+
+/// Últimos `USE …` bem-sucedidos, para refazer o contexto depois de um novo login.
+#[derive(Debug, Default)]
+pub(crate) struct UseLog(Vec<(String, String)>);
+
+impl UseLog {
+    /// Guarda o statement se for `USE`; o mais recente de cada tipo substitui o anterior.
+    pub(crate) fn record(&mut self, sql: &str) {
+        let mut words = sql.split_whitespace();
+        if !words.next().is_some_and(|w| w.eq_ignore_ascii_case("use")) {
+            return;
+        }
+        let kind = match words.next().map(str::to_ascii_lowercase).as_deref() {
+            Some(k @ ("warehouse" | "role" | "database" | "schema" | "secondary")) => k.to_string(),
+            _ => "plain".into(),
+        };
+        // Trocar de database desfaz o schema escolhido antes.
+        let reset: &[&str] = if kind == "database" { &["schema", "plain"] } else { &[] };
+        self.0.retain(|(k, _)| *k != kind && !reset.contains(&k.as_str()));
+        self.0.push((kind, sql.to_string()));
+    }
+
+    pub(crate) fn replay(&self) -> Vec<String> {
+        self.0.iter().map(|(_, sql)| sql.clone()).collect()
     }
 }
 
@@ -306,6 +350,7 @@ impl SfActor {
                 return rx.recv().await;
             }
         };
+        self.shared.uses.lock().expect("mutex dos USE").record(&sql);
         let columns: Arc<[ColumnInfo]> =
             cursor.schema().columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: crate::Type::TEXT }).collect();
         let mut pager = Pager::new(cursor, columns.len());
@@ -348,6 +393,20 @@ mod tests {
     use chrono::{FixedOffset, NaiveDate, TimeZone, Utc};
 
     use super::*;
+
+    #[test]
+    fn use_log_keeps_last_of_each_kind_in_replay_order() {
+        let mut log = UseLog::default();
+        for sql in ["use warehouse A", "USE ROLE r1", "select 1", "use schema S1", "use warehouse B", "  use database D", "use secondary roles all"] {
+            log.record(sql);
+        }
+        // database antes de schema (USE DATABASE zera o schema); o último de cada tipo vale.
+        assert_eq!(log.replay(), vec!["USE ROLE r1", "use warehouse B", "  use database D", "use secondary roles all"]);
+        log.record("use schema S2");
+        assert_eq!(log.replay().last().map(String::as_str), Some("use schema S2"));
+        log.record("use PUBLIC");
+        assert_eq!(log.replay().last().map(String::as_str), Some("use PUBLIC"));
+    }
 
     #[test]
     fn values_become_grid_text() {

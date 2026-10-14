@@ -75,6 +75,13 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
     let before: Vec<&Token> = stmt.iter().filter(|t| t.end <= replace.start).collect();
     let refs = table_refs(src, &stmt, cache.dialect);
     let mut out = Completion { replace: replace.clone(), ..Default::default() };
+    // Snowflake: os schemas chegam por database; sem os do database atual, `SCHEMA.` e a lista
+    // de schemas ficariam vazias até alguém expandir a árvore.
+    if let (Dialect::Snowflake, Some(db)) = (cache.dialect, cache.current_db())
+        && !cache.loaded_dbs.contains(db)
+    {
+        out.missing.push(MetaRequest::Schemas(db.to_string()));
+    }
     let is_punct = |t: &Token, p: &str| t.kind == TokKind::Punct && &src[t.start..t.end] == p;
 
     if let [.., q, dot] = before.as_slice()
@@ -306,6 +313,19 @@ mod tests {
         let got = complete(src, "select o.".len(), &c);
         let inserts: Vec<&str> = got.candidates.iter().map(|x| x.insert.as_str()).collect();
         assert_eq!(inserts, vec!["ID", r#""status""#]);
+    }
+
+    #[test]
+    fn snowflake_requests_schemas_of_current_database_when_unknown() {
+        let mut c = snowflake_cache();
+        c.schemas.clear();
+        let src = "select * from raw.";
+        let got = complete(src, src.len(), &c);
+        assert!(got.missing.contains(&MetaRequest::Schemas("DB".into())), "{:?}", got.missing);
+        let src = "select * from ";
+        assert!(complete(src, src.len(), &c).missing.contains(&MetaRequest::Schemas("DB".into())));
+        c.loaded_dbs.insert("DB".into());
+        assert!(!complete(src, src.len(), &c).missing.contains(&MetaRequest::Schemas("DB".into())));
     }
 
     #[test]

@@ -170,10 +170,10 @@ fn manual_transactions_and_grid_edits_are_refused() {
 #[test]
 fn sessions_of_one_connection_share_one_login() {
     let Some(e) = env() else { return skip() };
-    let before = rb_core::snowflake::login_count();
+    // Estrutural: o contador global de logins é disputado pelos outros testes em paralelo.
     let a = connect(&e);
     let b = connect(&e);
-    assert_eq!(rb_core::snowflake::login_count() - before, 1);
+    assert!(a.shares_snowflake_with(&b));
     let schema = scratch_schema(&e, &a, "share");
     assert_eq!(texts(&b, "select current_schema()")[0][0].as_deref(), Some(schema.rsplit('.').next().unwrap().trim_matches('"')));
     drop_schema(&a, &schema);
@@ -211,4 +211,13 @@ fn use_role_and_warehouse_change_context() {
     assert_eq!(ctx.warehouse.as_deref(), Some(wh.as_str()));
     assert_eq!(ctx.search_path, vec![format!("{}.INFORMATION_SCHEMA", e.database)]);
     assert!(ctx.role.is_some());
+}
+
+/// Passa do timeout padrão do conector (300 s). Lento: `cargo test --test snowflake -- --ignored long_query`.
+#[test]
+#[ignore]
+fn long_query_survives_five_minutes() {
+    let Some(e) = env() else { return skip() };
+    let s = connect(&e);
+    assert!(block_on(s.execute("call system$wait(310)".into())).is_ok());
 }
