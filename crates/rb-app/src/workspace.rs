@@ -233,6 +233,59 @@ impl Workspace {
         v_flex().flex_1().h_full().child(bar).child(div().flex_1().child(content)).into_any_element()
     }
 
+    fn confirm_remove(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.connections.get(ix).cloned() else { return };
+        let ws = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (ws, id) = (ws.clone(), c.id.clone());
+            dialog
+                .title("Remover conexão")
+                .w(px(420.))
+                .child(format!("Remover \"{}\"? A senha salva no Keychain também será apagada.", c.name))
+                .footer(
+                    h_flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(Button::new("rm-cancel").label("Cancelar").on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("rm-ok").label("Remover").danger().on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            ws.update(cx, |ws, cx| ws.remove_connection(&id, window, cx)).ok();
+                        })),
+                )
+        });
+    }
+
+    /// Tira a conexão do TOML e a senha do Keychain. Se estiver ativa, desconecta antes.
+    fn remove_connection(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active.as_ref().is_some_and(|a| a.conn.cfg.id == id) {
+            if self.has_pending_edits(cx) {
+                window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de remover a conexão"), cx);
+                return;
+            }
+            self.save_all(cx);
+            self.tabs.clear();
+            self.active_tab = 0;
+            self.active = None;
+        }
+        self.connections.retain(|c| c.id != id);
+        let file = ConfigFile { connections: self.connections.clone() };
+        let id = id.to_string();
+        cx.spawn_in(window, async move |_, cx| {
+            let res = cx
+                .background_spawn(async move {
+                    config::save(&config::connections_path(), &file)?;
+                    secrets::delete_password(&id)
+                })
+                .await;
+            if let Err(e) = res {
+                cx.update(|window, cx| window.push_notification(Notification::error(e.to_string()), cx))?;
+            }
+            anyhow::Ok(())
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = v_flex().gap_1();
         for (ix, c) in self.connections.iter().enumerate() {
@@ -241,7 +294,12 @@ impl Workspace {
             if active {
                 b = b.primary();
             }
-            list = list.child(b.on_click(cx.listener(move |ws, _, window, cx| ws.connect(ix, window, cx))));
+            list = list.child(
+                h_flex()
+                    .gap_1()
+                    .child(div().flex_1().child(b.w_full().on_click(cx.listener(move |ws, _, window, cx| ws.connect(ix, window, cx)))))
+                    .child(Button::new(("del-conn", ix)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| ws.confirm_remove(ix, window, cx)))),
+            );
         }
         v_flex()
             .size_full()
