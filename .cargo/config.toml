@@ -1,0 +1,3 @@
+# Assina o app antes do cargo run: o Keychain lembra o "Permitir Sempre" entre builds.
+[target.'cfg(target_os = "macos")']
+runner = "scripts/dev-run.sh"
