@@ -1,4 +1,5 @@
 mod conn_dialog;
+mod grid;
 mod meta;
 mod schema_tree;
 mod workspace;
