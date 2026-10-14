@@ -11,6 +11,7 @@ use gpui_kit::*;
 use rb_core::config::{self, ConfigFile, ConnectionConfig};
 use rb_core::secrets;
 use rb_core::session::Credentials;
+use rb_core::ssh::{self, SshEnv};
 
 use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
@@ -124,6 +125,9 @@ impl Workspace {
                         let tree = cx.new(|cx| SchemaTree::new(meta.clone(), open, cx));
                         ws.active = Some(Active { conn, meta, tree });
                         ws.on_connected(window, cx);
+                    }
+                    Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => {
+                        ws.confirm_trust(ix, host, port, fingerprint, key, window, cx)
                     }
                     Err(e) => window.push_notification(Notification::error(format!("Falha ao conectar: {e}")), cx),
                 }
@@ -271,10 +275,7 @@ impl Workspace {
                 window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de remover a conexão"), cx);
                 return;
             }
-            self.save_all(cx);
-            self.tabs.clear();
-            self.active_tab = 0;
-            self.active = None;
+            self.disconnect(cx);
         }
         self.connections.retain(|c| c.id != id);
         let file = ConfigFile { connections: self.connections.clone() };
@@ -283,7 +284,8 @@ impl Workspace {
             let res = cx
                 .background_spawn(async move {
                     config::save(&config::connections_path(), &file)?;
-                    secrets::delete_password(&id)
+                    secrets::delete_password(&id)?;
+                    secrets::delete_password(&secrets::ssh_account(&id))
                 })
                 .await;
             if let Err(e) = res {
@@ -293,6 +295,44 @@ impl Workspace {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Salva os scripts, fecha as abas e solta a sessão (e o túnel, se for o último uso).
+    fn disconnect(&mut self, cx: &mut Context<Self>) {
+        self.save_all(cx);
+        self.tabs.clear();
+        self.active_tab = 0;
+        self.active = None;
+        cx.notify();
+    }
+
+    /// Host SSH fora do known_hosts: mostra o fingerprint e, se o usuário confiar, grava e reconecta.
+    #[allow(clippy::too_many_arguments)]
+    fn confirm_trust(&mut self, ix: usize, host: String, port: u16, fingerprint: String, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        let ws = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (ws, host, key) = (ws.clone(), host.clone(), key.clone());
+            dialog
+                .title("Host SSH desconhecido")
+                .w(px(480.))
+                .child(format!("{host}:{port} não está no known_hosts.\n{fingerprint}\nConfiar e continuar?"))
+                .footer(
+                    h_flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(Button::new("trust-cancel").label("Cancelar").on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("trust-ok").label("Confiar").primary().on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            // ponytail: append de uma linha no known_hosts na thread de UI; arquivo pequeno.
+                            match ssh::trust_host(&SshEnv::system().known_hosts, &host, port, &key) {
+                                Ok(()) => {
+                                    ws.update(cx, |ws, cx| ws.connect(ix, window, cx)).ok();
+                                }
+                                Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+                            }
+                        })),
+                )
+        });
     }
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
