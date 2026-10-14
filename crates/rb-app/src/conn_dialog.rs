@@ -1,13 +1,14 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::form::{field, v_form};
-use gpui_kit::component::h_flex;
+use gpui_kit::component::{Selectable as _, h_flex};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::*;
-use rb_core::config::{ConnectionConfig, SshConfig, SslMode, new_id};
+use rb_core::config::{ConnectionConfig, SnowflakeAuth, SnowflakeConfig, SshConfig, SslMode, new_id};
 use rb_core::ssh::SshEnv;
 
 use crate::workspace::Workspace;
@@ -26,6 +27,27 @@ struct Fields {
     ssh_port: Entity<InputState>,
     ssh_key: Entity<InputState>,
     ssh_passphrase: Entity<InputState>,
+    /// true = Snowflake.
+    snowflake: Rc<Cell<bool>>,
+    sf_auth: Rc<Cell<SnowflakeAuth>>,
+    sf_account: Entity<InputState>,
+    sf_key: Entity<InputState>,
+    sf_key_pass: Entity<InputState>,
+    sf_warehouse: Entity<InputState>,
+    sf_role: Entity<InputState>,
+    sf_schema: Entity<InputState>,
+}
+
+/// Bloco Snowflake a partir dos campos do diálogo.
+fn parse_snowflake(account: &str, auth: SnowflakeAuth, key: &str, warehouse: &str, role: &str, schema: &str) -> Result<SnowflakeConfig, String> {
+    if account.is_empty() {
+        return Err("informe a conta Snowflake (ex.: xy12345.us-east-1)".into());
+    }
+    if auth == SnowflakeAuth::KeyPair && key.is_empty() {
+        return Err("key-pair precisa do caminho da chave privada (.p8)".into());
+    }
+    let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
+    Ok(SnowflakeConfig { account: account.into(), auth, private_key: opt(key), warehouse: opt(warehouse), role: opt(role), schema: opt(schema) })
 }
 
 /// Bloco SSH a partir dos campos do diálogo; host vazio = sem túnel.
@@ -42,9 +64,27 @@ fn parse_ssh(host: &str, user: &str, port: &str, key: &str) -> Result<Option<Ssh
 }
 
 impl Fields {
-    /// (config, senha, passphrase); senha e passphrase vazias mantêm o que está no Keychain.
+    /// (config, senha ou PAT, passphrase da chave SSH ou Snowflake); vazios mantêm o Keychain.
     fn read(&self, cx: &App) -> Result<(ConnectionConfig, String, String), String> {
         let v = |e: &Entity<InputState>| e.read(cx).value().trim().to_string();
+        if self.snowflake.get() {
+            let snowflake = parse_snowflake(&v(&self.sf_account), self.sf_auth.get(), &v(&self.sf_key), &v(&self.sf_warehouse), &v(&self.sf_role), &v(&self.sf_schema))?;
+            if v(&self.name).is_empty() || v(&self.user).is_empty() {
+                return Err("preencha nome e usuário".into());
+            }
+            let cfg = ConnectionConfig {
+                id: self.id.clone(),
+                name: v(&self.name),
+                host: String::new(),
+                port: 0,
+                database: v(&self.database),
+                user: v(&self.user),
+                ssl: SslMode::Disable,
+                ssh: None,
+                snowflake: Some(snowflake),
+            };
+            return Ok((cfg, self.password.read(cx).value().to_string(), self.sf_key_pass.read(cx).value().to_string()));
+        }
         let port = v(&self.port).parse::<u16>().map_err(|_| "porta inválida".to_string())?;
         let ssl = match v(&self.ssl).as_str() {
             "" | "disable" => SslMode::Disable,
@@ -103,6 +143,8 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         snowflake: None,
     });
     let ssh = c.ssh.clone();
+    let sf = c.snowflake.clone();
+    let sfv = |get: fn(&SnowflakeConfig) -> Option<String>| sf.as_ref().and_then(get).unwrap_or_default();
     let input = |window: &mut Window, cx: &mut Context<Workspace>, value: String| cx.new(|cx| InputState::new(window, cx).default_value(value));
     let masked = |window: &mut Window, cx: &mut Context<Workspace>| cx.new(|cx| InputState::new(window, cx).masked(true));
     let ssl = match c.ssl {
@@ -124,6 +166,14 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         ssh_port: input(window, cx, ssh.as_ref().and_then(|s| s.port).map(|p| p.to_string()).unwrap_or_default()),
         ssh_key: input(window, cx, ssh.as_ref().and_then(|s| s.identity_file.clone()).unwrap_or_default()),
         ssh_passphrase: masked(window, cx),
+        snowflake: Rc::new(Cell::new(sf.is_some())),
+        sf_auth: Rc::new(Cell::new(sf.as_ref().map(|s| s.auth).unwrap_or_default())),
+        sf_account: input(window, cx, sfv(|s| Some(s.account.clone()))),
+        sf_key: input(window, cx, sfv(|s| s.private_key.clone())),
+        sf_key_pass: masked(window, cx),
+        sf_warehouse: input(window, cx, sfv(|s| s.warehouse.clone())),
+        sf_role: input(window, cx, sfv(|s| s.role.clone())),
+        sf_schema: input(window, cx, sfv(|s| s.schema.clone())),
     });
 
     let (u, p, k) = (f.ssh_user.downgrade(), f.ssh_port.downgrade(), f.ssh_key.downgrade());
@@ -142,13 +192,57 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
     let (title, keep) = if editing { ("Editar conexão", " (em branco mantém a atual)") } else { ("Nova conexão", "") };
     window.open_dialog(cx, move |dialog, _window, _cx| {
         let (f, ws) = (f.clone(), ws.clone());
-        dialog
-            .title(title)
-            .w(px(460.))
-            .child(
-                v_form()
-                    .child(field().label("Nome").child(Input::new(&f.name)))
-                    .child(field().label("Host").child(Input::new(&f.host)))
+        // O builder roda a cada render: os botões de tipo e de autenticação trocam os campos.
+        let snowflake = f.snowflake.get();
+        let tipo = {
+            let (k1, k2) = (f.snowflake.clone(), f.snowflake.clone());
+            h_flex()
+                .gap_2()
+                .child(Button::new("kind-pg").label("Postgres").selected(!snowflake).on_click(move |_, w, _| {
+                    k1.set(false);
+                    w.refresh();
+                }))
+                .child(Button::new("kind-sf").label("Snowflake").selected(snowflake).on_click(move |_, w, _| {
+                    k2.set(true);
+                    w.refresh();
+                }))
+        };
+        let form = v_form().child(field().label("Tipo").child(tipo)).child(field().label("Nome").child(Input::new(&f.name)));
+        let form = if snowflake {
+            let auth = f.sf_auth.get();
+            let pick = |id: &'static str, label: &'static str, a: SnowflakeAuth| {
+                let cell = f.sf_auth.clone();
+                Button::new(id).label(label).selected(auth == a).on_click(move |_, w, _| {
+                    cell.set(a);
+                    w.refresh();
+                })
+            };
+            let mut form = form
+                .child(field().label("Conta (ex.: xy12345.us-east-1)").child(Input::new(&f.sf_account)))
+                .child(field().label("Usuário").child(Input::new(&f.user)))
+                .child(
+                    field().label("Autenticação").child(
+                        h_flex()
+                            .gap_2()
+                            .child(pick("auth-sso", "SSO navegador", SnowflakeAuth::ExternalBrowser))
+                            .child(pick("auth-key", "Key-pair", SnowflakeAuth::KeyPair))
+                            .child(pick("auth-pat", "PAT", SnowflakeAuth::Pat)),
+                    ),
+                );
+            if auth == SnowflakeAuth::KeyPair {
+                form = form
+                    .child(field().label("Chave privada (.p8)").child(Input::new(&f.sf_key)))
+                    .child(field().label(format!("Passphrase da chave{keep}")).child(Input::new(&f.sf_key_pass).mask_toggle()));
+            }
+            if auth == SnowflakeAuth::Pat {
+                form = form.child(field().label(format!("Token PAT{keep}")).child(Input::new(&f.password).mask_toggle()));
+            }
+            form.child(field().label("Warehouse").child(Input::new(&f.sf_warehouse)))
+                .child(field().label("Role").child(Input::new(&f.sf_role)))
+                .child(field().label("Database").child(Input::new(&f.database)))
+                .child(field().label("Schema").child(Input::new(&f.sf_schema)))
+        } else {
+            form.child(field().label("Host").child(Input::new(&f.host)))
                     .child(field().label("Porta").child(Input::new(&f.port)))
                     .child(field().label("Banco").child(Input::new(&f.database)))
                     .child(field().label("Usuário").child(Input::new(&f.user)))
@@ -158,8 +252,12 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                     .child(field().label("Usuário SSH").child(Input::new(&f.ssh_user)))
                     .child(field().label("Porta SSH").child(Input::new(&f.ssh_port)))
                     .child(field().label("Chave privada").child(Input::new(&f.ssh_key)))
-                    .child(field().label(format!("Passphrase da chave{keep}")).child(Input::new(&f.ssh_passphrase).mask_toggle())),
-            )
+                .child(field().label(format!("Passphrase da chave{keep}")).child(Input::new(&f.ssh_passphrase).mask_toggle()))
+        };
+        dialog
+            .title(title)
+            .w(px(480.))
+            .child(form)
             .footer(
                 h_flex()
                     .justify_end()
@@ -183,6 +281,15 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn snowflake_fields() {
+        let c = parse_snowflake("xy12345.us-east-1", SnowflakeAuth::KeyPair, "~/.ssh/sf.p8", "WH", "", "PUBLIC").unwrap();
+        assert_eq!(c.private_key.as_deref(), Some("~/.ssh/sf.p8"));
+        assert_eq!((c.warehouse.as_deref(), c.role, c.schema.as_deref()), (Some("WH"), None, Some("PUBLIC")));
+        assert!(parse_snowflake("", SnowflakeAuth::Pat, "", "", "", "").is_err(), "conta obrigatória");
+        assert!(parse_snowflake("a", SnowflakeAuth::KeyPair, "", "", "", "").is_err(), "keypair sem chave");
+    }
 
     #[::core::prelude::v1::test]
     fn empty_ssh_host_means_no_tunnel() {

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 use rb_core::config::ConnectionConfig;
+use rb_core::dialect::Dialect;
 use rb_core::metadata::{self, ColumnMeta, IndexMeta, MetaCache, MetaRequest, SchemaObjects};
 use rb_core::session::{Credentials, Session};
 
@@ -29,21 +30,34 @@ enum Loaded {
 
 impl MetaStore {
     pub fn new(session: Arc<Session>, cx: &mut Context<Self>) -> Self {
-        let mut this = MetaStore { session, cache: MetaCache::default(), error: None, inflight: HashSet::new() };
+        let cache = MetaCache { dialect: session.dialect(), ..Default::default() };
+        let mut this = MetaStore { session, cache, error: None, inflight: HashSet::new() };
         this.reload_roots(cx);
         this
     }
 
-    /// Recarrega schemas e search_path (raiz da árvore).
+    /// Recarrega a raiz da árvore (schemas no Postgres, databases no Snowflake) e o contexto.
     pub fn reload_roots(&mut self, cx: &mut Context<Self>) {
         let s = self.session.clone();
         cx.spawn(async move |this, cx| {
-            let res = async { Ok::<_, rb_core::DbError>((metadata::schemas(&s).await?, metadata::search_path(&s).await?)) }.await;
+            let res = async {
+                let sf = s.dialect() == Dialect::Snowflake;
+                let dbs = if sf { metadata::databases(&s).await? } else { Vec::new() };
+                let schemas = if sf { None } else { Some(metadata::schemas(&s).await?) };
+                Ok::<_, rb_core::DbError>((schemas, dbs, metadata::context(&s).await?))
+            }
+            .await;
             this.update(cx, |m, cx| {
                 match res {
-                    Ok((schemas, path)) => {
-                        m.cache.schemas = schemas;
-                        m.cache.search_path = path;
+                    Ok((schemas, dbs, ctx)) => {
+                        // No Snowflake os schemas chegam por database (MetaRequest::Schemas).
+                        if let Some(schemas) = schemas {
+                            m.cache.schemas = schemas;
+                        }
+                        m.cache.databases = dbs;
+                        m.cache.search_path = ctx.search_path;
+                        m.cache.warehouse = ctx.warehouse;
+                        m.cache.role = ctx.role;
                     }
                     Err(e) => m.error = Some(e.to_string()),
                 }

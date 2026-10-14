@@ -72,6 +72,7 @@ impl Workspace {
             return false;
         }
         let has_ssh = cfg.ssh.is_some();
+        let is_sf = cfg.snowflake.is_some();
         match self.connections.iter_mut().find(|c| c.id == id) {
             Some(c) => *c = cfg,
             None => self.connections.push(cfg),
@@ -86,11 +87,18 @@ impl Workspace {
                         if !password.is_empty() {
                             secrets::set_password(&id, &password)?;
                         }
-                        if !has_ssh {
-                            secrets::delete_password(&secrets::ssh_account(&id))?;
+                        // A passphrase do diálogo é da chave SSH (Postgres) ou da chave Snowflake.
+                        let (keep, other) = if is_sf {
+                            (secrets::key_account(&id), secrets::ssh_account(&id))
+                        } else {
+                            (secrets::ssh_account(&id), secrets::key_account(&id))
+                        };
+                        if !(is_sf || has_ssh) {
+                            secrets::delete_password(&keep)?;
                         } else if !passphrase.is_empty() {
-                            secrets::set_password(&secrets::ssh_account(&id), &passphrase)?;
+                            secrets::set_password(&keep, &passphrase)?;
                         }
+                        secrets::delete_password(&other)?;
                         Ok::<_, rb_core::DbError>(())
                     }
                 })
@@ -127,12 +135,13 @@ impl Workspace {
             let id = cfg.id.clone();
             let result = async {
                 let has_ssh = cfg.ssh.is_some();
+                let is_sf = cfg.snowflake.is_some();
                 let creds = cx
                     .background_spawn(async move {
                         Ok::<_, rb_core::DbError>(Credentials {
                             password: secrets::get_password(&id)?,
                             ssh_passphrase: if has_ssh { secrets::get_password(&secrets::ssh_account(&id))? } else { None },
-                            key_passphrase: None,
+                            key_passphrase: if is_sf { secrets::get_password(&secrets::key_account(&id))? } else { None },
                         })
                     })
                     .await?;
@@ -326,6 +335,7 @@ impl Workspace {
                 .background_spawn(async move {
                     config::save(&config::connections_path(), &file)?;
                     secrets::delete_password(&id)?;
+                    secrets::delete_password(&secrets::key_account(&id))?;
                     secrets::delete_password(&secrets::ssh_account(&id))
                 })
                 .await;
