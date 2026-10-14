@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use russh::client::{self, Handle, Msg};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
+use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use russh::{Channel, ChannelStream};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -59,33 +59,91 @@ fn expand(path: &str, home: &Path) -> PathBuf {
     }
 }
 
-/// O ssh2-config não avalia `Match` e aplicaria o bloco a todos os hosts; a spec manda ignorá-lo.
-fn strip_match_blocks(text: &str) -> String {
-    let mut skipping = false;
-    text.lines()
-        .filter(|l| {
-            match l.split_whitespace().next().map(str::to_ascii_lowercase).as_deref() {
-                Some("match") => skipping = true,
-                Some("host") => skipping = false,
-                _ => {}
-            }
-            !skipping
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Palavra-chave de uma linha do ssh_config (`Host x` ou `Host=x`), em minúsculas, e o resto.
+fn keyword(line: &str) -> Option<(String, &str)> {
+    let l = line.trim_start();
+    let end = l.find(|c: char| c.is_whitespace() || c == '=').unwrap_or(l.len());
+    let (k, rest) = l.split_at(end);
+    (!k.is_empty() && !k.starts_with('#'))
+        .then(|| (k.to_ascii_lowercase(), rest.trim_start_matches(|c: char| c.is_whitespace() || c == '=').trim_end()))
 }
 
-fn read_config(path: &Path) -> Result<ssh2_config::SshConfig, DbError> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Ok(ssh2_config::SshConfig::default()) };
+/// Curinga do ssh_config (`*` e `?`) num nome de arquivo.
+fn wildcard(p: &[u8], n: &[u8]) -> bool {
+    match (p.first(), n.first()) {
+        (None, None) => true,
+        (Some(b'*'), _) => wildcard(&p[1..], n) || (!n.is_empty() && wildcard(p, &n[1..])),
+        (Some(b'?'), Some(_)) => wildcard(&p[1..], &n[1..]),
+        (Some(a), Some(b)) if a == b => wildcard(&p[1..], &n[1..]),
+        _ => false,
+    }
+}
+
+/// Arquivos de um `Include`; caminho relativo é relativo a `~/.ssh`, como no OpenSSH.
+/// ponytail: curinga só no nome do arquivo, não em diretórios.
+fn include_paths(pattern: &str, home: &Path) -> Vec<PathBuf> {
+    let path = if pattern.starts_with('~') || pattern.starts_with('/') { expand(pattern, home) } else { home.join(".ssh").join(pattern) };
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if !name.contains(['*', '?']) {
+        return vec![path];
+    }
+    let Some(dir) = path.parent() else { return Vec::new() };
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| wildcard(name.as_bytes(), n.as_encoded_bytes())))
+        .collect();
+    found.sort();
+    found
+}
+
+/// Junta os `Include` no texto e descarta blocos `Match`. O ssh2-config não avalia `Match` (aplicaria
+/// o bloco a todos os hosts) e resolveria os `Include` pelo HOME real, sem tirar o `Match` deles.
+/// ponytail: um Include dentro de um bloco Host é inlinado sem restaurar o bloco depois.
+fn preprocess(text: &str, home: &Path, depth: u8, out: &mut String) {
+    let mut skipping = false;
+    for line in text.lines() {
+        let kw = keyword(line);
+        match kw.as_ref().map(|(k, _)| k.as_str()) {
+            Some("match") => skipping = true,
+            Some("host") => skipping = false,
+            _ => {}
+        }
+        if skipping {
+            continue;
+        }
+        if let Some((k, rest)) = &kw
+            && k == "include"
+        {
+            for pattern in rest.split_whitespace().filter(|_| depth < 16) {
+                for path in include_paths(pattern, home) {
+                    if let Ok(t) = std::fs::read_to_string(&path) {
+                        preprocess(&t, home, depth + 1, out);
+                    }
+                }
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+}
+
+fn read_config(env: &SshEnv) -> Result<ssh2_config::SshConfig, DbError> {
+    let Ok(raw) = std::fs::read_to_string(&env.config_file) else { return Ok(ssh2_config::SshConfig::default()) };
+    let mut text = String::new();
+    preprocess(&raw, &env.home, 0, &mut text);
     let rules = ssh2_config::ParseRule::ALLOW_UNKNOWN_FIELDS | ssh2_config::ParseRule::ALLOW_UNSUPPORTED_FIELDS;
     ssh2_config::SshConfig::default()
-        .parse(&mut strip_match_blocks(&text).as_bytes(), rules)
-        .map_err(|e| DbError::Ssh(format!("{}: {e}", path.display())))
+        .parse(&mut text.as_bytes(), rules)
+        .map_err(|e| DbError::Ssh(format!("{}: {e}", env.config_file.display())))
 }
 
 impl SshConfig {
     pub fn resolve(&self, env: &SshEnv) -> Result<SshTarget, DbError> {
-        let p = read_config(&env.config_file)?.query(&self.host);
+        let p = read_config(env)?.query(&self.host);
         let configured: Vec<PathBuf> = match &self.identity_file {
             Some(f) => vec![expand(f, &env.home)],
             None => p.identity_file.clone().unwrap_or_default(),
@@ -153,24 +211,29 @@ impl client::Handler for Checker {
 pub struct Tunnel {
     target: SshTarget,
     passphrase: Option<String>,
-    handle: Mutex<Handle<Checker>>,
+    handle: Mutex<Arc<Handle<Checker>>>,
 }
 
 impl Tunnel {
     pub async fn connect(target: SshTarget, passphrase: Option<String>) -> Result<Tunnel, DbError> {
         let handle = open_session(&target, passphrase.as_deref()).await?;
-        Ok(Tunnel { target, passphrase, handle: Mutex::new(handle) })
+        Ok(Tunnel { target, passphrase, handle: Mutex::new(Arc::new(handle)) })
     }
 
     /// Canal até `host:port`, resolvidos pelo bastion.
+    /// A trava cobre só a reconexão: um destino que demora a responder não segura os outros canais.
     pub async fn open_stream(&self, host: &str, port: u16) -> Result<ChannelStream<Msg>, DbError> {
-        let mut h = self.handle.lock().await;
-        if h.is_closed() {
-            tracing::info!("reconectando túnel SSH");
-            *h = open_session(&self.target, self.passphrase.as_deref()).await?;
-        }
-        h.channel_open_direct_tcpip(host, port.into(), "127.0.0.1", 0)
+        let h = {
+            let mut h = self.handle.lock().await;
+            if h.is_closed() {
+                tracing::info!("reconectando túnel SSH");
+                *h = Arc::new(open_session(&self.target, self.passphrase.as_deref()).await?);
+            }
+            h.clone()
+        };
+        tokio::time::timeout(CONNECT_TIMEOUT, h.channel_open_direct_tcpip(host, port.into(), "127.0.0.1", 0))
             .await
+            .map_err(|_| DbError::Ssh(format!("{host}:{port} não respondeu pelo bastion em {} s", CONNECT_TIMEOUT.as_secs())))?
             .map(Channel::into_stream)
             .map_err(|e| DbError::Ssh(format!("o bastion recusou abrir canal para {host}:{port}: {e}")))
     }
@@ -183,17 +246,38 @@ async fn open_session(t: &SshTarget, passphrase: Option<&str>) -> Result<Handle<
         .map_err(|_| unreachable("tempo esgotado".into()))?
         .map_err(|e| unreachable(e.to_string()))?;
     let _ = tcp.set_nodelay(true);
-    let config = Arc::new(client::Config {
+    let mut config = client::Config {
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
         ..Default::default()
-    });
+    };
+    prefer_known_key_types(&mut config, t);
     let checker = Checker { host: t.hostname.clone(), port: t.port, known_hosts: t.known_hosts.clone() };
-    let mut h = tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(config, tcp, checker))
+    let mut h = tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(Arc::new(config), tcp, checker))
         .await
         .map_err(|_| unreachable("tempo esgotado no handshake".into()))??;
     authenticate(&mut h, t, passphrase).await?;
     Ok(h)
+}
+
+/// Pede primeiro os tipos de chave de host já gravados no known_hosts, como o OpenSSH. Sem isso,
+/// um host conhecido só por ECDSA ou RSA apresentaria ed25519 e pareceria desconhecido.
+fn prefer_known_key_types(config: &mut client::Config, t: &SshTarget) {
+    let family = |a: &Algorithm| match a {
+        Algorithm::Rsa { .. } => Algorithm::Rsa { hash: None },
+        other => other.clone(),
+    };
+    let known: Vec<Algorithm> = russh::keys::known_hosts::known_host_keys_path(&t.hostname, t.port, &t.known_hosts)
+        .unwrap_or_default()
+        .iter()
+        .map(|(_, k)| family(&k.algorithm()))
+        .collect();
+    if known.is_empty() {
+        return;
+    }
+    let (mut first, rest): (Vec<Algorithm>, Vec<Algorithm>) = config.preferred.key.iter().cloned().partition(|a| known.contains(&family(a)));
+    first.extend(rest);
+    config.preferred.key = first.into();
 }
 
 /// Pública de uma chave privada: `<arquivo>.pub` ou, sem passphrase, derivada do privado.
@@ -356,6 +440,19 @@ mod tests {
         assert_eq!(t.identity_files, vec![env.home.join(".ssh/id_ed25519")]);
         assert!(!t.identities_explicit);
         assert_eq!(t.known_hosts, env.known_hosts);
+    }
+
+    #[test]
+    fn includes_are_inlined_without_leaking_match() {
+        let env = env_with(Some("Include inc.conf conf.d/*.conf\nHost=b\n  HostName b.example\nHost a\n  HostName a.example\n"));
+        std::fs::write(env.home.join(".ssh/inc.conf"), "Match host other\n  User vazado\n  Port 2999\nHost incl\n  User de-include\n").unwrap();
+        std::fs::create_dir_all(env.home.join(".ssh/conf.d")).unwrap();
+        std::fs::write(env.home.join(".ssh/conf.d/x.conf"), "Host g\n  User globbed\n").unwrap();
+        let a = ssh("a").resolve(&env).unwrap();
+        assert_eq!((a.hostname.as_str(), a.user.as_str(), a.port), ("a.example", "eu", 22));
+        assert_eq!(ssh("incl").resolve(&env).unwrap().user, "de-include");
+        assert_eq!(ssh("g").resolve(&env).unwrap().user, "globbed");
+        assert_eq!(ssh("b").resolve(&env).unwrap().hostname, "b.example");
     }
 
     #[test]

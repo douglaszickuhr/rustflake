@@ -244,3 +244,37 @@ fn perf_big_first_batch_through_tunnel() {
     println!("primeiro lote de perf_big pelo túnel: {} ms", out.elapsed.as_millis());
     assert!(out.elapsed.as_millis() < 200);
 }
+
+#[test]
+fn slow_channel_does_not_block_others_and_times_out() {
+    let Some(e) = env() else { return skip() };
+    let kh = trusted_known_hosts(&e);
+    run(async {
+        let t = std::sync::Arc::new(Tunnel::connect(target(&e, "id_plain", kh, None), None).await.unwrap());
+        // Endereço que não responde: o sshd fica esperando o connect.
+        let slow = tokio::spawn({
+            let t = t.clone();
+            async move { t.open_stream("10.255.255.1", 5432).await.err() }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let started = std::time::Instant::now();
+        assert!(t.open_stream("rb-pg", 5432).await.is_ok());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+        ssh_err(slow.await.unwrap(), "não respondeu");
+    });
+}
+
+#[test]
+fn host_known_under_another_key_type_is_not_unknown() {
+    let Some(e) = env() else { return skip() };
+    let out = std::process::Command::new("ssh-keyscan")
+        .args(["-t", "ecdsa", "-p", &e.port.to_string(), &e.host])
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    let line = String::from_utf8(out.stdout).unwrap();
+    assert!(line.contains("ecdsa-sha2"), "{line}");
+    let kh = scratch("ecdsa").join("known_hosts");
+    std::fs::write(&kh, &line).unwrap();
+    assert_eq!(run(Tunnel::connect(target(&e, "id_plain", kh, None), None)).err(), None);
+}
