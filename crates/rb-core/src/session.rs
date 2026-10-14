@@ -13,7 +13,9 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::DbError;
 use crate::batch::{Batch, ColumnInfo};
-use crate::config::{ConnectionConfig, SshConfig};
+use crate::config::{ConnectionConfig, SnowflakeConfig, SshConfig};
+use crate::dialect::Dialect;
+use crate::snowflake::{SfActor, SfCanceller, SfShared};
 use crate::split::{is_read_only_query, is_transaction_control};
 use crate::ssh::{SshEnv, Tunnel};
 
@@ -25,6 +27,7 @@ pub struct Engine {
     rt: Arc<Runtime>,
     ssh_env: Arc<SshEnv>,
     tunnels: Arc<TunnelCache>,
+    sf_sessions: Arc<SnowflakeCache>,
 }
 
 #[derive(Debug)]
@@ -54,22 +57,28 @@ pub struct SqlWithParams {
     pub expect_one: bool,
 }
 
-type Reply<T> = oneshot::Sender<Result<T, DbError>>;
+pub(crate) type Reply<T> = oneshot::Sender<Result<T, DbError>>;
 
 /// Segredos de uma conexão, lidos do Keychain pelo app.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Credentials {
     pub password: Option<String>,
     pub ssh_passphrase: Option<String>,
+    /// Passphrase da chave privada Snowflake (key-pair).
+    pub key_passphrase: Option<String>,
 }
 
 /// Um túnel por conexão do app (id + bloco SSH), compartilhado pelas sessões dela.
 type TunnelCache = Mutex<HashMap<(String, SshConfig), Weak<Tunnel>>>;
 
-enum Cmd {
+/// Uma sessão Snowflake por conexão do app (id, usuário, database e bloco Snowflake).
+type SnowflakeCache = Mutex<HashMap<(String, String, String, SnowflakeConfig), Weak<SfShared>>>;
+
+pub(crate) enum Cmd {
     Execute { sql: String, reply: Reply<ExecOutcome> },
     FetchMore { exec_id: u64, reply: Reply<FetchOutcome> },
     QueryText { sql: String, params: Vec<String>, reply: Reply<Vec<Vec<Option<String>>>> },
+    QueryNamed { sql: String, reply: Reply<(Vec<String>, Vec<Vec<Option<String>>>)> },
     Transaction { stmts: Vec<SqlWithParams>, reply: Reply<u64> },
 }
 
@@ -79,6 +88,7 @@ impl Cmd {
             Cmd::Execute { reply, .. } => reply.send(Err(e)).is_ok(),
             Cmd::FetchMore { reply, .. } => reply.send(Err(e)).is_ok(),
             Cmd::QueryText { reply, .. } => reply.send(Err(e)).is_ok(),
+            Cmd::QueryNamed { reply, .. } => reply.send(Err(e)).is_ok(),
             Cmd::Transaction { reply, .. } => reply.send(Err(e)).is_ok(),
         };
     }
@@ -115,7 +125,7 @@ impl Engine {
             .enable_all()
             .build()
             .map_err(|e| DbError::Io(e.to_string()))?;
-        Ok(Engine { rt: Arc::new(rt), ssh_env: Arc::new(SshEnv::system()), tunnels: Arc::default() })
+        Ok(Engine { rt: Arc::new(rt), ssh_env: Arc::new(SshEnv::system()), tunnels: Arc::default(), sf_sessions: Arc::default() })
     }
 
     /// Troca de onde vem a configuração SSH (testes).
@@ -125,6 +135,18 @@ impl Engine {
     }
 
     pub async fn connect(&self, cfg: &ConnectionConfig, creds: Credentials) -> Result<Session, DbError> {
+        if cfg.snowflake.is_some() {
+            let (cfg, cache) = (cfg.clone(), self.sf_sessions.clone());
+            let handle = self.rt.handle().clone();
+            return self
+                .rt
+                .spawn(async move {
+                    let shared = shared_snowflake(&cache, &cfg, &creds).await?;
+                    Ok(Session::open_snowflake(shared, handle))
+                })
+                .await
+                .map_err(|e| DbError::Connection(e.to_string()))?;
+        }
         let pg = cfg.pg_config(creds.password.as_deref());
         let route = cfg.ssh.clone().map(|ssh| (cfg.id.clone(), ssh, creds.ssh_passphrase, cfg.host.clone(), cfg.port));
         let (env, tunnels) = (self.ssh_env.clone(), self.tunnels.clone());
@@ -142,6 +164,18 @@ impl Engine {
             .await
             .map_err(|e| DbError::Connection(e.to_string()))?
     }
+}
+
+/// ponytail: duas sessões abrindo ao mesmo tempo podem fazer dois logins; o segundo fica no cache.
+async fn shared_snowflake(cache: &SnowflakeCache, cfg: &ConnectionConfig, creds: &Credentials) -> Result<Arc<SfShared>, DbError> {
+    let s = cfg.snowflake.clone().expect("chamado só com bloco snowflake");
+    let key = (cfg.id.clone(), cfg.user.clone(), cfg.database.clone(), s);
+    if let Some(t) = cache.lock().expect("cache Snowflake").get(&key).and_then(Weak::upgrade) {
+        return Ok(t);
+    }
+    let shared = Arc::new(SfShared::login(cfg, creds).await?);
+    cache.lock().expect("cache Snowflake").insert(key, Arc::downgrade(&shared));
+    Ok(shared)
 }
 
 /// O túnel cai quando a última sessão que o usa cai (o cache guarda só `Weak`).
@@ -201,11 +235,18 @@ impl Connector {
 }
 
 /// Uma conexão Postgres. Os comandos são processados em ordem por um ator no runtime do Engine.
+enum Canceller {
+    Postgres { token: Arc<Mutex<CancelToken>>, connector: Connector },
+    Snowflake(SfCanceller),
+}
+
 pub struct Session {
     tx: mpsc::UnboundedSender<Cmd>,
-    cancel: Arc<Mutex<CancelToken>>,
     rt: Handle,
-    connector: Connector,
+    canceller: Canceller,
+    dialect: Dialect,
+    /// Mantém a sessão Snowflake viva enquanto esta `Session` existir.
+    _snowflake: Option<Arc<SfShared>>,
 }
 
 fn closed() -> DbError {
@@ -220,7 +261,24 @@ impl Session {
         let cancel = Arc::new(Mutex::new(client.cancel_token()));
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(Actor { client, connector: connector.clone(), cancel: cancel.clone(), last_exec: 0 }.run(rx));
-        Ok(Session { tx, cancel, rt, connector })
+        Ok(Session { tx, rt, canceller: Canceller::Postgres { token: cancel, connector }, dialect: Dialect::Postgres, _snowflake: None })
+    }
+
+    fn open_snowflake(shared: Arc<SfShared>, rt: Handle) -> Session {
+        let canceller: SfCanceller = Arc::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        rt.spawn(SfActor { shared: shared.clone(), canceller: canceller.clone(), last_exec: 0 }.run(rx));
+        Session { tx, rt, canceller: Canceller::Snowflake(canceller), dialect: Dialect::Snowflake, _snowflake: Some(shared) }
+    }
+
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+
+    /// Linhas e nomes de coluna (usado nos `SHOW`/`DESCRIBE` do Snowflake).
+    pub async fn query_named(&self, sql: &str) -> Result<(Vec<String>, Vec<Vec<Option<String>>>), DbError> {
+        let sql = sql.to_string();
+        self.call(|reply| Cmd::QueryNamed { sql, reply }).await
     }
 
     async fn call<T>(&self, make: impl FnOnce(Reply<T>) -> Cmd) -> Result<T, DbError> {
@@ -249,13 +307,25 @@ impl Session {
 
     /// Pede ao servidor para cancelar o comando em andamento desta sessão.
     pub fn cancel(&self) {
-        let token = self.cancel.lock().expect("mutex do cancel token").clone();
-        let connector = self.connector.clone();
-        self.rt.spawn(async move {
-            if let Err(e) = connector.cancel(token).await {
-                tracing::warn!("cancelamento falhou: {e}");
+        match &self.canceller {
+            Canceller::Postgres { token, connector } => {
+                let (token, connector) = (token.lock().expect("mutex do cancel token").clone(), connector.clone());
+                self.rt.spawn(async move {
+                    if let Err(e) = connector.cancel(token).await {
+                        tracing::warn!("cancelamento falhou: {e}");
+                    }
+                });
             }
-        });
+            Canceller::Snowflake(c) => {
+                if let Some(c) = c.lock().expect("mutex do cancelador").clone() {
+                    self.rt.spawn(async move {
+                        if let Err(e) = c.cancel().await {
+                            tracing::warn!("cancelamento Snowflake falhou: {e}");
+                        }
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -284,6 +354,10 @@ impl Actor {
                 }
                 Cmd::QueryText { sql, params, reply } => {
                     let _ = reply.send(self.query_text(&sql, &params).await);
+                    rx.recv().await
+                }
+                Cmd::QueryNamed { sql, reply } => {
+                    let _ = reply.send(self.query_named(&sql).await);
                     rx.recv().await
                 }
                 Cmd::Transaction { stmts, reply } => {
@@ -437,6 +511,12 @@ impl Actor {
             .map(|r| (0..r.len()).map(|i| r.try_get::<_, Option<String>>(i)).collect::<Result<Vec<_>, _>>())
             .collect::<Result<_, _>>()
             .map_err(Into::into)
+    }
+
+    async fn query_named(&self, sql: &str) -> Result<(Vec<String>, Vec<Vec<Option<String>>>), DbError> {
+        let stmt = self.client.prepare(sql).await?;
+        let names = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+        Ok((names, self.query_text(sql, &[]).await?))
     }
 
     async fn transaction(&mut self, stmts: Vec<SqlWithParams>) -> Result<u64, DbError> {

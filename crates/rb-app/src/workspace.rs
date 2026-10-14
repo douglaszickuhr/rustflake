@@ -132,6 +132,7 @@ impl Workspace {
                         Ok::<_, rb_core::DbError>(Credentials {
                             password: secrets::get_password(&id)?,
                             ssh_passphrase: if has_ssh { secrets::get_password(&secrets::ssh_account(&id))? } else { None },
+                            key_passphrase: None,
                         })
                     })
                     .await?;

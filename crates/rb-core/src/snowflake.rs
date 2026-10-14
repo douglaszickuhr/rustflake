@@ -2,12 +2,20 @@
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
+use snowflake_connector_rs as sf;
 use snowflake_connector_rs::{CellValue, VectorValue};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::DbError;
-use crate::batch::Batch;
+use crate::batch::{Batch, ColumnInfo};
+use crate::config::{ConnectionConfig, SnowflakeAuth, expand_home};
 use crate::metadata::{ColumnMeta, SchemaObjects};
+use crate::session::{Cmd, Credentials, ExecOutcome, FETCH_ROWS, FetchOutcome, Reply};
+use crate::split::is_transaction_control;
 
 type Rows = Vec<Vec<Option<String>>>;
 
@@ -132,6 +140,205 @@ pub fn parse_describe(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<Col
             })
         })
         .collect()
+}
+
+static LOGINS: AtomicUsize = AtomicUsize::new(0);
+
+/// Quantos logins Snowflake o processo fez (testes verificam o compartilhamento).
+pub fn login_count() -> usize {
+    LOGINS.load(Ordering::Relaxed)
+}
+
+pub(crate) fn sf_err(e: sf::Error) -> DbError {
+    match e.snowflake_code() {
+        Some(code) => DbError::Snowflake { code: code.to_string(), message: e.snowflake_message().unwrap_or_default().to_string() },
+        None if e.is_cancelled() => DbError::Snowflake { code: "cancelada".into(), message: "query cancelada".into() },
+        None => DbError::Connection(e.to_string()),
+    }
+}
+
+impl Chunks for sf::ResultCursor {
+    async fn next_chunk(&mut self) -> Result<Option<Rows>, DbError> {
+        let Some(table) = self.next_table().await.map_err(sf_err)? else { return Ok(None) };
+        let mut rows = Vec::with_capacity(table.row_count());
+        for row in table.dynamic_rows().map_err(sf_err)? {
+            rows.push(row.map_err(sf_err)?.values().iter().map(cell_text).collect());
+        }
+        Ok(Some(rows))
+    }
+}
+
+/// Uma sessão Snowflake por conexão do app, compartilhada por árvore e abas. Se expirar,
+/// `renew` faz um novo login (no SSO, o navegador abre de novo).
+pub(crate) struct SfShared {
+    client: sf::Client,
+    session: AsyncMutex<Arc<sf::Session>>,
+}
+
+impl SfShared {
+    pub(crate) async fn login(cfg: &ConnectionConfig, creds: &Credentials) -> Result<SfShared, DbError> {
+        let s = cfg.snowflake.as_ref().ok_or_else(|| DbError::Config("conexão sem bloco snowflake".into()))?;
+        let auth = match s.auth {
+            SnowflakeAuth::ExternalBrowser => sf::AuthConfig::external_browser(sf::ExternalBrowserConfig::default()),
+            SnowflakeAuth::Pat => {
+                let token = creds.password.clone().ok_or_else(|| DbError::Config("token PAT não informado".into()))?;
+                sf::AuthConfig::password(sf::PasswordConfig::new(token))
+            }
+            SnowflakeAuth::KeyPair => {
+                let path = s.private_key.as_deref().ok_or_else(|| DbError::Config("chave privada não informada".into()))?;
+                let pem = std::fs::read_to_string(expand_home(path)).map_err(|e| DbError::Config(format!("{path}: {e}")))?;
+                let key = match &creds.key_passphrase {
+                    Some(p) => sf::KeyPairConfig::from_encrypted_pem(pem, p.as_bytes().to_vec()),
+                    None => sf::KeyPairConfig::from_pem(pem),
+                };
+                sf::AuthConfig::key_pair(key)
+            }
+        };
+        let set = |v: &Option<String>| v.clone().filter(|v| !v.is_empty());
+        let mut session = sf::SessionConfig::new().with_session_parameter("CLIENT_SESSION_KEEP_ALIVE", serde_json::Value::Bool(true));
+        if !cfg.database.is_empty() {
+            session = session.with_database(&cfg.database);
+        }
+        if let Some(w) = set(&s.warehouse) {
+            session = session.with_warehouse(w);
+        }
+        if let Some(sc) = set(&s.schema) {
+            session = session.with_schema(sc);
+        }
+        if let Some(r) = set(&s.role) {
+            session = session.with_role(r);
+        }
+        let client = sf::Client::new(sf::ClientConfig::new(&cfg.user, &s.account, auth).with_session(session)).map_err(sf_err)?;
+        let first = client.create_session().await.map_err(sf_err)?;
+        LOGINS.fetch_add(1, Ordering::Relaxed);
+        Ok(SfShared { client, session: AsyncMutex::new(Arc::new(first)) })
+    }
+
+    pub(crate) async fn current(&self) -> Arc<sf::Session> {
+        self.session.lock().await.clone()
+    }
+
+    /// Novo login, a não ser que outro ator já tenha renovado a sessão vencida.
+    async fn renew(&self, stale: &Arc<sf::Session>) -> Result<Arc<sf::Session>, DbError> {
+        let mut cur = self.session.lock().await;
+        if Arc::ptr_eq(&cur, stale) {
+            tracing::info!("sessão Snowflake expirada; novo login");
+            *cur = Arc::new(self.client.create_session().await.map_err(sf_err)?);
+            LOGINS.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(cur.clone())
+    }
+}
+
+pub(crate) type SfCanceller = Arc<Mutex<Option<sf::QueryCanceller>>>;
+
+pub(crate) struct SfActor {
+    pub(crate) shared: Arc<SfShared>,
+    pub(crate) canceller: SfCanceller,
+    pub(crate) last_exec: u64,
+}
+
+impl SfActor {
+    pub(crate) async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Cmd>) {
+        let mut next = rx.recv().await;
+        while let Some(cmd) = next.take() {
+            next = match cmd {
+                Cmd::Execute { sql, reply } => self.execute(sql, reply, &mut rx).await,
+                Cmd::FetchMore { reply, .. } => {
+                    let _ = reply.send(Ok(FetchOutcome { batch: Batch::empty(0), more: false }));
+                    rx.recv().await
+                }
+                Cmd::QueryText { sql, reply, .. } => {
+                    let _ = reply.send(self.query_named(&sql).await.map(|(_, rows)| rows));
+                    rx.recv().await
+                }
+                Cmd::QueryNamed { sql, reply } => {
+                    let _ = reply.send(self.query_named(&sql).await);
+                    rx.recv().await
+                }
+                Cmd::Transaction { reply, .. } => {
+                    let _ = reply.send(Err(DbError::Unsupported("Snowflake: somente leitura".into())));
+                    rx.recv().await
+                }
+            };
+        }
+    }
+
+    /// Envia o statement; se a sessão venceu, renova e tenta uma vez de novo.
+    async fn submit(&self, sql: &str) -> Result<sf::ResultCursor, DbError> {
+        let mut session = self.shared.current().await;
+        for attempt in 0..2 {
+            let handle = session.query_handle(sql.to_string()).map_err(sf_err)?;
+            *self.canceller.lock().expect("mutex do cancelador") = Some(handle.canceller());
+            let res = handle.execute().await;
+            *self.canceller.lock().expect("mutex do cancelador") = None;
+            match res {
+                Err(e) if e.is_session_expired() && attempt == 0 => session = self.shared.renew(&session).await?,
+                other => return other.map_err(sf_err),
+            }
+        }
+        unreachable!("o laço sempre retorna na segunda tentativa")
+    }
+
+    async fn query_named(&self, sql: &str) -> Result<(Vec<String>, Rows), DbError> {
+        let mut cursor = self.submit(sql).await?;
+        let names = cursor.schema().columns().iter().map(|c| c.name().to_string()).collect();
+        let mut rows = Vec::new();
+        while let Some(chunk) = cursor.next_chunk().await? {
+            rows.extend(chunk);
+        }
+        Ok((names, rows))
+    }
+
+    async fn execute(&mut self, sql: String, reply: Reply<ExecOutcome>, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> Option<Cmd> {
+        let started = Instant::now();
+        if is_transaction_control(&sql) {
+            let msg = "transações manuais (BEGIN/START/SAVEPOINT): o rustbeaver roda em autocommit";
+            let _ = reply.send(Err(DbError::Unsupported(msg.into())));
+            return rx.recv().await;
+        }
+        self.last_exec += 1;
+        let exec_id = self.last_exec;
+        let cursor = match self.submit(&sql).await {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = reply.send(Err(e));
+                return rx.recv().await;
+            }
+        };
+        let columns: Arc<[ColumnInfo]> =
+            cursor.schema().columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: crate::Type::TEXT }).collect();
+        let mut pager = Pager::new(cursor, columns.len());
+        let (batch, mut more) = match pager.next_batch(FETCH_ROWS as usize).await {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = reply.send(Err(e));
+                return rx.recv().await;
+            }
+        };
+        let elapsed = started.elapsed();
+        tracing::info!(elapsed_ms = elapsed.as_millis() as u64, rows = batch.rows(), "primeiro lote (Snowflake)");
+        let _ = reply.send(Ok(ExecOutcome { exec_id, columns, batch, more, affected: None, elapsed }));
+        while more {
+            match rx.recv().await {
+                Some(Cmd::FetchMore { exec_id: id, reply }) if id != exec_id => {
+                    let _ = reply.send(Ok(FetchOutcome { batch: Batch::empty(0), more: false }));
+                }
+                Some(Cmd::FetchMore { reply, .. }) => match pager.next_batch(FETCH_ROWS as usize).await {
+                    Ok((batch, m)) => {
+                        more = m;
+                        let _ = reply.send(Ok(FetchOutcome { batch, more }));
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                        return rx.recv().await;
+                    }
+                },
+                other => return other,
+            }
+        }
+        rx.recv().await
+    }
 }
 
 #[cfg(test)]
