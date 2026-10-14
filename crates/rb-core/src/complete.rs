@@ -34,8 +34,18 @@ const KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "IS", "IN", "LIKE", "ILIKE", "BETWEEN",
     "EXISTS", "JOIN", "LEFT JOIN", "INNER JOIN", "ON", "GROUP BY", "ORDER BY", "HAVING", "LIMIT",
     "OFFSET", "DISTINCT", "AS", "CASE", "WHEN", "THEN", "ELSE", "END", "INSERT INTO", "VALUES",
-    "UPDATE", "SET", "DELETE FROM", "RETURNING", "WITH", "UNION ALL", "CREATE TABLE", "ALTER TABLE",
-    "DROP TABLE", "CREATE INDEX", "EXPLAIN ANALYZE", "ASC", "DESC", "COUNT", "COALESCE", "NOW()",
+    "UPDATE", "SET", "DELETE FROM", "WITH", "UNION ALL", "CREATE TABLE", "ALTER TABLE",
+    "DROP TABLE", "ASC", "DESC", "COUNT", "COALESCE", "CAST",
+];
+
+const PG_KEYWORDS: &[&str] = &[
+    "RETURNING", "ON CONFLICT", "CREATE INDEX", "EXPLAIN ANALYZE", "NOW()", "LATERAL",
+];
+
+const SF_KEYWORDS: &[&str] = &[
+    "QUALIFY", "LATERAL FLATTEN", "SAMPLE", "MERGE INTO", "CREATE OR REPLACE TABLE", "USE WAREHOUSE",
+    "USE ROLE", "USE DATABASE", "USE SCHEMA", "SHOW TABLES", "DESCRIBE TABLE", "IFF", "TRY_CAST",
+    "PARSE_JSON", "OBJECT_CONSTRUCT", "ARRAY_AGG", "DATEADD", "DATEDIFF", "CURRENT_TIMESTAMP()",
 ];
 
 const TABLE_CONTEXT: &[&str] = &["from", "join", "update", "into", "table"];
@@ -120,7 +130,11 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
         for r in &refs {
             push_columns(&mut out, cache, r);
         }
-        for k in KEYWORDS {
+        let extra = match cache.dialect {
+            Dialect::Postgres => PG_KEYWORDS,
+            Dialect::Snowflake => SF_KEYWORDS,
+        };
+        for k in KEYWORDS.iter().chain(extra) {
             out.candidates.push(Candidate { label: k.to_string(), insert: k.to_string(), kind: CandidateKind::Keyword, detail: None });
         }
         for s in &cache.search_path {
@@ -357,6 +371,15 @@ mod tests {
         let c = complete(src, 7, &cache());
         assert_eq!(labels(&c)[..2], ["id", "email"]);
         assert!(labels(&c).contains(&"SELECT"));
+    }
+
+    #[test]
+    fn keywords_follow_the_dialect() {
+        let pg = labels(&complete("select 1 ", 9, &cache())).into_iter().map(String::from).collect::<Vec<_>>();
+        let sf = labels(&complete("select 1 ", 9, &snowflake_cache())).into_iter().map(String::from).collect::<Vec<_>>();
+        assert!(pg.contains(&"RETURNING".into()) && !pg.contains(&"QUALIFY".into()));
+        assert!(sf.contains(&"QUALIFY".into()) && sf.contains(&"USE WAREHOUSE".into()) && !sf.contains(&"RETURNING".into()));
+        assert!(pg.contains(&"SELECT".into()) && sf.contains(&"SELECT".into()));
     }
 
     #[test]

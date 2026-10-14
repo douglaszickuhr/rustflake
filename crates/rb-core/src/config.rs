@@ -121,6 +121,30 @@ pub fn scripts_dir() -> PathBuf {
     app_dir().join("scripts")
 }
 
+/// Scripts da conexão `id` (em `root/<id>/`, ordenados). Scripts soltos em `root`, de antes
+/// dos scripts por conexão, vão para a primeira conexão que pedir.
+pub fn conn_scripts(root: &Path, id: &str) -> Result<Vec<PathBuf>, DbError> {
+    let dir = root.join(id);
+    std::fs::create_dir_all(&dir).map_err(io)?;
+    for p in sql_files(root)? {
+        let target = dir.join(p.file_name().unwrap_or_default());
+        if !target.exists() {
+            std::fs::rename(&p, target).map_err(io)?;
+        }
+    }
+    sql_files(&dir)
+}
+
+fn sql_files(dir: &Path) -> Result<Vec<PathBuf>, DbError> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(io)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "sql"))
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
 /// Cria `script-N.sql` vazio com o menor N livre. `create_new` garante que duas abas
 /// nunca compartilhem o mesmo arquivo.
 pub fn new_script(dir: &Path) -> Result<PathBuf, DbError> {
@@ -298,6 +322,23 @@ mod tests {
         let b = new_script(&dir).unwrap();
         assert_ne!(a, b);
         assert!(a.exists() && b.exists());
+    }
+
+    #[test]
+    fn conn_scripts_adopt_loose_ones_once() {
+        let root = tmp("adopt").parent().unwrap().join("adopt-scripts");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("closed")).unwrap();
+        std::fs::write(root.join("script-2.sql"), "b").unwrap();
+        std::fs::write(root.join("script-1.sql"), "a").unwrap();
+        std::fs::write(root.join("notas.txt"), "x").unwrap();
+        let first = conn_scripts(&root, "c1").unwrap();
+        assert_eq!(first, vec![root.join("c1/script-1.sql"), root.join("c1/script-2.sql")]);
+        assert_eq!(std::fs::read_to_string(&first[0]).unwrap(), "a");
+        assert!(root.join("notas.txt").exists() && root.join("closed").is_dir());
+        // Os soltos já foram para c1; a próxima conexão começa vazia.
+        assert!(conn_scripts(&root, "c2").unwrap().is_empty());
+        assert_eq!(conn_scripts(&root, "c1").unwrap().len(), 2);
     }
 
     #[test]

@@ -22,7 +22,8 @@ use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
 use crate::{CloseTab, Db, NewSqlTab, Quit, conn_dialog};
 
-pub struct Active {
+/// Conexão aberta: sessão de metadados e árvore próprias; cada aba guarda a sua sessão.
+pub struct Open {
     pub conn: ConnTarget,
     pub meta: Entity<MetaStore>,
     pub tree: Entity<SchemaTree>,
@@ -41,12 +42,30 @@ impl TabView {
             TabView::Table(t) => t.read(cx).title(),
         }
     }
+
+    fn conn_id(&self, cx: &App) -> String {
+        match self {
+            TabView::Sql(t) => t.read(cx).conn_id().to_string(),
+            TabView::Table(t) => t.read(cx).conn_id().to_string(),
+        }
+    }
+}
+
+fn logo(cfg: &ConnectionConfig) -> Icon {
+    match cfg.snowflake {
+        Some(_) => Icon::default().path("icons/snowflake-logo.svg").text_color(rgb(0x29b5e8)),
+        None => Icon::default().path("icons/postgresql.svg").text_color(rgb(0x4169e1)),
+    }
 }
 
 pub struct Workspace {
     focus: FocusHandle,
     pub connections: Vec<ConnectionConfig>,
-    pub active: Option<Active>,
+    pub open: Vec<Open>,
+    /// Conexão destacada na barra lateral: recebe as abas novas e mostra a árvore.
+    current: Option<String>,
+    /// Árvore da conexão atual recolhida (clique de novo na conexão).
+    collapsed: bool,
     pub tabs: Vec<TabView>,
     pub active_tab: usize,
     connecting: bool,
@@ -61,16 +80,24 @@ impl Workspace {
                 Vec::new()
             }
         };
-        Workspace { focus: cx.focus_handle(), connections, active: None, tabs: Vec::new(), active_tab: 0, connecting: false }
+        Workspace { focus: cx.focus_handle(), connections, open: Vec::new(), current: None, collapsed: false, tabs: Vec::new(), active_tab: 0, connecting: false }
+    }
+
+    fn open_conn(&self, id: &str) -> Option<&Open> {
+        self.open.iter().find(|o| o.conn.cfg.id == id)
+    }
+
+    fn current_open(&self) -> Option<&Open> {
+        self.current.as_deref().and_then(|id| self.open_conn(id))
     }
 
     /// Cria ou atualiza (mesmo id). Senha/passphrase vazias mantêm o Keychain; sem túnel, a
-    /// passphrase guardada é apagada. Editar a conexão ativa reconecta. Devolve `false` se recusou.
+    /// passphrase guardada é apagada. Editar uma conexão aberta reconecta. Devolve `false` se recusou.
     pub fn save_connection(&mut self, cfg: ConnectionConfig, password: String, passphrase: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let id = cfg.id.clone();
-        let reconnect = self.active.as_ref().is_some_and(|a| a.conn.cfg.id == id);
-        if reconnect && self.has_pending_edits(cx) {
-            window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de editar a conexão ativa"), cx);
+        let reconnect = self.open_conn(&id).is_some();
+        if reconnect && self.has_pending_edits(&id, cx) {
+            window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de editar a conexão aberta"), cx);
             return false;
         }
         let has_ssh = cfg.ssh.is_some();
@@ -108,7 +135,7 @@ impl Workspace {
             this.update_in(cx, |ws, window, cx| match res {
                 Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
                 Ok(()) if reconnect => {
-                    ws.disconnect(cx);
+                    ws.disconnect(&id, cx);
                     if let Some(ix) = ws.connections.iter().position(|c| c.id == id) {
                         ws.connect(ix, window, cx);
                     }
@@ -121,12 +148,20 @@ impl Workspace {
         true
     }
 
+    /// Fechada: conecta. Aberta: vira a atual; se já era, recolhe/expande a árvore.
     fn connect(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.connecting || self.active.as_ref().is_some_and(|a| a.conn.cfg.id == self.connections[ix].id) {
+        let id = self.connections[ix].id.clone();
+        if self.open_conn(&id).is_some() {
+            if self.current.as_deref() == Some(id.as_str()) {
+                self.collapsed = !self.collapsed;
+            } else {
+                self.current = Some(id);
+                self.collapsed = false;
+            }
+            cx.notify();
             return;
         }
-        if self.has_pending_edits(cx) {
-            window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de trocar de conexão"), cx);
+        if self.connecting {
             return;
         }
         self.connecting = true;
@@ -155,15 +190,19 @@ impl Workspace {
                 ws.connecting = false;
                 match result {
                     Ok((conn, session)) => {
+                        let id = conn.cfg.id.clone();
                         let meta = cx.new(|cx| MetaStore::new(Arc::new(session), cx));
                         cx.observe(&meta, |_, _, cx| cx.notify()).detach();
                         let ws_weak = cx.entity().downgrade();
+                        let tree_id = id.clone();
                         let open: Rc<dyn Fn(String, String, &mut Window, &mut App)> = Rc::new(move |schema, table, window, cx| {
-                            ws_weak.update(cx, |ws, cx| ws.open_table(schema, table, window, cx)).ok();
+                            ws_weak.update(cx, |ws, cx| ws.open_table(&tree_id, schema, table, window, cx)).ok();
                         });
                         let tree = cx.new(|cx| SchemaTree::new(meta.clone(), open, cx));
-                        ws.active = Some(Active { conn, meta, tree });
-                        ws.on_connected(window, cx);
+                        ws.open.push(Open { conn, meta, tree });
+                        ws.current = Some(id.clone());
+                        ws.collapsed = false;
+                        ws.on_connected(&id, window, cx);
                     }
                     Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => {
                         ws.confirm_trust(ix, host, port, fingerprint, key, window, cx)
@@ -176,31 +215,39 @@ impl Workspace {
         .detach();
     }
 
-    pub fn open_table(&mut self, schema: String, table: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(active) = &self.active else { return };
+    pub fn open_table(&mut self, conn_id: &str, schema: String, table: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(o) = self.open_conn(conn_id) else { return };
         let title: SharedString = format!("{schema}.{table}").into();
-        if let Some(ix) = self.tabs.iter().position(|t| matches!(t, TabView::Table(_)) && t.title(cx) == title) {
-            self.active_tab = ix;
-            cx.notify();
+        if let Some(ix) = self.tabs.iter().position(|t| matches!(t, TabView::Table(_)) && t.conn_id(cx) == conn_id && t.title(cx) == title) {
+            self.select_tab(ix, cx);
             return;
         }
-        let (conn, meta) = (active.conn.clone(), active.meta.clone());
+        let (conn, meta) = (o.conn.clone(), o.meta.clone());
         let tab = cx.new(|cx| TableTab::new(schema, table, conn, meta, window, cx));
         self.tabs.push(TabView::Table(tab));
-        self.active_tab = self.tabs.len() - 1;
-        cx.notify();
+        self.select_tab(self.tabs.len() - 1, cx);
     }
 
+    /// Script novo na conexão atual.
     pub fn new_sql_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(conn) = self.active.as_ref().map(|a| a.conn.clone()) else { return };
-        match config::new_script(&config::scripts_dir()) {
-            Ok(path) => self.open_sql_file(path, conn, window, cx),
+        let Some(id) = self.current_open().map(|o| o.conn.cfg.id.clone()) else { return };
+        match config::new_script(&config::scripts_dir().join(&id)) {
+            Ok(path) => self.open_sql_file(path, &id, window, cx),
             Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
         }
     }
 
-    fn has_pending_edits(&self, cx: &App) -> bool {
-        self.tabs.iter().any(|t| matches!(t, TabView::Table(t) if t.read(cx).has_pending(cx)))
+    /// Escolher uma aba torna a conexão dela a atual.
+    fn select_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.active_tab = ix;
+        if let Some(t) = self.tabs.get(ix) {
+            self.current = Some(t.conn_id(cx));
+        }
+        cx.notify();
+    }
+
+    fn has_pending_edits(&self, conn_id: &str, cx: &App) -> bool {
+        self.tabs.iter().any(|t| matches!(t, TabView::Table(t) if t.read(cx).conn_id() == conn_id && t.read(cx).has_pending(cx)))
     }
 
     /// Grava já o texto de todos os scripts abertos (o autosave espera 1 s).
@@ -212,12 +259,11 @@ impl Workspace {
         }
     }
 
-    fn open_sql_file(&mut self, path: PathBuf, conn: ConnTarget, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(meta) = self.active.as_ref().map(|a| a.meta.clone()) else { return };
+    fn open_sql_file(&mut self, path: PathBuf, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((conn, meta)) = self.open_conn(conn_id).map(|o| (o.conn.clone(), o.meta.clone())) else { return };
         let tab = cx.new(|cx| SqlTab::new(path, conn, meta, window, cx));
         self.tabs.push(TabView::Sql(tab));
-        self.active_tab = self.tabs.len() - 1;
-        cx.notify();
+        self.select_tab(self.tabs.len() - 1, cx);
     }
 
     /// Fechar não apaga: o arquivo vai para scripts/closed/.
@@ -236,44 +282,47 @@ impl Workspace {
                 tracing::warn!("falha ao arquivar script: {e}");
             }
         }
-        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
-        cx.notify();
+        let ix = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        self.select_tab(ix, cx);
     }
 
-    /// Reabre os scripts salvos (ordenados) ou cria um novo.
-    fn on_connected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(conn) = self.active.as_ref().map(|a| a.conn.clone()) else { return };
-        self.save_all(cx);
-        self.tabs.clear();
-        let mut files: Vec<PathBuf> = std::fs::read_dir(config::scripts_dir())
-            .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "sql")).collect())
-            .unwrap_or_default();
-        files.sort();
+    /// Reabre os scripts da conexão (ordenados) ou cria um novo.
+    fn on_connected(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let files = config::conn_scripts(&config::scripts_dir(), id).unwrap_or_else(|e| {
+            window.push_notification(Notification::error(e.to_string()), cx);
+            Vec::new()
+        });
         if files.is_empty() {
             self.new_sql_tab(window, cx);
         }
         for f in files {
-            self.open_sql_file(f, conn.clone(), window, cx);
+            self.open_sql_file(f, id, window, cx);
         }
     }
 
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.tabs.is_empty() {
-            let msg = match &self.active {
-                Some(a) => format!("{} · {} schemas — ⌘T abre um script", a.conn.cfg.name, a.meta.read(cx).cache.schemas.len()),
+            let msg = match self.current_open() {
+                Some(o) => format!("{} — ⌘T abre um script", o.conn.cfg.name),
                 None => "Nenhuma conexão aberta".into(),
             };
             return v_flex().flex_1().h_full().items_center().justify_center().child(msg).into_any_element();
         }
         let bar = self.tabs.iter().enumerate().fold(
-            TabBar::new("tabs").selected_index(self.active_tab).on_click(cx.listener(|ws, ix: &usize, _, cx| {
-                ws.active_tab = *ix;
-                cx.notify();
-            })),
+            TabBar::new("tabs")
+                .selected_index(self.active_tab)
+                .on_click(cx.listener(|ws, ix: &usize, _, cx| ws.select_tab(*ix, cx)))
+                // + logo depois da última aba; o TabBar só desenha esse espaço se houver sufixo.
+                .last_empty_space(h_flex().flex_1().child(Button::new("new-tab").label("+").ghost().on_click(cx.listener(|ws, _, window, cx| ws.new_sql_tab(window, cx)))))
+                .suffix(div()),
             |bar, (i, t)| {
+                let id = t.conn_id(cx);
+                let cfg = self.connections.iter().find(|c| c.id == id);
+                let name = cfg.map_or(String::new(), |c| c.name.clone());
                 bar.child(
                     Tab::new()
-                        .label(t.title(cx))
+                        .when_some(cfg, |tab, c| tab.prefix(div().pl_2().child(logo(c).small())))
+                        .label(format!("{name} · {}", t.title(cx)))
                         .suffix(Button::new(("close", i)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| {
                             // Sem isto o clique sobe até a aba, que faria active_tab = i depois da remoção
                             // (índice inexistente ao fechar a última aba → pânico no render).
@@ -320,14 +369,14 @@ impl Workspace {
         });
     }
 
-    /// Tira a conexão do TOML e a senha do Keychain. Se estiver ativa, desconecta antes.
+    /// Tira a conexão do TOML e a senha do Keychain. Se estiver aberta, desconecta antes.
     fn remove_connection(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active.as_ref().is_some_and(|a| a.conn.cfg.id == id) {
-            if self.has_pending_edits(cx) {
+        if self.open_conn(id).is_some() {
+            if self.has_pending_edits(id, cx) {
                 window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de remover a conexão"), cx);
                 return;
             }
-            self.disconnect(cx);
+            self.disconnect(id, cx);
         }
         self.connections.retain(|c| c.id != id);
         let file = ConfigFile { connections: self.connections.clone() };
@@ -350,13 +399,26 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Salva os scripts, fecha as abas e solta a sessão (e o túnel, se for o último uso).
-    fn disconnect(&mut self, cx: &mut Context<Self>) {
+    /// Salva os scripts, fecha as abas da conexão e solta a sessão (e o túnel, se for o último uso).
+    /// Os scripts ficam na pasta da conexão e voltam ao reconectar.
+    fn disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
         self.save_all(cx);
-        self.tabs.clear();
-        self.active_tab = 0;
-        self.active = None;
+        let keep: Vec<bool> = self.tabs.iter().map(|t| t.conn_id(cx) != id).collect();
+        let before = keep.iter().take(self.active_tab).filter(|k| **k).count();
+        let mut k = keep.into_iter();
+        self.tabs.retain(|_| k.next().unwrap_or(true));
+        self.open.retain(|o| o.conn.cfg.id != id);
+        self.active_tab = before.min(self.tabs.len().saturating_sub(1));
+        self.current = self.tabs.get(self.active_tab).map(|t| t.conn_id(cx)).or_else(|| self.open.first().map(|o| o.conn.cfg.id.clone()));
         cx.notify();
+    }
+
+    fn request_disconnect(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_pending_edits(id, cx) {
+            window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de desconectar"), cx);
+            return;
+        }
+        self.disconnect(id, cx);
     }
 
     /// Host SSH fora do known_hosts: mostra o fingerprint e, se o usuário confiar, grava e reconecta.
@@ -389,8 +451,8 @@ impl Workspace {
     }
 
     /// Lista warehouses ou roles (`SHOW …`) e roda `USE …` na escolhida; a sessão é compartilhada.
-    fn pick_context(&mut self, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(meta) = self.active.as_ref().map(|a| a.meta.clone()) else { return };
+    fn pick_context(&mut self, conn_id: &str, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(meta) = self.open_conn(conn_id).map(|o| o.meta.clone()) else { return };
         let session = meta.read(cx).session.clone();
         cx.spawn_in(window, async move |_, cx| {
             let listed = session.query_named(&format!("show {kind}s")).await.map(|(n, rows)| rb_core::snowflake::first_named(&n, &rows, "name"));
@@ -421,24 +483,42 @@ impl Workspace {
     }
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = v_flex().gap_1();
+        let mut list = v_flex().flex_1().min_h_0().gap_1();
         for (ix, c) in self.connections.iter().enumerate() {
-            let active = self.active.as_ref().is_some_and(|a| a.conn.cfg.id == c.id);
-            let logo = match c.snowflake {
-                Some(_) => Icon::default().path("icons/snowflake-logo.svg").text_color(rgb(0x29b5e8)),
-                None => Icon::default().path("icons/postgresql.svg").text_color(rgb(0x4169e1)),
-            };
-            let b = side_item(("conn", ix), Some(logo), c.name.clone(), active, cx);
+            let open = self.open_conn(&c.id);
+            let current = self.current.as_deref() == Some(c.id.as_str());
+            let id = c.id.clone();
             list = list.child(
                 h_flex()
                     .gap_1()
-                    .child(b.flex_1().on_click(cx.listener(move |ws, _, window, cx| ws.connect(ix, window, cx))))
+                    .child(side_item(("conn", ix), Some(logo(c)), c.name.clone(), current, cx).flex_1().on_click(cx.listener(move |ws, _, window, cx| ws.connect(ix, window, cx))))
+                    .when(open.is_some(), |r| {
+                        r.child(Button::new(("disc-conn", ix)).label("⏏").ghost().tooltip("Desconectar").on_click(cx.listener(move |ws, _, window, cx| ws.request_disconnect(&id, window, cx))))
+                    })
                     .child(Button::new(("edit-conn", ix)).label("✎").ghost().on_click(cx.listener(move |ws, _, window, cx| {
                         let c = ws.connections[ix].clone();
                         conn_dialog::open(Some(c), window, cx)
                     })))
                     .child(Button::new(("del-conn", ix)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| ws.confirm_remove(ix, window, cx)))),
             );
+            // Detalhes da conexão atual logo abaixo dela; ocupam o espaço que sobra.
+            if let Some(o) = open.filter(|_| current && !self.collapsed) {
+                let cache = &o.meta.read(cx).cache;
+                let ctx = (cache.dialect == Dialect::Snowflake).then(|| (cache.warehouse.clone().unwrap_or_else(|| "—".into()), cache.role.clone().unwrap_or_else(|| "—".into())));
+                let (wh_id, role_id) = (c.id.clone(), c.id.clone());
+                list = list.child(
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .pl_3()
+                        .when_some(ctx, |d, (wh, role)| {
+                            // Um por linha: lado a lado o role era cortado em barras estreitas.
+                            d.child(side_item("pick-wh", None, format!("WH: {wh}"), false, cx).on_click(cx.listener(move |ws, _, w, cx| ws.pick_context(&wh_id, "warehouse", w, cx))))
+                                .child(side_item("pick-role", None, format!("Role: {role}"), false, cx).on_click(cx.listener(move |ws, _, w, cx| ws.pick_context(&role_id, "role", w, cx))))
+                        })
+                        .child(div().flex_1().min_h_0().child(o.tree.clone())),
+                );
+            }
         }
         v_flex()
             .size_full()
@@ -452,18 +532,6 @@ impl Workspace {
             )
             .child(list)
             .when(self.connecting, |d| d.child("conectando…"))
-            .when_some(self.active.as_ref().filter(|a| a.meta.read(cx).cache.dialect == Dialect::Snowflake), |d, a| {
-                let c = &a.meta.read(cx).cache;
-                let wh = c.warehouse.clone().unwrap_or_else(|| "—".into());
-                let role = c.role.clone().unwrap_or_else(|| "—".into());
-                // Um por linha: lado a lado o role era cortado em barras estreitas.
-                d.child(
-                    v_flex()
-                        .child(side_item("pick-wh", None, format!("WH: {wh}"), false, cx).on_click(cx.listener(|ws, _, w, cx| ws.pick_context("warehouse", w, cx))))
-                        .child(side_item("pick-role", None, format!("Role: {role}"), false, cx).on_click(cx.listener(|ws, _, w, cx| ws.pick_context("role", w, cx)))),
-                )
-            })
-            .when_some(self.active.as_ref().map(|a| a.tree.clone()), |d, tree| d.child(div().flex_1().child(tree)))
     }
 }
 

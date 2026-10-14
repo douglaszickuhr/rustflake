@@ -85,6 +85,10 @@ impl TableTab {
         this
     }
 
+    pub fn conn_id(&self) -> &str {
+        &self.conn.cfg.id
+    }
+
     pub fn title(&self) -> SharedString {
         format!("{}.{}", self.schema, self.table).into()
     }

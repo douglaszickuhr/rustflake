@@ -68,6 +68,10 @@ impl SqlTab {
         }
     }
 
+    pub fn conn_id(&self) -> &str {
+        &self.conn.cfg.id
+    }
+
     pub fn title(&self) -> SharedString {
         self.path.file_stem().map_or("script".into(), |s| s.to_string_lossy().to_string().into())
     }

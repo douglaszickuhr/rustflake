@@ -71,6 +71,8 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("cmd-enter", RunStatement, Some("SqlTab > Input")),
             KeyBinding::new("cmd-shift-enter", RunScript, Some("SqlTab > Input")),
+            // O editor não liga nada a ShowCompletions por padrão.
+            KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab")),
             // O editor liga cmd-. a ToggleCodeActions; a ligação mais profunda vence.
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab > Input")),

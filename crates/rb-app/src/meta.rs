@@ -67,6 +67,11 @@ impl MetaStore {
         .detach();
     }
 
+    /// Algum pedaço do catálogo ainda a caminho.
+    pub fn loading(&self) -> bool {
+        !self.inflight.is_empty()
+    }
+
     /// Carrega um pedaço do catálogo se ainda não estiver em cache nem a caminho.
     pub fn request(&mut self, req: MetaRequest, cx: &mut Context<Self>) {
         if self.cache.has(&req) || !self.inflight.insert(req.clone()) {
