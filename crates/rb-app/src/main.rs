@@ -1,3 +1,5 @@
+mod conn_dialog;
+mod meta;
 mod workspace;
 
 use std::time::Instant;
