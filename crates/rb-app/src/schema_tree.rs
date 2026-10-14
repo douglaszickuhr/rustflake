@@ -1,8 +1,11 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
+use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::metadata::{MetaCache, MetaRequest};
 
@@ -17,6 +20,66 @@ fn id(parts: &[&str]) -> SharedString {
 
 fn loading(parent: &SharedString) -> TreeItem {
     TreeItem::new(format!("{parent}{SEP}loading"), "carregando…")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Schema,
+    Group,
+    Table,
+    View,
+    MatView,
+    Function,
+    Columns,
+    Column,
+    PkColumn,
+    Indexes,
+    Index,
+    Loading,
+}
+
+impl Kind {
+    fn icon(self, expanded: bool) -> Option<IconName> {
+        Some(match self {
+            Kind::Schema => IconName::Layers,
+            Kind::Group if expanded => IconName::FolderOpen,
+            Kind::Group => IconName::Folder,
+            Kind::Table => IconName::Table,
+            Kind::View => IconName::Eye,
+            Kind::MatView => IconName::Sheet,
+            Kind::Function => IconName::SquareFunction,
+            Kind::Columns => IconName::Columns3,
+            Kind::Column => IconName::Hash,
+            Kind::PkColumn => IconName::KeyRound,
+            Kind::Indexes | Kind::Index => IconName::ListTree,
+            Kind::Loading => return None,
+        })
+    }
+}
+
+/// Tipo do nó e detalhe exibido em cinza (tipo da coluna), a partir do id e do cache.
+fn describe(node: &str, c: &MetaCache) -> (Kind, Option<String>) {
+    let parts: Vec<&str> = node.split(SEP).collect();
+    let kind = match parts.as_slice() {
+        [.., "loading"] => Kind::Loading,
+        ["s", _] => Kind::Schema,
+        ["g", ..] => Kind::Group,
+        ["r", s, rel] => match c.objects.get(*s) {
+            Some(o) if o.views.iter().any(|v| v == rel) => Kind::View,
+            Some(o) if o.matviews.iter().any(|v| v == rel) => Kind::MatView,
+            _ => Kind::Table,
+        },
+        ["f", ..] => Kind::Function,
+        ["cg", ..] => Kind::Columns,
+        ["c", s, rel, col] => {
+            let meta = c.columns.get(&(s.to_string(), rel.to_string())).and_then(|cols| cols.iter().find(|x| x.name == *col));
+            let kind = if meta.is_some_and(|m| m.is_pk) { Kind::PkColumn } else { Kind::Column };
+            return (kind, meta.map(|m| m.type_name.clone()));
+        }
+        ["ig", ..] => Kind::Indexes,
+        _ => Kind::Index,
+    };
+    (kind, None)
 }
 
 type OpenTable = Rc<dyn Fn(String, String, &mut Window, &mut App)>;
@@ -126,10 +189,7 @@ fn relation(c: &MetaCache, schema: &str, rel: &str, expanded: &HashSet<SharedStr
         (Some(cols), idx) => {
             let cg = id(&["cg", schema, rel]);
             let mut groups = vec![TreeItem::new(cg.clone(), format!("Colunas ({})", cols.len())).expanded(expanded.contains(&cg)).children(
-                cols.iter().map(|col| {
-                    let pk = if col.is_pk { " 🔑" } else { "" };
-                    TreeItem::new(id(&["c", schema, rel, &col.name]), format!("{}  {}{pk}", col.name, col.type_name))
-                }),
+                cols.iter().map(|col| TreeItem::new(id(&["c", schema, rel, &col.name]), col.name.clone())),
             )];
             if let Some(idx) = idx {
                 let ig = id(&["ig", schema, rel]);
@@ -149,6 +209,7 @@ fn relation(c: &MetaCache, schema: &str, rel: &str, expanded: &HashSet<SharedStr
 impl Render for SchemaTree {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let open = self.on_open_table.clone();
+        let meta = self.meta.clone();
         div()
             .key_context("SchemaTree")
             .size_full()
@@ -157,10 +218,30 @@ impl Render for SchemaTree {
             .on_mouse_down(MouseButton::Left, cx.listener(|t, _, window, cx| t.state.update(cx, |s, cx| s.focus(window, cx))))
             .child(tree(
             &self.state,
-            move |ix, entry, selected, _window, _cx| {
+            move |ix, entry, selected, _window, cx| {
                 let node = entry.item().id.clone();
                 let open = open.clone();
-                ListItem::new(ix).selected(selected).pl(px(8. + 14. * entry.depth() as f32)).child(entry.item().label.clone()).on_click(
+                let (kind, detail) = describe(&node, &meta.read(cx).cache);
+                let theme = cx.theme();
+                let icon_color = if kind == Kind::PkColumn { theme.warning } else { theme.muted_foreground };
+                // Altura fixa por linha (lista virtualizada): nunca quebrar, cortar com "…".
+                let row = h_flex()
+                    .w_full()
+                    .gap_1p5()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .when_some(kind.icon(entry.is_expanded()), |r, icon| r.child(Icon::new(icon).small().text_color(icon_color)))
+                    // Com detalhe (tipo da coluna), o nome fica inteiro e o detalhe é que corta.
+                    .child(
+                        div()
+                            .when(detail.is_some(), |d| d.flex_shrink_0())
+                            .when(detail.is_none(), |d| d.min_w_0().overflow_hidden().text_ellipsis())
+                            .child(entry.item().label.clone()),
+                    )
+                    .when_some(detail, |r, d| {
+                        r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(d))
+                    });
+                ListItem::new(ix).selected(selected).pl(px(8. + 14. * entry.depth() as f32)).child(row).on_click(
                     move |ev, window, cx| {
                         let parts: Vec<&str> = node.split(SEP).collect();
                         if ev.click_count() == 2
@@ -172,5 +253,55 @@ impl Render for SchemaTree {
                 )
             },
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rb_core::metadata::{ColumnMeta, SchemaObjects};
+
+    use super::*;
+
+    fn cache() -> MetaCache {
+        let mut c = MetaCache::default();
+        c.objects.insert(
+            "public".into(),
+            SchemaObjects { tables: vec!["t".into()], views: vec!["v".into()], matviews: vec!["m".into()], functions: vec!["f()".into()] },
+        );
+        let col = |name: &str, pk: bool| ColumnMeta {
+            name: name.into(),
+            type_name: "integer".into(),
+            cast_type: "integer".into(),
+            nullable: !pk,
+            default: None,
+            is_pk: pk,
+            generated: false,
+        };
+        c.columns.insert(("public".into(), "t".into()), vec![col("id", true), col("n", false)]);
+        c
+    }
+
+    #[::core::prelude::v1::test]
+    fn each_node_gets_its_kind() {
+        let c = cache();
+        let k = |parts: &[&str]| describe(&id(parts), &c).0;
+        assert_eq!(k(&["s", "public"]), Kind::Schema);
+        assert_eq!(k(&["s", "public", "loading"]), Kind::Loading);
+        assert_eq!(k(&["g", "public", "tables"]), Kind::Group);
+        assert_eq!(k(&["r", "public", "t"]), Kind::Table);
+        assert_eq!(k(&["r", "public", "v"]), Kind::View);
+        assert_eq!(k(&["r", "public", "m"]), Kind::MatView);
+        assert_eq!(k(&["f", "public", "f()"]), Kind::Function);
+        assert_eq!(k(&["cg", "public", "t"]), Kind::Columns);
+        assert_eq!(k(&["c", "public", "t", "id"]), Kind::PkColumn);
+        assert_eq!(k(&["c", "public", "t", "n"]), Kind::Column);
+        assert_eq!(k(&["ig", "public", "t"]), Kind::Indexes);
+        assert_eq!(k(&["i", "public", "t", "t_pkey"]), Kind::Index);
+    }
+
+    #[::core::prelude::v1::test]
+    fn columns_carry_their_type_as_detail() {
+        assert_eq!(describe(&id(&["c", "public", "t", "n"]), &cache()).1.as_deref(), Some("integer"));
+        assert_eq!(describe(&id(&["r", "public", "t"]), &cache()).1, None);
     }
 }

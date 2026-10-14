@@ -19,12 +19,32 @@ pub struct Db(pub Engine);
 
 impl Global for Db {}
 
+// Ícones fora do conjunto padrão do gpui-kit; só estes entram no binário.
+gpui_kit::assets::icon_assets!(ExtraIcons, [Database, Layers, Table, Sheet, SquareFunction, Columns3, Hash, KeyRound, ListTree]);
+
+struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        match ExtraIcons.load(path)? {
+            Some(bytes) => Ok(Some(bytes)),
+            None => gpui_kit::assets::Assets.load(path),
+        }
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut paths = gpui_kit::assets::Assets.list(path)?;
+        paths.extend(ExtraIcons.list(path)?);
+        Ok(paths)
+    }
+}
+
 fn main() {
     let started = Instant::now();
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
     let engine = Engine::new().expect("criar runtime de banco");
 
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx: &mut App| {
+    gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         cx.set_global(Db(engine));
         cx.bind_keys([

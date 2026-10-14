@@ -29,3 +29,10 @@ Rode antes de cada release, com o Postgres de teste (`docker start rb-pg`).
 - [ ] Apagar o host SSH de uma conexão e salvar: passphrase some do Keychain (Acesso às Chaves, conta ssh:<id>).
 - [ ] ⌘. cancela uma query longa que passa pelo túnel.
 - [ ] Bastion real do autor: árvore, autocomplete, grade e edição funcionam.
+
+## Árvore de schema
+
+- [ ] Cada tipo tem ícone: conexão, schema, grupos (pasta aberta/fechada), tabela, view, view materializada, função, colunas, coluna (chave primária em amarelo), índices.
+- [ ] Nomes longos ficam numa linha só e terminam em "…"; nada se sobrepõe.
+- [ ] Coluna com tipo longo mostra o nome inteiro e corta o tipo.
+- [ ] Arrastar a divisa da barra lateral muda a largura (180–640 px).

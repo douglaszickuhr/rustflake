@@ -5,7 +5,8 @@ use std::sync::Arc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::config::{self, ConfigFile, ConnectionConfig};
@@ -365,7 +366,7 @@ impl Workspace {
         let mut list = v_flex().gap_1();
         for (ix, c) in self.connections.iter().enumerate() {
             let active = self.active.as_ref().is_some_and(|a| a.conn.cfg.id == c.id);
-            let mut b = Button::new(("conn", ix)).label(c.name.clone()).ghost();
+            let mut b = Button::new(("conn", ix)).icon(IconName::Database).label(c.name.clone()).ghost();
             if active {
                 b = b.primary();
             }
@@ -410,7 +411,10 @@ impl Render for Workspace {
                 ws.save_all(cx);
                 cx.quit();
             }))
-            .child(div().w(px(260.)).h_full().border_r_1().border_color(cx.theme().border).child(self.render_sidebar(cx)))
-            .child(self.render_main(cx))
+            .child(
+                h_resizable("sidebar-split")
+                    .child(resizable_panel().size(px(260.)).size_range(px(180.)..px(640.)).child(self.render_sidebar(cx)))
+                    .child(resizable_panel().child(self.render_main(cx))),
+            )
     }
 }
