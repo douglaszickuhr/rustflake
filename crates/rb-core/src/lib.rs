@@ -8,6 +8,7 @@ pub mod lexer;
 pub mod metadata;
 pub mod secrets;
 pub mod session;
+pub mod snowflake;
 pub mod split;
 pub mod ssh;
 pub mod table;
