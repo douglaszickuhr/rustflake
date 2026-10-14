@@ -153,6 +153,16 @@ impl Session {
     pub async fn run_in_transaction(&self, stmts: Vec<SqlWithParams>) -> Result<u64, DbError> {
         self.call(|reply| Cmd::Transaction { stmts, reply }).await
     }
+
+    /// Pede ao servidor para cancelar o comando em andamento desta sessão.
+    pub fn cancel(&self) {
+        let token = self.cancel.lock().expect("mutex do cancel token").clone();
+        self.rt.spawn(async move {
+            if let Err(e) = token.cancel_query(tls()).await {
+                tracing::warn!("cancelamento falhou: {e}");
+            }
+        });
+    }
 }
 
 struct Actor {
@@ -165,6 +175,11 @@ impl Actor {
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Cmd>) {
         let mut next = rx.recv().await;
         while let Some(cmd) = next.take() {
+            if let Err(e) = self.ensure_connected().await {
+                cmd.fail(e);
+                next = rx.recv().await;
+                continue;
+            }
             next = match cmd {
                 Cmd::Execute { sql, reply } => self.execute(sql, reply, &mut rx).await,
                 Cmd::FetchMore { reply } => {
@@ -182,6 +197,17 @@ impl Actor {
                 }
             };
         }
+    }
+
+    /// Se a conexão caiu, abre outra. O comando que falhou antes não é reenviado.
+    async fn ensure_connected(&mut self) -> Result<(), DbError> {
+        if !self.client.is_closed() {
+            return Ok(());
+        }
+        tracing::info!("reconectando");
+        self.client = connect_client(&self.pg).await?;
+        *self.cancel.lock().expect("mutex do cancel token") = self.client.cancel_token();
+        Ok(())
     }
 
     /// Executa um statement. Se ele retorna linhas, mantém o portal aberto atendendo
