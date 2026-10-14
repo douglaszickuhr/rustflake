@@ -61,27 +61,53 @@ impl Workspace {
         Workspace { focus: cx.focus_handle(), connections, active: None, tabs: Vec::new(), active_tab: 0, connecting: false }
     }
 
-    pub fn add_connection(&mut self, cfg: ConnectionConfig, password: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.connections.push(cfg.clone());
-        let file = ConfigFile { connections: self.connections.clone() };
+    /// Cria ou atualiza (mesmo id). Senha/passphrase vazias mantêm o Keychain; sem túnel, a
+    /// passphrase guardada é apagada. Editar a conexão ativa reconecta. Devolve `false` se recusou.
+    pub fn save_connection(&mut self, cfg: ConnectionConfig, password: String, passphrase: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let id = cfg.id.clone();
-        cx.spawn_in(window, async move |_, cx| {
+        let reconnect = self.active.as_ref().is_some_and(|a| a.conn.cfg.id == id);
+        if reconnect && self.has_pending_edits(cx) {
+            window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de editar a conexão ativa"), cx);
+            return false;
+        }
+        let has_ssh = cfg.ssh.is_some();
+        match self.connections.iter_mut().find(|c| c.id == id) {
+            Some(c) => *c = cfg,
+            None => self.connections.push(cfg),
+        }
+        let file = ConfigFile { connections: self.connections.clone() };
+        cx.spawn_in(window, async move |this, cx| {
             let res = cx
-                .background_spawn(async move {
-                    config::save(&config::connections_path(), &file)?;
-                    if !password.is_empty() {
-                        secrets::set_password(&id, &password)?;
+                .background_spawn({
+                    let id = id.clone();
+                    async move {
+                        config::save(&config::connections_path(), &file)?;
+                        if !password.is_empty() {
+                            secrets::set_password(&id, &password)?;
+                        }
+                        if !has_ssh {
+                            secrets::delete_password(&secrets::ssh_account(&id))?;
+                        } else if !passphrase.is_empty() {
+                            secrets::set_password(&secrets::ssh_account(&id), &passphrase)?;
+                        }
+                        Ok::<_, rb_core::DbError>(())
                     }
-                    Ok::<_, rb_core::DbError>(())
                 })
                 .await;
-            if let Err(e) = res {
-                cx.update(|window, cx| window.push_notification(Notification::error(e.to_string()), cx))?;
-            }
-            anyhow::Ok(())
+            this.update_in(cx, |ws, window, cx| match res {
+                Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+                Ok(()) if reconnect => {
+                    ws.disconnect(cx);
+                    if let Some(ix) = ws.connections.iter().position(|c| c.id == id) {
+                        ws.connect(ix, window, cx);
+                    }
+                }
+                Ok(()) => {}
+            })
         })
         .detach();
         cx.notify();
+        true
     }
 
     fn connect(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -347,6 +373,10 @@ impl Workspace {
                 h_flex()
                     .gap_1()
                     .child(div().flex_1().child(b.w_full().on_click(cx.listener(move |ws, _, window, cx| ws.connect(ix, window, cx)))))
+                    .child(Button::new(("edit-conn", ix)).label("✎").ghost().on_click(cx.listener(move |ws, _, window, cx| {
+                        let c = ws.connections[ix].clone();
+                        conn_dialog::open(Some(c), window, cx)
+                    })))
                     .child(Button::new(("del-conn", ix)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| ws.confirm_remove(ix, window, cx)))),
             );
         }
@@ -358,7 +388,7 @@ impl Workspace {
                 h_flex()
                     .justify_between()
                     .child("Conexões")
-                    .child(Button::new("new-conn").label("+").ghost().on_click(cx.listener(|_, _, window, cx| conn_dialog::open(window, cx)))),
+                    .child(Button::new("new-conn").label("+").ghost().on_click(cx.listener(|_, _, window, cx| conn_dialog::open(None, window, cx)))),
             )
             .child(list)
             .when(self.connecting, |d| d.child("conectando…"))
