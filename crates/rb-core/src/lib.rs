@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod complete;
 pub mod config;
 pub mod decode;
 pub mod error;
