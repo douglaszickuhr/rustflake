@@ -2,6 +2,7 @@ pub mod batch;
 pub mod complete;
 pub mod config;
 pub mod decode;
+pub mod dialect;
 pub mod error;
 pub mod lexer;
 pub mod metadata;

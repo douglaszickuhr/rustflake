@@ -197,6 +197,27 @@ pub fn quote_always(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Palavras reservadas do Snowflake (não podem ser identificador sem aspas).
+const RESERVED_SNOWFLAKE: &[&str] = &[
+    "ALL", "ALTER", "AND", "ANY", "AS", "BETWEEN", "BY", "CASE", "CAST", "CHECK", "COLUMN", "CONNECT",
+    "CONNECTION", "CONSTRAINT", "CREATE", "CROSS", "CURRENT", "CURRENT_DATE", "CURRENT_TIME",
+    "CURRENT_TIMESTAMP", "CURRENT_USER", "DATABASE", "DELETE", "DISTINCT", "DROP", "ELSE", "EXISTS",
+    "FALSE", "FOLLOWING", "FOR", "FROM", "FULL", "GRANT", "GROUP", "GSCLUSTER", "HAVING", "ILIKE", "IN",
+    "INCREMENT", "INNER", "INSERT", "INTERSECT", "INTO", "IS", "ISSUE", "JOIN", "LATERAL", "LEFT", "LIKE",
+    "LOCALTIME", "LOCALTIMESTAMP", "MINUS", "NATURAL", "NOT", "NULL", "OF", "ON", "OR", "ORDER",
+    "ORGANIZATION", "QUALIFY", "REGEXP", "REVOKE", "RIGHT", "RLIKE", "ROW", "ROWS", "SAMPLE", "SCHEMA",
+    "SELECT", "SET", "SOME", "START", "TABLE", "TABLESAMPLE", "THEN", "TO", "TRIGGER", "TRUE", "TRY_CAST",
+    "UNION", "UNIQUE", "UPDATE", "USING", "VALUES", "VIEW", "WHEN", "WHENEVER", "WHERE", "WINDOW", "WITH",
+];
+
+/// Cita só quando o Snowflake mudaria o nome sem aspas (ele dobra para maiúsculas).
+pub fn quote_ident_snowflake(name: &str) -> String {
+    let plain = name.bytes().next().is_some_and(|c| c.is_ascii_uppercase() || c == b'_')
+        && name.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_' || c == b'$')
+        && !RESERVED_SNOWFLAKE.contains(&name);
+    if plain { name.to_string() } else { quote_always(name) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TokKind::*;

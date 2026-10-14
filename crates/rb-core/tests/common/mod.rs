@@ -20,6 +20,7 @@ pub fn open() -> Option<(Engine, Session)> {
         user: pg.get_user().unwrap_or("postgres").into(),
         ssl: SslMode::Disable,
         ssh: None,
+        snowflake: None,
     };
     let password = pg.get_password().map(|p| String::from_utf8_lossy(p).into_owned());
     let engine = Engine::new().expect("runtime");

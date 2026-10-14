@@ -28,11 +28,38 @@ pub struct SshConfig {
     pub identity_file: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SnowflakeAuth {
+    #[default]
+    ExternalBrowser,
+    KeyPair,
+    Pat,
+}
+
+/// Conexão Snowflake. `ConnectionConfig.user` e `.database` são reaproveitados.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SnowflakeConfig {
+    pub account: String,
+    #[serde(default)]
+    pub auth: SnowflakeAuth,
+    #[serde(default)]
+    pub private_key: Option<String>,
+    #[serde(default)]
+    pub warehouse: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub schema: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub host: String,
+    #[serde(default)]
     pub port: u16,
     pub database: String,
     pub user: String,
@@ -41,6 +68,9 @@ pub struct ConnectionConfig {
     /// Com túnel, `host`/`port` são resolvidos pelo bastion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SshConfig>,
+    /// Presente = conexão Snowflake; `host`, `port`, `ssl` e `ssh` são ignorados.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snowflake: Option<SnowflakeConfig>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +107,14 @@ pub fn app_dir() -> PathBuf {
 
 pub fn connections_path() -> PathBuf {
     app_dir().join("connections.toml")
+}
+
+/// `~/x` → `$HOME/x`; o resto fica igual.
+pub fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+        None => PathBuf::from(path),
+    }
 }
 
 pub fn scripts_dir() -> PathBuf {
@@ -162,7 +200,41 @@ mod tests {
             user: "postgres".into(),
             ssl: SslMode::Require,
             ssh: None,
+            snowflake: None,
         }
+    }
+
+    #[test]
+    fn snowflake_block_round_trips_and_host_is_optional() {
+        let path = tmp("snowflake");
+        let mut c = sample();
+        c.host = String::new();
+        c.port = 0;
+        c.snowflake = Some(SnowflakeConfig {
+            account: "xy12345.us-east-1".into(),
+            auth: SnowflakeAuth::KeyPair,
+            private_key: Some("~/.ssh/sf.p8".into()),
+            warehouse: Some("COMPUTE_WH".into()),
+            role: None,
+            schema: Some("PUBLIC".into()),
+        });
+        let cfg = ConfigFile { connections: vec![c] };
+        save(&path, &cfg).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[connection.snowflake]") && text.contains("auth = \"keypair\""), "{text}");
+        assert_eq!(load(&path).unwrap(), cfg);
+
+        std::fs::write(&path, "[[connection]]\nid = \"s\"\nname = \"n\"\ndatabase = \"\"\nuser = \"u\"\n[connection.snowflake]\naccount = \"a\"\n").unwrap();
+        let loaded = load(&path).unwrap().connections.remove(0);
+        assert_eq!((loaded.host.as_str(), loaded.port), ("", 0));
+        assert_eq!(loaded.snowflake.unwrap().auth, SnowflakeAuth::ExternalBrowser);
+    }
+
+    #[test]
+    fn expand_home_only_touches_tilde() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_eq!(expand_home("~/.ssh/k.p8"), home.join(".ssh/k.p8"));
+        assert_eq!(expand_home("/abs/k.p8"), PathBuf::from("/abs/k.p8"));
     }
 
     #[test]

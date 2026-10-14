@@ -10,6 +10,11 @@ pub fn ssh_account(id: &str) -> String {
     format!("ssh:{id}")
 }
 
+/// Conta do Keychain com a passphrase da chave privada Snowflake de uma conexão.
+pub fn key_account(id: &str) -> String {
+    format!("key:{id}")
+}
+
 fn err(e: security_framework::base::Error) -> DbError {
     DbError::Keychain(e.to_string())
 }

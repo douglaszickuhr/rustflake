@@ -22,6 +22,8 @@ pub enum DbError {
     Ssh(String),
     /// Host SSH fora do known_hosts. `key` é a chave pública em formato OpenSSH, para `ssh::trust_host`.
     HostKeyUnknown { host: String, port: u16, fingerprint: String, key: String },
+    /// Erro devolvido pelo Snowflake (código numérico do Snowflake, ex. 001003).
+    Snowflake { code: String, message: String },
 }
 
 impl fmt::Display for DbError {
@@ -44,6 +46,7 @@ impl fmt::Display for DbError {
             DbError::Edit(m) => write!(f, "edição: {m}"),
             DbError::Unsupported(m) => write!(f, "não suportado: {m}"),
             DbError::Ssh(m) => write!(f, "SSH: {m}"),
+            DbError::Snowflake { code, message } => write!(f, "[{code}] {message}"),
             DbError::HostKeyUnknown { host, port, fingerprint, .. } => {
                 write!(f, "SSH: host {host}:{port} não está no known_hosts ({fingerprint})")
             }

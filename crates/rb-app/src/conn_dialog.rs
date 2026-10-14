@@ -61,6 +61,7 @@ impl Fields {
             user: v(&self.user),
             ssl,
             ssh: parse_ssh(&v(&self.ssh_host), &v(&self.ssh_user), &v(&self.ssh_port), &v(&self.ssh_key))?,
+            snowflake: None,
         };
         if cfg.name.is_empty() || cfg.host.is_empty() || cfg.database.is_empty() || cfg.user.is_empty() {
             return Err("preencha nome, host, banco e usuário".into());
@@ -99,6 +100,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         user: "postgres".into(),
         ssl: SslMode::Disable,
         ssh: None,
+        snowflake: None,
     });
     let ssh = c.ssh.clone();
     let input = |window: &mut Window, cx: &mut Context<Workspace>, value: String| cx.new(|cx| InputState::new(window, cx).default_value(value));

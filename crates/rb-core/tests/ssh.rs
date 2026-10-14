@@ -192,6 +192,8 @@ fn tunneled(e: &Env) -> (Engine, ConnectionConfig) {
             port: Some(e.port),
             identity_file: Some(e.dir.join("id_plain").display().to_string()),
         }),
+
+        snowflake: None,
     };
     (Engine::new().unwrap().with_ssh_env(env), cfg)
 }
