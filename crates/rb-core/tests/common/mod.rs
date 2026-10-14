@@ -23,7 +23,8 @@ pub fn open() -> Option<(Engine, Session)> {
     };
     let password = pg.get_password().map(|p| String::from_utf8_lossy(p).into_owned());
     let engine = Engine::new().expect("runtime");
-    let session = pollster::block_on(engine.connect(&cfg, password)).expect("conectar ao Postgres de teste");
+    let creds = rb_core::session::Credentials { password, ..Default::default() };
+    let session = pollster::block_on(engine.connect(&cfg, creds)).expect("conectar ao Postgres de teste");
     Some((engine, session))
 }
 

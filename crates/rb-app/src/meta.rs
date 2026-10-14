@@ -4,12 +4,12 @@ use std::sync::Arc;
 use gpui_kit::*;
 use rb_core::config::ConnectionConfig;
 use rb_core::metadata::{self, ColumnMeta, IndexMeta, MetaCache, MetaRequest, SchemaObjects};
-use rb_core::session::Session;
+use rb_core::session::{Credentials, Session};
 
 #[derive(Clone)]
 pub struct ConnTarget {
     pub cfg: ConnectionConfig,
-    pub password: Option<String>,
+    pub creds: Credentials,
 }
 
 /// Sessão dedicada a metadados + cache compartilhado por árvore e autocomplete.

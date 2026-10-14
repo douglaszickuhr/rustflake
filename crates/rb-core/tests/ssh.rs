@@ -4,8 +4,11 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use pollster::block_on;
 use rb_core::DbError;
-use rb_core::ssh::{SshTarget, Tunnel, trust_host};
+use rb_core::config::{ConnectionConfig, SshConfig, SslMode};
+use rb_core::session::{Credentials, Engine};
+use rb_core::ssh::{SshEnv, SshTarget, Tunnel, trust_host};
 
 struct Env {
     host: String,
@@ -163,4 +166,81 @@ fn channels_to_open_and_closed_ports() {
         assert!(t.open_stream("rb-pg", 5432).await.is_ok());
         ssh_err(t.open_stream("rb-pg", 9).await.err(), "recusou abrir canal para rb-pg:9");
     });
+}
+
+/// Engine que só enxerga o home temporário; destino `rb-pg:5432` só resolve dentro do bastion.
+fn tunneled(e: &Env) -> (Engine, ConnectionConfig) {
+    let home = scratch("home");
+    let env = SshEnv {
+        config_file: home.join("nenhum"),
+        known_hosts: trusted_known_hosts(e),
+        agent: None,
+        user: "rb".into(),
+        home,
+    };
+    let cfg = ConnectionConfig {
+        id: "ssh-test".into(),
+        name: "ssh".into(),
+        host: "rb-pg".into(),
+        port: 5432,
+        database: "postgres".into(),
+        user: "postgres".into(),
+        ssl: SslMode::Disable,
+        ssh: Some(SshConfig {
+            host: e.host.clone(),
+            user: Some("rb".into()),
+            port: Some(e.port),
+            identity_file: Some(e.dir.join("id_plain").display().to_string()),
+        }),
+    };
+    (Engine::new().unwrap().with_ssh_env(env), cfg)
+}
+
+#[test]
+fn queries_go_through_the_tunnel() {
+    let Some(e) = env() else { return skip() };
+    let (engine, cfg) = tunneled(&e);
+    let s = block_on(engine.connect(&cfg, Credentials::default())).unwrap();
+    assert_eq!(block_on(s.execute("select 1".into())).unwrap().batch.rows(), 1);
+    let s2 = block_on(engine.connect(&cfg, Credentials::default())).unwrap();
+    assert_eq!(block_on(s2.execute("select 2".into())).unwrap().batch.rows(), 1);
+}
+
+#[test]
+fn reconnects_after_backend_is_killed_through_tunnel() {
+    let Some(e) = env() else { return skip() };
+    let (engine, cfg) = tunneled(&e);
+    let s = block_on(engine.connect(&cfg, Credentials::default())).unwrap();
+    assert!(block_on(s.execute("select pg_terminate_backend(pg_backend_pid())".into())).is_err());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(block_on(s.execute("select 1".into())).unwrap().batch.rows(), 1);
+}
+
+#[test]
+fn cancel_through_tunnel() {
+    let Some(e) = env() else { return skip() };
+    let (engine, cfg) = tunneled(&e);
+    let s = block_on(engine.connect(&cfg, Credentials::default())).unwrap();
+    let started = std::time::Instant::now();
+    let res = std::thread::scope(|sc| {
+        sc.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            s.cancel();
+        });
+        block_on(s.execute("select pg_sleep(30)".into()))
+    });
+    assert!(matches!(res, Err(DbError::Postgres { ref code, .. }) if code == "57014"), "{res:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// `cargo test --release -p rb-core --test ssh -- --ignored --nocapture` (precisa do seed de perf no rb-pg).
+#[test]
+#[ignore]
+fn perf_big_first_batch_through_tunnel() {
+    let Some(e) = env() else { return skip() };
+    let (engine, cfg) = tunneled(&e);
+    let s = block_on(engine.connect(&cfg, Credentials::default())).unwrap();
+    let out = block_on(s.execute("select * from perf_big".into())).unwrap();
+    println!("primeiro lote de perf_big pelo túnel: {} ms", out.elapsed.as_millis());
+    assert!(out.elapsed.as_millis() < 200);
 }

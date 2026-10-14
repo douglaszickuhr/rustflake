@@ -10,6 +10,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::config::{self, ConfigFile, ConnectionConfig};
 use rb_core::secrets;
+use rb_core::session::Credentials;
 
 use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
@@ -97,9 +98,17 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let id = cfg.id.clone();
             let result = async {
-                let password = cx.background_spawn(async move { secrets::get_password(&id) }).await?;
-                let session = engine.connect(&cfg, password.clone()).await?;
-                Ok::<_, rb_core::DbError>((ConnTarget { cfg, password }, session))
+                let has_ssh = cfg.ssh.is_some();
+                let creds = cx
+                    .background_spawn(async move {
+                        Ok::<_, rb_core::DbError>(Credentials {
+                            password: secrets::get_password(&id)?,
+                            ssh_passphrase: if has_ssh { secrets::get_password(&secrets::ssh_account(&id))? } else { None },
+                        })
+                    })
+                    .await?;
+                let session = engine.connect(&cfg, creds.clone()).await?;
+                Ok::<_, rb_core::DbError>((ConnTarget { cfg, creds }, session))
             }
             .await;
             this.update_in(cx, |ws, window, cx| {

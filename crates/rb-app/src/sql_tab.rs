@@ -109,7 +109,7 @@ impl SqlTab {
         cx.spawn_in(window, async move |this, cx| {
             let session = match existing {
                 Some(s) => s,
-                None => match engine.connect(&conn.cfg, conn.password.clone()).await {
+                None => match engine.connect(&conn.cfg, conn.creds.clone()).await {
                     Ok(s) => Arc::new(s),
                     Err(e) => return this.update_in(cx, |t, w, cx| t.finish_error(&src, None, e, w, cx)),
                 },

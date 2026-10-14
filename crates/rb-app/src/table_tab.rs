@@ -128,7 +128,7 @@ impl TableTab {
             let result = async {
                 let session = match existing {
                     Some(s) => s,
-                    None => Arc::new(engine.connect(&conn.cfg, conn.password.clone()).await?),
+                    None => Arc::new(engine.connect(&conn.cfg, conn.creds.clone()).await?),
                 };
                 let out = session.execute(sql).await?;
                 Ok::<_, rb_core::DbError>((session, out))

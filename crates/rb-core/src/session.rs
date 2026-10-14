@@ -1,16 +1,21 @@
-use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
+use russh::ChannelStream;
+use russh::client::Msg;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::{mpsc, oneshot};
+use tokio_postgres::tls::MakeTlsConnect;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{CancelToken, Client};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::DbError;
 use crate::batch::{Batch, ColumnInfo};
-use crate::config::ConnectionConfig;
+use crate::config::{ConnectionConfig, SshConfig};
 use crate::split::{is_read_only_query, is_transaction_control};
+use crate::ssh::{SshEnv, Tunnel};
 
 pub const FETCH_ROWS: i32 = 1000;
 
@@ -18,6 +23,8 @@ pub const FETCH_ROWS: i32 = 1000;
 #[derive(Clone)]
 pub struct Engine {
     rt: Arc<Runtime>,
+    ssh_env: Arc<SshEnv>,
+    tunnels: Arc<TunnelCache>,
 }
 
 #[derive(Debug)]
@@ -48,6 +55,16 @@ pub struct SqlWithParams {
 }
 
 type Reply<T> = oneshot::Sender<Result<T, DbError>>;
+
+/// Segredos de uma conexão, lidos do Keychain pelo app.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Credentials {
+    pub password: Option<String>,
+    pub ssh_passphrase: Option<String>,
+}
+
+/// Um túnel por conexão do app (id + bloco SSH), compartilhado pelas sessões dela.
+type TunnelCache = Mutex<HashMap<(String, SshConfig), Weak<Tunnel>>>;
 
 enum Cmd {
     Execute { sql: String, reply: Reply<ExecOutcome> },
@@ -98,16 +115,88 @@ impl Engine {
             .enable_all()
             .build()
             .map_err(|e| DbError::Io(e.to_string()))?;
-        Ok(Engine { rt: Arc::new(rt) })
+        Ok(Engine { rt: Arc::new(rt), ssh_env: Arc::new(SshEnv::system()), tunnels: Arc::default() })
     }
 
-    pub async fn connect(&self, cfg: &ConnectionConfig, password: Option<String>) -> Result<Session, DbError> {
-        let pg = cfg.pg_config(password.as_deref());
+    /// Troca de onde vem a configuração SSH (testes).
+    pub fn with_ssh_env(mut self, env: SshEnv) -> Engine {
+        self.ssh_env = Arc::new(env);
+        self
+    }
+
+    pub async fn connect(&self, cfg: &ConnectionConfig, creds: Credentials) -> Result<Session, DbError> {
+        let pg = cfg.pg_config(creds.password.as_deref());
+        let route = cfg.ssh.clone().map(|ssh| (cfg.id.clone(), ssh, creds.ssh_passphrase, cfg.host.clone(), cfg.port));
+        let (env, tunnels) = (self.ssh_env.clone(), self.tunnels.clone());
         let handle = self.rt.handle().clone();
         self.rt
-            .spawn(async move { Session::open(pg, handle).await })
+            .spawn(async move {
+                let tunnel = match route {
+                    None => None,
+                    Some((id, ssh, passphrase, host, port)) => {
+                        Some((shared_tunnel(&tunnels, id, ssh, passphrase, &env).await?, host, port))
+                    }
+                };
+                Session::open(Connector { pg, tunnel }, handle).await
+            })
             .await
             .map_err(|e| DbError::Connection(e.to_string()))?
+    }
+}
+
+/// O túnel cai quando a última sessão que o usa cai (o cache guarda só `Weak`).
+/// ponytail: duas sessões abrindo ao mesmo tempo podem criar dois túneis; ambos funcionam
+/// e o segundo fica no cache.
+async fn shared_tunnel(
+    cache: &TunnelCache,
+    id: String,
+    ssh: SshConfig,
+    passphrase: Option<String>,
+    env: &SshEnv,
+) -> Result<Arc<Tunnel>, DbError> {
+    let key = (id, ssh);
+    if let Some(t) = cache.lock().expect("cache de túneis").get(&key).and_then(Weak::upgrade) {
+        return Ok(t);
+    }
+    let target = key.1.resolve(env)?;
+    let tunnel = Arc::new(Tunnel::connect(target, passphrase).await?);
+    cache.lock().expect("cache de túneis").insert(key, Arc::downgrade(&tunnel));
+    Ok(tunnel)
+}
+
+/// Como abrir um cliente Postgres: direto, ou por um canal do túnel SSH (sem porta local).
+#[derive(Clone)]
+struct Connector {
+    pg: tokio_postgres::Config,
+    /// Túnel e destino (`host`, `port`) vistos pelo bastion.
+    tunnel: Option<(Arc<Tunnel>, String, u16)>,
+}
+
+type ChannelTls = <MakeRustlsConnect as MakeTlsConnect<ChannelStream<Msg>>>::TlsConnect;
+
+fn channel_tls(host: &str) -> Result<ChannelTls, DbError> {
+    MakeTlsConnect::<ChannelStream<Msg>>::make_tls_connect(&mut tls(), host).map_err(|e| DbError::Connection(e.to_string()))
+}
+
+impl Connector {
+    async fn client(&self) -> Result<Client, DbError> {
+        let Some((tunnel, host, port)) = &self.tunnel else { return connect_client(&self.pg).await };
+        let stream = tunnel.open_stream(host, *port).await?;
+        let (client, conn) = self.pg.connect_raw(stream, channel_tls(host)?).await?;
+        tokio::spawn(async move {
+            if let Err(e) = conn.await {
+                tracing::warn!("conexão encerrada: {e}");
+            }
+        });
+        Ok(client)
+    }
+
+    async fn cancel(&self, token: CancelToken) -> Result<(), DbError> {
+        match &self.tunnel {
+            None => token.cancel_query(tls()).await?,
+            Some((tunnel, host, port)) => token.cancel_query_raw(tunnel.open_stream(host, *port).await?, channel_tls(host)?).await?,
+        }
+        Ok(())
     }
 }
 
@@ -116,6 +205,7 @@ pub struct Session {
     tx: mpsc::UnboundedSender<Cmd>,
     cancel: Arc<Mutex<CancelToken>>,
     rt: Handle,
+    connector: Connector,
 }
 
 fn closed() -> DbError {
@@ -123,14 +213,14 @@ fn closed() -> DbError {
 }
 
 impl Session {
-    async fn open(pg: tokio_postgres::Config, rt: Handle) -> Result<Session, DbError> {
+    async fn open(connector: Connector, rt: Handle) -> Result<Session, DbError> {
         let started = Instant::now();
-        let client = connect_client(&pg).await?;
+        let client = connector.client().await?;
         tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "conectado");
         let cancel = Arc::new(Mutex::new(client.cancel_token()));
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(Actor { client, pg, cancel: cancel.clone(), last_exec: 0 }.run(rx));
-        Ok(Session { tx, cancel, rt })
+        tokio::spawn(Actor { client, connector: connector.clone(), cancel: cancel.clone(), last_exec: 0 }.run(rx));
+        Ok(Session { tx, cancel, rt, connector })
     }
 
     async fn call<T>(&self, make: impl FnOnce(Reply<T>) -> Cmd) -> Result<T, DbError> {
@@ -160,8 +250,9 @@ impl Session {
     /// Pede ao servidor para cancelar o comando em andamento desta sessão.
     pub fn cancel(&self) {
         let token = self.cancel.lock().expect("mutex do cancel token").clone();
+        let connector = self.connector.clone();
         self.rt.spawn(async move {
-            if let Err(e) = token.cancel_query(tls()).await {
+            if let Err(e) = connector.cancel(token).await {
                 tracing::warn!("cancelamento falhou: {e}");
             }
         });
@@ -170,7 +261,7 @@ impl Session {
 
 struct Actor {
     client: Client,
-    pg: tokio_postgres::Config,
+    connector: Connector,
     cancel: Arc<Mutex<CancelToken>>,
     last_exec: u64,
 }
@@ -209,7 +300,7 @@ impl Actor {
             return Ok(());
         }
         tracing::info!("reconectando");
-        self.client = connect_client(&self.pg).await?;
+        self.client = self.connector.client().await?;
         *self.cancel.lock().expect("mutex do cancel token") = self.client.cancel_token();
         Ok(())
     }

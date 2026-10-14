@@ -5,6 +5,11 @@ use crate::DbError;
 const SERVICE: &str = "dev.rustbeaver";
 const NOT_FOUND: i32 = -25300; // errSecItemNotFound
 
+/// Conta do Keychain que guarda a passphrase da chave SSH de uma conexão.
+pub fn ssh_account(id: &str) -> String {
+    format!("ssh:{id}")
+}
+
 fn err(e: security_framework::base::Error) -> DbError {
     DbError::Keychain(e.to_string())
 }
