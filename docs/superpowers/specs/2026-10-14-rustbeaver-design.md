@@ -57,7 +57,7 @@ GPUI em um só crate.
 
 | Crate | Versão | Uso |
 |---|---|---|
-| `gpui-component` | 0.7.3 (traz `gpui-pre =0.3.9`) | UI, editor de código, tabela virtualizada, árvore |
+| `gpui-kit` | =0.7.3 (gpui-pre 0.3.9 + gpui-component 0.7.3 + plataforma macOS), feature `tree-sitter-sql` | UI, editor de código, tabela virtualizada, árvore |
 | `tokio-postgres` | 0.7.x | protocolo Postgres |
 | `tokio-postgres-rustls` | 0.14.x | TLS |
 | `tokio` | 1.53.x | runtime de I/O |
@@ -88,25 +88,26 @@ GPUI em um só crate.
 
 ### Divisão de statements
 
-O script é dividido em statements pela árvore do tree-sitter (gramática SQL que já vem com
-o editor), nunca por `;` textual. Deve respeitar blocos `$$...$$`, `$tag$...$tag$`,
-strings e comentários.
+O script é dividido em statements por um lexer SQL próprio e pequeno (também usado pelo
+autocomplete), nunca por `;` textual. Deve respeitar blocos `$$...$$`, `$tag$...$tag$`,
+strings, `E'...'`, identificadores entre aspas e comentários (inclusive aninhados).
 
 - `Cmd+Enter`: executa o statement sob o cursor.
 - `Cmd+Shift+Enter` (executar script): roda os statements em sequência, parando no primeiro erro.
 
 ### Execução
 
-Classificação pela primeira palavra-chave do statement:
+Todo statement é preparado; a classificação vem do próprio Postgres:
 
-- **Leitura** (`SELECT`, `WITH` sem DML, `VALUES`, `TABLE`): dentro de
-  `BEGIN READ ONLY`, faz bind de um portal e busca lotes de 1.000 linhas
+- **Retorna colunas** (`SELECT`, `WITH`, `VALUES`, `... RETURNING`, `EXPLAIN` etc.):
+  dentro de `BEGIN`, faz bind de um portal e busca lotes de 1.000 linhas
   (`query_portal(portal, 1000)`). O primeiro lote vai imediatamente para a UI; os
-  seguintes são pedidos quando a grade rola perto do fim. A transação recebe `ROLLBACK`
-  quando o portal esgota, quando outra query é executada na aba, ou quando a aba fecha.
-- **Demais** (DML, DDL, `... RETURNING`, `WITH` contendo DML): executa em autocommit
-  com `query_raw`, retornando as linhas do `RETURNING` (se houver) e a contagem de linhas
-  afetadas.
+  seguintes são pedidos quando a grade rola perto do fim. A transação recebe `COMMIT`
+  quando o portal esgota, quando chega outro comando na sessão, ou quando a aba fecha.
+  `COMMIT` (e não `ROLLBACK` em `READ ONLY`) preserva a semântica de autocommit:
+  `nextval()`, funções que escrevem e `SELECT ... FOR UPDATE` continuam funcionando.
+- **Não retorna colunas** (DML sem `RETURNING`, DDL, `VACUUM`): executa em autocommit e
+  devolve a contagem de linhas afetadas.
 
 ### Armazenamento de resultados
 
@@ -119,6 +120,8 @@ Classificação pela primeira palavra-chave do statement:
   uuid, date/time/timestamp/timestamptz/interval, json/jsonb, bytea (hex), arrays desses,
   enums (como texto). Qualquer outro: `<nome_do_tipo: N bytes>`.
 - Lotes nunca são liberados enquanto o resultado estiver aberto.
+- TLS: `prefer` e `require` verificam o certificado com as raízes do sistema (mais
+  estrito que o `require` do libpq, que não verifica).
 
 ### Cancelamento
 
@@ -156,18 +159,22 @@ internas curtas).
 
 - Barra lateral: seletor de conexão + árvore de schema.
 - Área principal: abas de SQL e de tabelas.
-- Diálogo simples para criar/editar conexão (salva no TOML + Keychain).
+- Diálogo simples para criar conexão (salva no TOML + Keychain). Editar ou remover: pelo
+  TOML por enquanto.
 
 ### Editor SQL
 
 - Editor de código do `gpui-component` com destaque de SQL.
 - Cada aba é um arquivo `.sql`, salvo automaticamente (debounce de ~1 s e ao fechar).
+  Ao conectar, os scripts de `scripts/` reabrem como abas. Fechar a aba (`Cmd+W`) move o
+  arquivo para `scripts/closed/` — nada é apagado.
 - Autocomplete, só a partir do cache (sem I/O ao digitar):
   - após `FROM` / `JOIN` / `UPDATE` / `INTO`: tabelas e views;
   - após `identificador.`: colunas da tabela, resolvendo alias pelo `FROM` do statement
     atual; se o identificador for um schema, os objetos dele;
   - demais posições: palavras-chave + tabelas.
-  - Colunas fora do cache disparam carga em segundo plano e o popup se atualiza.
+  - Metadados fora do cache disparam carga em segundo plano; os itens aparecem na próxima
+    tecla.
   - Filtro: prefixo primeiro, depois "contém", sem diferenciar maiúsculas.
 
 ### Grade
@@ -175,7 +182,8 @@ internas curtas).
 - `Table` virtualizada do `gpui-component`.
 - Pede próximo lote quando faltam < 200 linhas para o fim.
 - Largura das colunas estimada pelo primeiro lote (com limite máximo).
-- `Cmd+C` copia seleção como TSV.
+- `Cmd+C` copia a seleção: célula (valor completo), linha ou coluna (TSV). O componente
+  não tem seleção de intervalo de células.
 - Rodapé: contagem de linhas carregadas (com `+` se houver mais), tempo de execução,
   botão de cancelar.
 
@@ -190,9 +198,12 @@ internas curtas).
 
 - Somente em tabelas abertas pela árvore **com chave primária**. Sem PK: somente leitura
   com aviso.
+- Duplo clique na célula abre um diálogo com o valor completo (editor multilinha), com
+  "OK", "Definir NULL" e "Cancelar".
 - Edições ficam pendentes e destacadas: célula alterada, linha nova, linha marcada para
-  exclusão. Ação explícita "definir NULL".
-- `Cmd+S` grava tudo em uma transação:
+  exclusão. Recarregar, filtrar ou ordenar com edições pendentes é recusado.
+- `Cmd+S` grava tudo em uma transação (exclusões, alterações, inserções, nessa ordem); cada
+  statement precisa afetar exatamente 1 linha, senão tudo é desfeito:
   - `UPDATE "s"."t" SET "c" = ($1::text)::<tipo> WHERE pk = ...`
   - `INSERT` e `DELETE` equivalentes, parametrizados.
   - Valores sempre enviados como texto e convertidos pelo Postgres
