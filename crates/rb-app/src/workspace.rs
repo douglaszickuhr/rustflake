@@ -5,7 +5,7 @@ use std::sync::Arc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::Icon;
+use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -428,14 +428,11 @@ impl Workspace {
                 Some(_) => Icon::default().path("icons/snowflake-logo.svg").text_color(rgb(0x29b5e8)),
                 None => Icon::default().path("icons/postgresql.svg").text_color(rgb(0x4169e1)),
             };
-            let mut b = Button::new(("conn", ix)).icon(logo).label(c.name.clone()).ghost();
-            if active {
-                b = b.primary();
-            }
+            let b = side_item(("conn", ix), Some(logo), c.name.clone(), active, cx);
             list = list.child(
                 h_flex()
                     .gap_1()
-                    .child(div().flex_1().child(b.w_full().on_click(cx.listener(move |ws, _, window, cx| ws.connect(ix, window, cx)))))
+                    .child(b.flex_1().on_click(cx.listener(move |ws, _, window, cx| ws.connect(ix, window, cx))))
                     .child(Button::new(("edit-conn", ix)).label("✎").ghost().on_click(cx.listener(move |ws, _, window, cx| {
                         let c = ws.connections[ix].clone();
                         conn_dialog::open(Some(c), window, cx)
@@ -462,12 +459,33 @@ impl Workspace {
                 // Um por linha: lado a lado o role era cortado em barras estreitas.
                 d.child(
                     v_flex()
-                        .child(Button::new("pick-wh").label(format!("WH: {wh}")).ghost().w_full().justify_start().on_click(cx.listener(|ws, _, w, cx| ws.pick_context("warehouse", w, cx))))
-                        .child(Button::new("pick-role").label(format!("Role: {role}")).ghost().w_full().justify_start().on_click(cx.listener(|ws, _, w, cx| ws.pick_context("role", w, cx)))),
+                        .child(side_item("pick-wh", None, format!("WH: {wh}"), false, cx).on_click(cx.listener(|ws, _, w, cx| ws.pick_context("warehouse", w, cx))))
+                        .child(side_item("pick-role", None, format!("Role: {role}"), false, cx).on_click(cx.listener(|ws, _, w, cx| ws.pick_context("role", w, cx)))),
                 )
             })
             .when_some(self.active.as_ref().map(|a| a.tree.clone()), |d, tree| d.child(div().flex_1().child(tree)))
     }
+}
+
+/// Item clicável da barra lateral, alinhado à esquerda (o Button sempre centraliza).
+fn side_item(id: impl Into<ElementId>, icon: Option<Icon>, label: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div> {
+    let t = cx.theme();
+    let label = label.into();
+    h_flex()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .gap_2()
+        .px_2()
+        .py_1()
+        .min_w_0()
+        .rounded(t.radius)
+        .text_sm()
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .map(|d| if active { d.bg(t.primary).text_color(t.primary_foreground) } else { d.hover(|d| d.bg(t.secondary_hover)) })
+        .when_some(icon, |d, i| d.child(i.small().flex_shrink_0()))
+        .child(div().min_w_0().overflow_hidden().text_ellipsis().child(label))
 }
 
 impl Render for Workspace {

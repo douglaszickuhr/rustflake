@@ -33,6 +33,21 @@ pub fn one_line(s: &str, max_chars: usize) -> String {
     out
 }
 
+/// Valor completo para leitura detalhada: JSON indentado (ordem das chaves mantida),
+/// o resto como está; corta em `max_chars` com `…`.
+pub fn detail_text(s: &str, max_chars: usize) -> String {
+    let t = s.trim_start();
+    let pretty = (t.starts_with('{') || t.starts_with('['))
+        .then(|| serde_json::from_str::<serde_json::Value>(t).ok())
+        .flatten()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok());
+    let s = pretty.as_deref().unwrap_or(s);
+    match s.char_indices().nth(max_chars) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s.to_string(),
+    }
+}
+
 fn is_textual(ty: &Type) -> bool {
     matches!(*ty, Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::JSON | Type::JSONB | Type::XML)
         || matches!(ty.kind(), Kind::Enum(_))
@@ -276,6 +291,17 @@ fn array_dim(elem: &Type, r: &[u8], dims: &[usize], pos: &mut usize, out: &mut S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detail_text_indents_json_and_caps_size() {
+        assert_eq!(detail_text(r#"{"a":[1,2]}"#, 100), "{\n  \"a\": [\n    1,\n    2\n  ]\n}");
+        assert_eq!(detail_text("  [true]", 100), "[\n  true\n]");
+        assert_eq!(detail_text(r#"{"b":1,"a":2}"#, 100), "{\n  \"b\": 1,\n  \"a\": 2\n}");
+        // Texto que não é JSON fica como está, mesmo começando com chave.
+        assert_eq!(detail_text("{não é json", 100), "{não é json");
+        assert_eq!(detail_text("linha 1\nlinha 2", 100), "linha 1\nlinha 2");
+        assert_eq!(detail_text("abcdef", 3), "abc…");
+    }
 
     fn numeric(ndigits: i16, weight: i16, sign: u16, dscale: u16, digits: &[i16]) -> Vec<u8> {
         let mut v = Vec::new();

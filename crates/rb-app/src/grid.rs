@@ -6,11 +6,14 @@ use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelecti
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::batch::ResultSet;
-use rb_core::decode::one_line;
+use gpui_kit::component::tooltip::Tooltip;
+use rb_core::decode::{detail_text, one_line};
 use rb_core::session::Session;
 use rb_core::table::PendingEdits;
 
 pub const MAX_CELL_CHARS: usize = 200;
+/// Limite do texto no tooltip de detalhe; o valor inteiro continua no ⌘C.
+const MAX_DETAIL_CHARS: usize = 6_000;
 
 type OnSort = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
 
@@ -154,7 +157,30 @@ impl TableDelegate for ResultGrid {
 
     fn render_td(&mut self, row: usize, col: usize, _window: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
         let (text, null, edited, deleted) = self.cell(row, col);
+        // ponytail: largura estimada em ~7px por caractere; medir o texto se o palpite errar muito.
+        let width = self.widths.get(col).copied().unwrap_or(120.);
+        let clipped = text.chars().count() as f32 * 7. > width - 12.;
+        let detail = (!null && clipped).then(|| self.full_text(row, col)).flatten().map(|full| detail_text(&full, MAX_DETAIL_CHARS));
+        let cols = self.columns_count(cx);
         div()
+            .id(("cell", row * cols + col))
+            .when_some(detail, |d, detail| {
+                let detail = SharedString::from(detail);
+                d.tooltip(move |window, cx| {
+                    let detail = detail.clone();
+                    Tooltip::element(move |_, cx| {
+                        div()
+                            .max_w(px(720.))
+                            .max_h(px(480.))
+                            .overflow_hidden()
+                            .py_1()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_xs()
+                            .child(detail.clone())
+                    })
+                    .build(window, cx)
+                })
+            })
             .size_full()
             .overflow_hidden()
             .whitespace_nowrap()
