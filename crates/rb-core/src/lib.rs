@@ -8,5 +8,6 @@ pub mod metadata;
 pub mod secrets;
 pub mod session;
 pub mod split;
+pub mod table;
 
 pub use error::DbError;
