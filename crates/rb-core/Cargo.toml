@@ -1,0 +1,18 @@
+[package]
+name = "rb-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustls = "0.23"
+rustls-native-certs = "0.8"
+security-framework = "3"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-postgres = "0.7.18"
+tokio-postgres-rustls = "0.14"
+toml = "1"
+tracing = "0.1.44"
+
+[dev-dependencies]
+pollster = "1"
