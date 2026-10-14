@@ -12,6 +12,7 @@ pub enum CandidateKind {
     View,
     Function,
     Schema,
+    Database,
     Keyword,
 }
 
@@ -94,7 +95,21 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
     }
     let is_punct = |t: &Token, p: &str| t.kind == TokKind::Punct && &src[t.start..t.end] == p;
 
-    if let [.., q, dot] = before.as_slice()
+    let ident = |t: &Token| matches!(t.kind, TokKind::Word | TokKind::QuotedIdent);
+    if let (Dialect::Snowflake, [.., d, dot1, sc, dot2]) = (cache.dialect, before.as_slice())
+        && is_punct(dot1, ".")
+        && is_punct(dot2, ".")
+        && dot2.end == replace.start
+        && ident(d)
+        && ident(sc)
+        && d.end == dot1.start
+        && dot1.end == sc.start
+        && sc.end == dot2.start
+    {
+        // `DB.SCHEMA.`
+        let key = format!("{}.{}", cache.dialect.fold(&src[d.start..d.end]), cache.dialect.fold(&src[sc.start..sc.end]));
+        push_objects(&mut out, cache, &key);
+    } else if let [.., q, dot] = before.as_slice()
         && is_punct(dot, ".")
         && dot.end == replace.start
         && matches!(q.kind, TokKind::Word | TokKind::QuotedIdent)
@@ -106,6 +121,8 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
             push_columns(&mut out, cache, r);
         } else if cache.schemas.contains(&key) {
             push_objects(&mut out, cache, &key);
+        } else if cache.dialect == Dialect::Snowflake && cache.databases.contains(&qual) {
+            push_db_schemas(&mut out, cache, &qual);
         } else if let Some(r) = refs.iter().find(|r| r.table == qual) {
             push_columns(&mut out, cache, r);
         }
@@ -125,6 +142,9 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
                 _ => s.clone(),
             };
             out.candidates.push(Candidate { insert: cache.dialect.quote(&label), label, kind: CandidateKind::Schema, detail: None });
+        }
+        if cache.dialect == Dialect::Snowflake {
+            out.candidates.extend(cache.databases.iter().map(|d| Candidate { label: d.clone(), insert: cache.dialect.quote(d), kind: CandidateKind::Database, detail: None }));
         }
     } else {
         for r in &refs {
@@ -168,6 +188,19 @@ fn push_columns(out: &mut Completion, cache: &MetaCache, r: &TableRef) {
             detail: Some(c.type_name.clone()),
         })),
         None => out.missing.push(MetaRequest::Columns(schema, r.table.clone())),
+    }
+}
+
+/// Schemas de um database do Snowflake (sem o prefixo `DB.`), ou o pedido deles.
+fn push_db_schemas(out: &mut Completion, cache: &MetaCache, db: &str) {
+    if !cache.loaded_dbs.contains(db) {
+        out.missing.push(MetaRequest::Schemas(db.to_string()));
+        return;
+    }
+    for s in &cache.schemas {
+        if let Some(rest) = s.strip_prefix(db).and_then(|r| r.strip_prefix('.')) {
+            out.candidates.push(Candidate { label: rest.to_string(), insert: cache.dialect.quote(rest), kind: CandidateKind::Schema, detail: None });
+        }
     }
 }
 
@@ -220,6 +253,14 @@ fn table_refs(src: &str, toks: &[Token], d: Dialect) -> Vec<TableRef> {
             {
                 r.schema = Some(std::mem::replace(&mut r.table, n));
                 i += 2;
+                // `DB.SCHEMA.TABELA` (Snowflake): o schema vira a chave `DB.SCHEMA` do cache.
+                if toks.get(i).is_some_and(|t| punct(t, "."))
+                    && let Some(n) = toks.get(i + 1).and_then(name)
+                {
+                    let db = r.schema.take().unwrap_or_default();
+                    r.schema = Some(format!("{db}.{}", std::mem::replace(&mut r.table, n)));
+                    i += 2;
+                }
             }
             if toks.get(i).and_then(word).as_deref() == Some("as") {
                 i += 1;
@@ -351,6 +392,31 @@ mod tests {
         let src = "select * from ";
         let labels: Vec<String> = complete(src, src.len(), &c).candidates.iter().filter(|x| x.kind == CandidateKind::Schema).map(|x| x.label.clone()).collect();
         assert_eq!(labels, vec!["PUBLIC".to_string(), "RAW".to_string()]);
+    }
+
+    #[test]
+    fn snowflake_completes_three_part_names() {
+        let mut c = snowflake_cache();
+        c.databases = vec!["DB".into(), "LEARN".into()];
+        c.loaded_dbs.insert("DB".into());
+        // `DB.` de outro database: pede os schemas dele, depois lista.
+        let src = "select * from LEARN.";
+        assert!(complete(src, src.len(), &c).missing.contains(&MetaRequest::Schemas("LEARN".into())));
+        c.schemas.push("LEARN.STAGE".into());
+        c.loaded_dbs.insert("LEARN".into());
+        assert_eq!(complete(src, src.len(), &c).candidates.iter().map(|x| x.insert.as_str()).collect::<Vec<_>>(), vec!["STAGE"]);
+        // `DB.SCHEMA.`: objetos do schema.
+        let src = "select * from learn.stage.";
+        assert_eq!(complete(src, src.len(), &c).missing, vec![MetaRequest::Objects("LEARN.STAGE".into())]);
+        c.objects.insert("LEARN.STAGE".into(), SchemaObjects { tables: vec!["MENU".into()], ..Default::default() });
+        assert_eq!(labels(&complete(src, src.len(), &c)), vec!["MENU"]);
+        // Colunas de uma tabela com nome em três partes.
+        let src = "select m. from LEARN.STAGE.MENU m";
+        assert_eq!(complete(src, "select m.".len(), &c).missing, vec![MetaRequest::Columns("LEARN.STAGE".into(), "MENU".into())]);
+        // Depois de `from`, os databases também aparecem.
+        let src = "select * from ";
+        let dbs: Vec<String> = complete(src, src.len(), &c).candidates.iter().filter(|x| x.kind == CandidateKind::Database).map(|x| x.label.clone()).collect();
+        assert_eq!(dbs, vec!["DB".to_string(), "LEARN".to_string()]);
     }
 
     #[test]

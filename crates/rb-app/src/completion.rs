@@ -25,6 +25,7 @@ fn kind(k: CandidateKind) -> CompletionItemKind {
         CandidateKind::View => CompletionItemKind::INTERFACE,
         CandidateKind::Function => CompletionItemKind::FUNCTION,
         CandidateKind::Schema => CompletionItemKind::MODULE,
+        CandidateKind::Database => CompletionItemKind::FOLDER,
         CandidateKind::Keyword => CompletionItemKind::KEYWORD,
     }
 }
