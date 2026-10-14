@@ -262,7 +262,12 @@ impl Workspace {
                 bar.child(
                     Tab::new()
                         .label(t.title(cx))
-                        .suffix(Button::new(("close", i)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| ws.close_tab(i, window, cx)))),
+                        .suffix(Button::new(("close", i)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| {
+                            // Sem isto o clique sobe até a aba, que faria active_tab = i depois da remoção
+                            // (índice inexistente ao fechar a última aba → pânico no render).
+                            cx.stop_propagation();
+                            ws.close_tab(i, window, cx)
+                        }))),
                 )
             },
         );
