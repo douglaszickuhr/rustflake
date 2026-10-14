@@ -2,6 +2,7 @@ mod conn_dialog;
 mod grid;
 mod meta;
 mod schema_tree;
+mod sql_tab;
 mod workspace;
 
 use std::time::Instant;
@@ -28,6 +29,8 @@ fn main() {
             KeyBinding::new("cmd-enter", RunStatement, Some("SqlTab > Input")),
             KeyBinding::new("cmd-shift-enter", RunScript, Some("SqlTab > Input")),
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab")),
+            // O editor liga cmd-. a ToggleCodeActions; a ligação mais profunda vence.
+            KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab > Input")),
             KeyBinding::new("cmd-.", CancelQuery, Some("TableTab")),
             KeyBinding::new("cmd-s", SaveEdits, Some("TableTab")),
             KeyBinding::new("cmd-t", NewSqlTab, Some("Workspace")),

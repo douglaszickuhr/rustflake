@@ -38,7 +38,7 @@ impl ResultGrid {
             .map(|c| {
                 let sample = (0..rs.rows().min(100)).map(|r| rs.display(r, c, 60).map_or(4, |s| s.chars().count())).max().unwrap_or(0);
                 let chars = sample.max(rs.columns[c].name.chars().count()).clamp(4, 60);
-                chars as f32 * 7.5 + 24.
+                chars as f32 * 8.5 + 24.
             })
             .collect();
         self.rs = Some(rs);

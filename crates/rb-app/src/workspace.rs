@@ -1,8 +1,10 @@
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -11,6 +13,7 @@ use rb_core::secrets;
 
 use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
+use crate::sql_tab::SqlTab;
 use crate::{CloseTab, Db, NewSqlTab, conn_dialog};
 
 pub struct Active {
@@ -19,10 +22,25 @@ pub struct Active {
     pub tree: Entity<SchemaTree>,
 }
 
+#[derive(Clone)]
+pub enum TabView {
+    Sql(Entity<SqlTab>),
+}
+
+impl TabView {
+    fn title(&self, cx: &App) -> SharedString {
+        match self {
+            TabView::Sql(t) => t.read(cx).title(),
+        }
+    }
+}
+
 pub struct Workspace {
     focus: FocusHandle,
     pub connections: Vec<ConnectionConfig>,
     pub active: Option<Active>,
+    pub tabs: Vec<TabView>,
+    pub active_tab: usize,
     connecting: bool,
 }
 
@@ -35,7 +53,7 @@ impl Workspace {
                 Vec::new()
             }
         };
-        Workspace { focus: cx.focus_handle(), connections, active: None, connecting: false }
+        Workspace { focus: cx.focus_handle(), connections, active: None, tabs: Vec::new(), active_tab: 0, connecting: false }
     }
 
     pub fn add_connection(&mut self, cfg: ConnectionConfig, password: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -101,8 +119,85 @@ impl Workspace {
 
     pub fn open_table(&mut self, _schema: String, _table: String, _window: &mut Window, _cx: &mut Context<Self>) {}
 
-    /// Ponto de extensão: Tarefas 12 e 14 criam a árvore e as abas aqui.
-    fn on_connected(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    pub fn new_sql_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(conn) = self.active.as_ref().map(|a| a.conn.clone()) else { return };
+        let dir = config::scripts_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            window.push_notification(Notification::error(e.to_string()), cx);
+            return;
+        }
+        let n = (1..).find(|n| !dir.join(format!("script-{n}.sql")).exists()).unwrap_or(1);
+        let path = dir.join(format!("script-{n}.sql"));
+        self.open_sql_file(path, conn, window, cx);
+    }
+
+    fn open_sql_file(&mut self, path: PathBuf, conn: ConnTarget, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = cx.new(|cx| SqlTab::new(path, conn, window, cx));
+        self.tabs.push(TabView::Sql(tab));
+        self.active_tab = self.tabs.len() - 1;
+        cx.notify();
+    }
+
+    /// Fechar não apaga: o arquivo vai para scripts/closed/.
+    fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            return;
+        }
+        if let TabView::Sql(t) = self.tabs.remove(ix) {
+            let t = t.read(cx);
+            t.save_now(cx);
+            let closed = config::scripts_dir().join("closed");
+            let moved = std::fs::create_dir_all(&closed).and_then(|_| std::fs::rename(&t.path, closed.join(t.path.file_name().unwrap_or_default())));
+            if let Err(e) = moved {
+                tracing::warn!("falha ao arquivar script: {e}");
+            }
+        }
+        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        cx.notify();
+    }
+
+    /// Reabre os scripts salvos (ordenados) ou cria um novo.
+    fn on_connected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(conn) = self.active.as_ref().map(|a| a.conn.clone()) else { return };
+        self.tabs.clear();
+        let mut files: Vec<PathBuf> = std::fs::read_dir(config::scripts_dir())
+            .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "sql")).collect())
+            .unwrap_or_default();
+        files.sort();
+        if files.is_empty() {
+            self.new_sql_tab(window, cx);
+        }
+        for f in files {
+            self.open_sql_file(f, conn.clone(), window, cx);
+        }
+    }
+
+    fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.tabs.is_empty() {
+            let msg = match &self.active {
+                Some(a) => format!("{} · {} schemas — ⌘T abre um script", a.conn.cfg.name, a.meta.read(cx).cache.schemas.len()),
+                None => "Nenhuma conexão aberta".into(),
+            };
+            return v_flex().flex_1().h_full().items_center().justify_center().child(msg).into_any_element();
+        }
+        let bar = self.tabs.iter().enumerate().fold(
+            TabBar::new("tabs").selected_index(self.active_tab).on_click(cx.listener(|ws, ix: &usize, _, cx| {
+                ws.active_tab = *ix;
+                cx.notify();
+            })),
+            |bar, (i, t)| {
+                bar.child(
+                    Tab::new()
+                        .label(t.title(cx))
+                        .suffix(Button::new(("close", i)).label("×").ghost().on_click(cx.listener(move |ws, _, _, cx| ws.close_tab(i, cx)))),
+                )
+            },
+        );
+        let content = match &self.tabs[self.active_tab] {
+            TabView::Sql(t) => t.clone().into_any_element(),
+        };
+        v_flex().flex_1().h_full().child(bar).child(div().flex_1().child(content)).into_any_element()
+    }
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = v_flex().gap_1();
@@ -132,19 +227,15 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = match &self.active {
-            Some(a) => format!("{} · {} schemas", a.conn.cfg.name, a.meta.read(cx).cache.schemas.len()),
-            None => "Nenhuma conexão aberta".into(),
-        };
         h_flex()
             .key_context("Workspace")
             .track_focus(&self.focus)
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .on_action(cx.listener(|_, _: &NewSqlTab, _, _| {}))
-            .on_action(cx.listener(|_, _: &CloseTab, _, _| {}))
+            .on_action(cx.listener(|ws, _: &NewSqlTab, window, cx| ws.new_sql_tab(window, cx)))
+            .on_action(cx.listener(|ws, _: &CloseTab, _, cx| ws.close_tab(ws.active_tab, cx)))
             .child(div().w(px(260.)).h_full().border_r_1().border_color(cx.theme().border).child(self.render_sidebar(cx)))
-            .child(v_flex().flex_1().h_full().items_center().justify_center().child(status))
+            .child(self.render_main(cx))
     }
 }
