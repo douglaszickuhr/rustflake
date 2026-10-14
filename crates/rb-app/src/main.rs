@@ -26,6 +26,12 @@ struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        // Logos (simple-icons, CC0) monocromáticos; a cor vem de quem desenha.
+        match path {
+            "icons/postgresql.svg" => return Ok(Some(include_bytes!("../assets/icons/postgresql.svg").as_slice().into())),
+            "icons/snowflake-logo.svg" => return Ok(Some(include_bytes!("../assets/icons/snowflake.svg").as_slice().into())),
+            _ => {}
+        }
         match ExtraIcons.load(path)? {
             Some(bytes) => Ok(Some(bytes)),
             None => gpui_kit::assets::Assets.load(path),

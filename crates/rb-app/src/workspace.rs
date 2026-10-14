@@ -5,7 +5,7 @@ use std::sync::Arc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::assets::IconName;
+use gpui_kit::component::Icon;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -424,7 +424,11 @@ impl Workspace {
         let mut list = v_flex().gap_1();
         for (ix, c) in self.connections.iter().enumerate() {
             let active = self.active.as_ref().is_some_and(|a| a.conn.cfg.id == c.id);
-            let mut b = Button::new(("conn", ix)).icon(IconName::Database).label(c.name.clone()).ghost();
+            let logo = match c.snowflake {
+                Some(_) => Icon::default().path("icons/snowflake-logo.svg").text_color(rgb(0x29b5e8)),
+                None => Icon::default().path("icons/postgresql.svg").text_color(rgb(0x4169e1)),
+            };
+            let mut b = Button::new(("conn", ix)).icon(logo).label(c.name.clone()).ghost();
             if active {
                 b = b.primary();
             }
@@ -455,11 +459,11 @@ impl Workspace {
                 let c = &a.meta.read(cx).cache;
                 let wh = c.warehouse.clone().unwrap_or_else(|| "—".into());
                 let role = c.role.clone().unwrap_or_else(|| "—".into());
+                // Um por linha: lado a lado o role era cortado em barras estreitas.
                 d.child(
-                    h_flex()
-                        .gap_1()
-                        .child(Button::new("pick-wh").label(format!("WH: {wh}")).ghost().on_click(cx.listener(|ws, _, w, cx| ws.pick_context("warehouse", w, cx))))
-                        .child(Button::new("pick-role").label(format!("Role: {role}")).ghost().on_click(cx.listener(|ws, _, w, cx| ws.pick_context("role", w, cx)))),
+                    v_flex()
+                        .child(Button::new("pick-wh").label(format!("WH: {wh}")).ghost().w_full().justify_start().on_click(cx.listener(|ws, _, w, cx| ws.pick_context("warehouse", w, cx))))
+                        .child(Button::new("pick-role").label(format!("Role: {role}")).ghost().w_full().justify_start().on_click(cx.listener(|ws, _, w, cx| ws.pick_context("role", w, cx)))),
                 )
             })
             .when_some(self.active.as_ref().map(|a| a.tree.clone()), |d, tree| d.child(div().flex_1().child(tree)))
