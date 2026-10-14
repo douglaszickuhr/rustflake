@@ -153,6 +153,13 @@ fn dollar_tag_end(b: &[u8], i: usize) -> Option<usize> {
     (b.get(j) == Some(&b'$')).then_some(j + 1)
 }
 
+/// Literal sem fechamento (string, identificador entre aspas, dollar-quote, comentário)?
+/// Re-tokeniza o trecho com um espaço no fim: se o token engolir o espaço, não fechou.
+pub fn is_unterminated(src: &str, t: &Token) -> bool {
+    let probe = format!("{} ", &src[t.start..t.end]);
+    tokenize(&probe).first().is_some_and(|p| p.end == probe.len())
+}
+
 /// Nome de um identificador como o Postgres enxerga: sem aspas fica minúsculo.
 pub fn ident_text(tok: &str) -> String {
     match tok.strip_prefix('"') {
@@ -240,6 +247,13 @@ mod tests {
     #[test]
     fn non_ascii_identifiers() {
         assert_eq!(kinds("select ação"), vec![(Word, "select"), (Word, "ação")]);
+    }
+
+    #[test]
+    fn detects_unterminated_literals() {
+        let open = |src: &str| is_unterminated(src, &tokenize(src)[0]);
+        assert!(open("'abc") && open("'it''") && open("\"Ord") && open("$$ x") && open("/* x") && open("-- x"));
+        assert!(!open("'abc'") && !open("\"Ord\"") && !open("$$ x $$") && !open("/* x */"));
     }
 
     #[test]

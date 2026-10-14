@@ -132,7 +132,8 @@ impl Workspace {
     }
 
     fn open_sql_file(&mut self, path: PathBuf, conn: ConnTarget, window: &mut Window, cx: &mut Context<Self>) {
-        let tab = cx.new(|cx| SqlTab::new(path, conn, window, cx));
+        let Some(meta) = self.active.as_ref().map(|a| a.meta.clone()) else { return };
+        let tab = cx.new(|cx| SqlTab::new(path, conn, meta, window, cx));
         self.tabs.push(TabView::Sql(tab));
         self.active_tab = self.tabs.len() - 1;
         cx.notify();

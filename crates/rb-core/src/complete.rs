@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use crate::lexer::{TokKind, Token, ident_text, quote_ident, tokenize};
+use crate::lexer::{TokKind, Token, ident_text, is_unterminated, quote_ident, tokenize};
 use crate::metadata::{MetaCache, MetaRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -56,8 +56,7 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
     let toks = tokenize(src);
     let inside_literal = toks.iter().any(|t| {
         let literal = matches!(t.kind, TokKind::Str | TokKind::DollarStr | TokKind::Comment | TokKind::QuotedIdent);
-        let line_comment_end = t.kind == TokKind::Comment && cursor == t.end && src[t.start..].starts_with("--");
-        literal && ((t.start < cursor && cursor < t.end) || line_comment_end)
+        literal && ((t.start < cursor && cursor < t.end) || (cursor == t.end && is_unterminated(src, t)))
     });
     if inside_literal {
         return Completion { replace: cursor..cursor, ..Default::default() };
@@ -294,6 +293,16 @@ mod tests {
         let src = "select 'abc' -- fro";
         assert!(complete(src, src.len(), &cache()).candidates.is_empty());
         assert!(complete("select 'abc'", 9, &cache()).candidates.is_empty());
+    }
+
+    #[test]
+    fn no_completion_inside_unterminated_literals() {
+        for src in ["select 'fro", "select * from \"Ord", "select $$ fro", "select /* fro"] {
+            assert!(complete(src, src.len(), &cache()).candidates.is_empty(), "{src}");
+        }
+        // fechado: completa normalmente depois dele
+        let src = "select 'x' from us";
+        assert_eq!(labels(&complete(src, src.len(), &cache()))[0], "users");
     }
 
     #[test]

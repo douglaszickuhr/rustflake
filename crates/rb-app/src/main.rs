@@ -1,3 +1,4 @@
+mod completion;
 mod conn_dialog;
 mod grid;
 mod meta;

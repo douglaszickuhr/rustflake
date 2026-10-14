@@ -17,8 +17,9 @@ use rb_core::error::error_byte_offset;
 use rb_core::session::{ExecOutcome, Session};
 use rb_core::split::{split_statements, statement_at};
 
+use crate::completion::SqlCompletion;
 use crate::grid::{self, ResultGrid};
-use crate::meta::ConnTarget;
+use crate::meta::{ConnTarget, MetaStore};
 use crate::{CancelQuery, CopyCells, Db, RunScript, RunStatement};
 
 pub struct SqlTab {
@@ -35,9 +36,10 @@ pub struct SqlTab {
 }
 
 impl SqlTab {
-    pub fn new(path: PathBuf, conn: ConnTarget, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(path: PathBuf, conn: ConnTarget, meta: Entity<MetaStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let editor = cx.new(|cx| EditorState::new(window, cx).language("sql").default_value(text));
+        editor.update(cx, |ed, _| ed.lsp_mut().completion_provider = Some(std::rc::Rc::new(SqlCompletion::new(meta))));
         let table = cx.new(|cx| TableState::new(ResultGrid::new(false), window, cx).cell_selectable(true));
         let subs = vec![
             cx.subscribe_in(&editor, window, |this, _, ev: &InputEvent, _, cx| {
