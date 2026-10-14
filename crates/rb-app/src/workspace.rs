@@ -15,7 +15,7 @@ use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
 use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
-use crate::{CloseTab, Db, NewSqlTab, conn_dialog};
+use crate::{CloseTab, Db, NewSqlTab, Quit, conn_dialog};
 
 pub struct Active {
     pub conn: ConnTarget,
@@ -83,7 +83,11 @@ impl Workspace {
     }
 
     fn connect(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.connecting {
+        if self.connecting || self.active.as_ref().is_some_and(|a| a.conn.cfg.id == self.connections[ix].id) {
+            return;
+        }
+        if self.has_pending_edits(cx) {
+            window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de trocar de conexão"), cx);
             return;
         }
         self.connecting = true;
@@ -137,14 +141,23 @@ impl Workspace {
 
     pub fn new_sql_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.active.as_ref().map(|a| a.conn.clone()) else { return };
-        let dir = config::scripts_dir();
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            window.push_notification(Notification::error(e.to_string()), cx);
-            return;
+        match config::new_script(&config::scripts_dir()) {
+            Ok(path) => self.open_sql_file(path, conn, window, cx),
+            Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
         }
-        let n = (1..).find(|n| !dir.join(format!("script-{n}.sql")).exists()).unwrap_or(1);
-        let path = dir.join(format!("script-{n}.sql"));
-        self.open_sql_file(path, conn, window, cx);
+    }
+
+    fn has_pending_edits(&self, cx: &App) -> bool {
+        self.tabs.iter().any(|t| matches!(t, TabView::Table(t) if t.read(cx).has_pending(cx)))
+    }
+
+    /// Grava já o texto de todos os scripts abertos (o autosave espera 1 s).
+    fn save_all(&self, cx: &App) {
+        for t in &self.tabs {
+            if let TabView::Sql(t) = t {
+                t.read(cx).save_now(cx);
+            }
+        }
     }
 
     fn open_sql_file(&mut self, path: PathBuf, conn: ConnTarget, window: &mut Window, cx: &mut Context<Self>) {
@@ -156,16 +169,18 @@ impl Workspace {
     }
 
     /// Fechar não apaga: o arquivo vai para scripts/closed/.
-    fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix >= self.tabs.len() {
+    fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(ix) else { return };
+        if let TabView::Table(t) = tab
+            && t.read(cx).has_pending(cx)
+        {
+            window.push_notification(Notification::error("grave (⌘S) ou descarte as edições antes de fechar a aba"), cx);
             return;
         }
         if let TabView::Sql(t) = self.tabs.remove(ix) {
             let t = t.read(cx);
             t.save_now(cx);
-            let closed = config::scripts_dir().join("closed");
-            let moved = std::fs::create_dir_all(&closed).and_then(|_| std::fs::rename(&t.path, closed.join(t.path.file_name().unwrap_or_default())));
-            if let Err(e) = moved {
+            if let Err(e) = config::archive_script(&t.path) {
                 tracing::warn!("falha ao arquivar script: {e}");
             }
         }
@@ -176,6 +191,7 @@ impl Workspace {
     /// Reabre os scripts salvos (ordenados) ou cria um novo.
     fn on_connected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.active.as_ref().map(|a| a.conn.clone()) else { return };
+        self.save_all(cx);
         self.tabs.clear();
         let mut files: Vec<PathBuf> = std::fs::read_dir(config::scripts_dir())
             .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "sql")).collect())
@@ -206,7 +222,7 @@ impl Workspace {
                 bar.child(
                     Tab::new()
                         .label(t.title(cx))
-                        .suffix(Button::new(("close", i)).label("×").ghost().on_click(cx.listener(move |ws, _, _, cx| ws.close_tab(i, cx)))),
+                        .suffix(Button::new(("close", i)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| ws.close_tab(i, window, cx)))),
                 )
             },
         );
@@ -252,7 +268,11 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(|ws, _: &NewSqlTab, window, cx| ws.new_sql_tab(window, cx)))
-            .on_action(cx.listener(|ws, _: &CloseTab, _, cx| ws.close_tab(ws.active_tab, cx)))
+            .on_action(cx.listener(|ws, _: &CloseTab, window, cx| ws.close_tab(ws.active_tab, window, cx)))
+            .on_action(cx.listener(|ws, _: &Quit, _, cx| {
+                ws.save_all(cx);
+                cx.quit();
+            }))
             .child(div().w(px(260.)).h_full().border_r_1().border_color(cx.theme().border).child(self.render_sidebar(cx)))
             .child(self.render_main(cx))
     }

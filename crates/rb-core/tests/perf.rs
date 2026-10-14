@@ -19,9 +19,10 @@ fn load_perf_big_and_report_rss() {
     let started = Instant::now();
     let rs = block_on(async {
         let out = s.execute("select * from perf_big".into()).await.unwrap();
+        let id = out.exec_id;
         let mut rs = ResultSet::new(out.columns, out.batch, out.more);
         while rs.more {
-            let f = s.fetch_more().await.unwrap();
+            let f = s.fetch_more(id).await.unwrap();
             rs.push(f.batch, f.more);
         }
         rs

@@ -10,7 +10,7 @@ use gpui_kit::*;
 use rb_core::batch::ResultSet;
 use rb_core::metadata::MetaRequest;
 use rb_core::session::Session;
-use rb_core::table::{EditTarget, PendingEdits, build_sql, select_sql};
+use rb_core::table::{EditTarget, PendingEdits, build_sql, columns_match, select_sql};
 
 use crate::grid::{self, ResultGrid};
 use crate::meta::{ConnTarget, MetaStore};
@@ -103,7 +103,7 @@ impl TableTab {
         self.load(cx);
     }
 
-    fn has_pending(&self, cx: &App) -> bool {
+    pub fn has_pending(&self, cx: &App) -> bool {
         self.grid.read(cx).delegate().edits.as_ref().is_some_and(|e| !e.is_empty())
     }
 
@@ -138,10 +138,19 @@ impl TableTab {
                 match result {
                     Ok((session, out)) => {
                         tab.session = Some(session.clone());
+                        if tab.target.as_ref().is_some_and(|t| !columns_match(t, &out.columns)) {
+                            // ALTER TABLE desde que a aba abriu: índices de coluna não batem mais.
+                            tab.target = None;
+                            tab.grid.update(cx, |t, _| t.delegate_mut().edits = None);
+                            let (schema, table) = (tab.schema.clone(), tab.table.clone());
+                            tab.meta.update(cx, |m, _| m.cache.invalidate_table(&schema, &table));
+                            tab.after_load = Some("a estrutura da tabela mudou: edição desativada; reabra a aba".into());
+                        }
                         tab.status = tab.after_load.take().unwrap_or_else(|| format!("{} ms", out.elapsed.as_millis()).into());
+                        let exec_id = out.exec_id;
                         let rs = ResultSet::new(out.columns, out.batch, out.more);
                         tab.grid.update(cx, |t, cx| {
-                            t.delegate_mut().set_result(rs, session);
+                            t.delegate_mut().set_result(rs, session, exec_id);
                             t.refresh(cx);
                             cx.notify();
                         });
@@ -165,7 +174,8 @@ impl TableTab {
 
     fn edit_cell(&mut self, row: usize, col: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = &self.target else { return };
-        if self.grid.read(cx).delegate().edits.is_none() {
+        let g = self.grid.read(cx).delegate();
+        if g.edits.is_none() || g.saving {
             return;
         }
         if target.columns.get(col).is_some_and(|c| c.generated) {
@@ -215,7 +225,7 @@ impl TableTab {
         self.grid.update(cx, |t, cx| {
             let g = t.delegate_mut();
             let loaded = g.loaded_rows();
-            if let Some(e) = &mut g.edits {
+            if let (false, Some(e)) = (g.saving, &mut g.edits) {
                 f(e, loaded);
             }
             cx.notify();
@@ -224,14 +234,18 @@ impl TableTab {
 
     fn save(&mut self, cx: &mut Context<Self>) {
         let (Some(target), Some(session)) = (self.target.clone(), self.session.clone()) else { return };
-        let g = self.grid.read(cx).delegate();
-        let (Some(edits), Some(rs)) = (&g.edits, &g.rs) else { return };
-        if edits.is_empty() {
+        if !self.grid.update(cx, |t, _| t.delegate_mut().start_save()) {
             return;
         }
-        let stmts = match build_sql(&target, &edits.to_row_edits(&target, |r, c| rs.text(r, c))) {
+        let g = self.grid.read(cx).delegate();
+        let built = match (&g.edits, &g.rs) {
+            (Some(edits), Some(rs)) => build_sql(&target, &edits.to_row_edits(&target, |r, c| rs.text(r, c))),
+            _ => Err(rb_core::DbError::Edit("nada para gravar".into())),
+        };
+        let stmts = match built {
             Ok(s) => s,
             Err(e) => {
+                self.grid.update(cx, |t, _| t.delegate_mut().finish_save(false));
                 self.status = e.to_string().into();
                 cx.notify();
                 return;
@@ -243,11 +257,12 @@ impl TableTab {
             let res = session.run_in_transaction(stmts).await;
             this.update(cx, |tab, cx| match res {
                 Ok(n) => {
-                    tab.grid.update(cx, |t, _| t.delegate_mut().edits = Some(PendingEdits::default()));
+                    tab.grid.update(cx, |t, _| t.delegate_mut().finish_save(true));
                     tab.after_load = Some(format!("{n} linha(s) gravada(s)").into());
                     tab.load(cx);
                 }
                 Err(e) => {
+                    tab.grid.update(cx, |t, _| t.delegate_mut().finish_save(false));
                     tab.status = format!("Erro ao gravar — nada foi alterado: {e}").into();
                     cx.notify();
                 }

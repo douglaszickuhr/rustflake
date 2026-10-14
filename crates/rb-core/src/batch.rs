@@ -108,7 +108,11 @@ impl ResultSet {
         self.ends.last().copied().unwrap_or(0)
     }
 
+    /// Bytes crus da célula; `None` = NULL ou fora do intervalo (seleção antiga na UI).
     pub fn raw(&self, row: usize, col: usize) -> Option<&[u8]> {
+        if row >= self.rows() || col >= self.columns.len() {
+            return None;
+        }
         let b = self.ends.partition_point(|&e| e <= row);
         let start = if b == 0 { 0 } else { self.ends[b - 1] };
         self.batches[b].cell(row - start, col)
@@ -190,6 +194,15 @@ mod tests {
     fn tsv_quotes_special_fields() {
         let rs = ResultSet::new(cols(), batch(&[(1, Some("a\tb")), (2, Some("x\"y")), (3, None)]), false);
         assert_eq!(rs.to_tsv(0..3, &[0, 1]), "1\t\"a\tb\"\n2\t\"x\"\"y\"\n3\t\n");
+    }
+
+    #[test]
+    fn out_of_range_cells_are_none_not_panic() {
+        let rs = ResultSet::new(cols(), batch(&[(1, Some("a"))]), false);
+        assert_eq!(rs.raw(0, 2), None);
+        assert_eq!(rs.raw(5, 0), None);
+        assert_eq!(rs.text(0, 9), None);
+        assert_eq!(rs.to_tsv(0..3, &[0, 7]), "1\t\n\t\n\t\n");
     }
 
     #[test]

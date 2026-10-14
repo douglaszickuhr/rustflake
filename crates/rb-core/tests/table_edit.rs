@@ -63,3 +63,20 @@ fn pending_edits_round_trip_through_postgres() {
         s.execute(format!("drop schema {q} cascade")).await.unwrap();
     });
 }
+
+#[test]
+fn too_long_values_are_rejected_not_truncated() {
+    let Some((_e, s)) = common::open() else { return common::skip() };
+    let schema = common::unique("RbLen");
+    let q = quote_ident(&schema);
+    block_on(async {
+        for sql in [format!("create schema {q}"), format!("create table {q}.t (id int primary key, v varchar(5))"), format!("insert into {q}.t values (1, 'a')")] {
+            s.execute(sql).await.unwrap();
+        }
+        let target = EditTarget { schema: schema.clone(), table: "t".into(), columns: metadata::columns(&s, &schema, "t").await.unwrap() };
+        let edit = [RowEdit::Update { pk: vec![Some("1".into())], changes: vec![(1, Some("abcdefghij".into()))] }];
+        let res = s.run_in_transaction(build_sql(&target, &edit).unwrap()).await;
+        assert!(matches!(res, Err(DbError::Postgres { ref code, .. }) if code == "22001"), "{res:?}");
+        s.execute(format!("drop schema {q} cascade")).await.unwrap();
+    });
+}

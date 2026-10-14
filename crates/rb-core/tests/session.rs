@@ -14,9 +14,10 @@ fn select_pages_in_batches_of_1000() {
         assert_eq!(out.batch.rows(), 1000);
         assert!(out.more);
         assert_eq!(out.affected, None);
+        let id = out.exec_id;
         let mut rs = ResultSet::new(out.columns, out.batch, out.more);
         while rs.more {
-            let f = s.fetch_more().await.unwrap();
+            let f = s.fetch_more(id).await.unwrap();
             rs.push(f.batch, f.more);
         }
         assert_eq!(rs.rows(), 2500);
@@ -30,12 +31,13 @@ fn exact_multiple_of_page_size_terminates() {
     let Some((_e, s)) = common::open() else { return common::skip() };
     block_on(async {
         let out = s.execute("select g from generate_series(1, 2000) g".into()).await.unwrap();
+        let id = out.exec_id;
         assert!(out.more);
-        let f = s.fetch_more().await.unwrap();
+        let f = s.fetch_more(id).await.unwrap();
         assert_eq!((f.batch.rows(), f.more), (1000, true));
-        let f = s.fetch_more().await.unwrap();
+        let f = s.fetch_more(id).await.unwrap();
         assert_eq!((f.batch.rows(), f.more), (0, false));
-        let f = s.fetch_more().await.unwrap(); // sem portal aberto: vazio
+        let f = s.fetch_more(id).await.unwrap(); // sem portal aberto: vazio
         assert_eq!((f.batch.rows(), f.more), (0, false));
     });
 }
@@ -45,9 +47,10 @@ fn million_rows_page_through() {
     let Some((_e, s)) = common::open() else { return common::skip() };
     block_on(async {
         let out = s.execute("select g, md5(g::text) from generate_series(1, 1000000) g".into()).await.unwrap();
+        let id = out.exec_id;
         let mut rs = ResultSet::new(out.columns, out.batch, out.more);
         while rs.more {
-            let f = s.fetch_more().await.unwrap();
+            let f = s.fetch_more(id).await.unwrap();
             rs.push(f.batch, f.more);
         }
         assert_eq!(rs.rows(), 1_000_000);

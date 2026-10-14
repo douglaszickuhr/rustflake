@@ -23,6 +23,9 @@ pub struct ColumnMeta {
     pub name: String,
     /// Saída de `format_type`, pronta para cast (`character varying(20)`, `"Sales".mood`).
     pub type_name: String,
+    /// Tipo sem typmod (`character varying`), usado nos casts de edição: o cast explícito para
+    /// `varchar(5)` truncaria em silêncio; sem typmod, a atribuição à coluna valida o tamanho.
+    pub cast_type: String,
     pub nullable: bool,
     pub default: Option<String>,
     pub is_pk: bool,
@@ -90,7 +93,7 @@ const FUNCTIONS_SQL: &str = "select (p.proname || '(' || pg_get_function_identit
 const COLUMNS_SQL: &str = "select a.attname::text, format_type(a.atttypid, a.atttypmod)::text, \
        (not a.attnotnull)::text, pg_get_expr(d.adbin, d.adrelid)::text, \
        (exists (select 1 from pg_index i where i.indrelid = a.attrelid and i.indisprimary and a.attnum = any(i.indkey)))::text, \
-       (a.attgenerated <> '')::text \
+       (a.attgenerated <> '')::text, format_type(a.atttypid, NULL)::text \
      from pg_attribute a \
      join pg_class c on c.oid = a.attrelid \
      join pg_namespace n on n.oid = c.relnamespace \
@@ -145,6 +148,7 @@ pub async fn columns(s: &Session, schema: &str, table: &str) -> Result<Vec<Colum
             default: r.get(3).cloned().flatten(),
             is_pk: text(&r, 4) == "true",
             generated: text(&r, 5) == "true",
+            cast_type: text(&r, 6),
         })
         .collect())
 }

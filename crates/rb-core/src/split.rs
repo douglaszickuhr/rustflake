@@ -31,9 +31,41 @@ pub fn statement_at(src: &str, offset: usize) -> Option<Range<usize>> {
         .cloned()
 }
 
+fn words(stmt: &str) -> impl Iterator<Item = String> + '_ {
+    tokenize(stmt).into_iter().filter(|t| t.kind == TokKind::Word).map(move |t| stmt[t.start..t.end].to_lowercase())
+}
+
+/// BEGIN / START TRANSACTION / SAVEPOINT: o app roda só em autocommit.
+pub fn is_transaction_control(stmt: &str) -> bool {
+    matches!(words(stmt).next().as_deref(), Some("begin" | "start" | "savepoint"))
+}
+
+/// Só lê dados? Leituras podem ficar paginadas num portal aberto; escritas são concluídas
+/// e confirmadas na hora, mesmo com RETURNING.
+pub fn is_read_only_query(stmt: &str) -> bool {
+    let mut w = words(stmt);
+    match w.next().as_deref() {
+        Some("select" | "values" | "table" | "show" | "explain") => true,
+        Some("with") => !w.any(|x| matches!(x.as_str(), "insert" | "update" | "delete" | "merge")),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_transaction_control_and_reads() {
+        assert!(is_transaction_control("/* c */ BEGIN"));
+        assert!(is_transaction_control("start transaction"));
+        assert!(!is_transaction_control("do $$ begin end $$"));
+        assert!(is_read_only_query("select 1"));
+        assert!(is_read_only_query("with a as (select 1) select * from a"));
+        assert!(!is_read_only_query("with a as (delete from t returning *) select * from a"));
+        assert!(!is_read_only_query("update t set v = 1 returning id"));
+        assert!(!is_read_only_query("insert into t values (1) returning *"));
+    }
 
     fn texts(src: &str) -> Vec<&str> {
         split_statements(src).into_iter().map(|r| &src[r]).collect()

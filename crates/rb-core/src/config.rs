@@ -67,6 +67,37 @@ pub fn scripts_dir() -> PathBuf {
     app_dir().join("scripts")
 }
 
+/// Cria `script-N.sql` vazio com o menor N livre. `create_new` garante que duas abas
+/// nunca compartilhem o mesmo arquivo.
+pub fn new_script(dir: &Path) -> Result<PathBuf, DbError> {
+    std::fs::create_dir_all(dir).map_err(io)?;
+    for n in 1.. {
+        let path = dir.join(format!("script-{n}.sql"));
+        match std::fs::File::create_new(&path) {
+            Ok(_) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io(e)),
+        }
+    }
+    unreachable!("1.. é infinito")
+}
+
+/// Move o script para `closed/` ao lado dele, sem sobrescrever nada que já esteja lá.
+pub fn archive_script(path: &Path) -> Result<PathBuf, DbError> {
+    let closed = path.parent().unwrap_or(Path::new(".")).join("closed");
+    std::fs::create_dir_all(&closed).map_err(io)?;
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let mut target = closed.join(path.file_name().unwrap_or_default());
+    for n in 2.. {
+        if !target.exists() {
+            break;
+        }
+        target = closed.join(format!("{stem}-{n}.sql"));
+    }
+    std::fs::rename(path, &target).map_err(io)?;
+    Ok(target)
+}
+
 pub fn new_id() -> String {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -148,6 +179,32 @@ mod tests {
         assert_eq!(pg.get_dbname(), Some("app"));
         assert_eq!(pg.get_ports(), &[5432]);
         assert_eq!(pg.get_password(), Some(&b"pw"[..]));
+    }
+
+    #[test]
+    fn new_scripts_never_reuse_a_path() {
+        let dir = tmp("scripts").parent().unwrap().join("scripts");
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = new_script(&dir).unwrap();
+        let b = new_script(&dir).unwrap();
+        assert_ne!(a, b);
+        assert!(a.exists() && b.exists());
+    }
+
+    #[test]
+    fn archiving_never_overwrites() {
+        let dir = tmp("archive").parent().unwrap().join("scripts");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("script-1.sql");
+        std::fs::write(&p, "primeiro").unwrap();
+        let first = archive_script(&p).unwrap();
+        std::fs::write(&p, "segundo").unwrap();
+        let second = archive_script(&p).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "primeiro");
+        assert_eq!(std::fs::read_to_string(second).unwrap(), "segundo");
+        assert!(!p.exists());
     }
 
     #[test]

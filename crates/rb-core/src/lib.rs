@@ -11,3 +11,4 @@ pub mod split;
 pub mod table;
 
 pub use error::DbError;
+pub use tokio_postgres::types::Type;

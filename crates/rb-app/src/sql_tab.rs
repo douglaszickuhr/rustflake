@@ -136,9 +136,10 @@ impl SqlTab {
             None => format!("{ms} ms"),
         }
         .into();
+        let exec_id = out.exec_id;
         let rs = ResultSet::new(out.columns, out.batch, out.more);
         self.table.update(cx, |t, cx| {
-            t.delegate_mut().set_result(rs, session);
+            t.delegate_mut().set_result(rs, session, exec_id);
             t.refresh(cx);
             cx.notify();
         });

@@ -168,12 +168,20 @@ pub fn ident_text(tok: &str) -> String {
     }
 }
 
+/// Palavras reservadas do Postgres (inclusive as que só podem ser função ou tipo).
 const RESERVED: &[&str] = &[
-    "all", "and", "any", "array", "as", "asc", "both", "case", "cast", "check", "collate", "column",
-    "constraint", "create", "default", "desc", "distinct", "do", "else", "end", "except", "false",
-    "for", "foreign", "from", "grant", "group", "having", "in", "into", "is", "join", "leading",
-    "limit", "not", "null", "offset", "on", "only", "or", "order", "primary", "references", "select",
-    "table", "then", "to", "true", "union", "unique", "user", "using", "when", "where", "window", "with",
+    "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "authorization",
+    "binary", "both", "case", "cast", "check", "collate", "collation", "column", "concurrently",
+    "constraint", "create", "cross", "current_catalog", "current_date", "current_role",
+    "current_schema", "current_time", "current_timestamp", "current_user", "default", "deferrable",
+    "desc", "distinct", "do", "else", "end", "except", "false", "fetch", "for", "foreign", "freeze",
+    "from", "full", "grant", "group", "having", "ilike", "in", "initially", "inner", "intersect",
+    "into", "is", "isnull", "join", "lateral", "leading", "left", "like", "limit", "localtime",
+    "localtimestamp", "natural", "not", "notnull", "null", "offset", "on", "only", "or", "order",
+    "outer", "overlaps", "placing", "primary", "references", "returning", "right", "select",
+    "session_user", "similar", "some", "symmetric", "system_user", "table", "tablesample", "then",
+    "to", "trailing", "true", "union", "unique", "user", "using", "variadic", "verbose", "when",
+    "where", "window", "with",
 ];
 
 /// Cita o identificador só quando o Postgres exigiria.
@@ -181,7 +189,12 @@ pub fn quote_ident(name: &str) -> String {
     let plain = name.bytes().next().is_some_and(|c| c.is_ascii_lowercase() || c == b'_')
         && name.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'$')
         && !RESERVED.contains(&name);
-    if plain { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) }
+    if plain { name.to_string() } else { quote_always(name) }
+}
+
+/// Sempre entre aspas: usado no SQL gerado, onde legibilidade não importa e segurança sim.
+pub fn quote_always(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 #[cfg(test)]
@@ -269,5 +282,8 @@ mod tests {
         assert_eq!(quote_ident(r#"a"b"#), r#""a""b""#);
         assert_eq!(quote_ident("select"), r#""select""#);
         assert_eq!(quote_ident("1abc"), r#""1abc""#);
+        for kw in ["left", "full", "returning", "fetch", "analyze", "some", "current_date", "lateral", "natural"] {
+            assert_eq!(quote_ident(kw), format!("\"{kw}\""), "{kw}");
+        }
     }
 }

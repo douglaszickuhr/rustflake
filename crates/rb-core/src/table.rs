@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::DbError;
-use crate::lexer::quote_ident;
+use crate::lexer::quote_always;
 use crate::metadata::ColumnMeta;
 use crate::session::SqlWithParams;
 
@@ -27,7 +27,7 @@ pub struct PendingEdits {
 }
 
 pub fn qualified(schema: &str, table: &str) -> String {
-    format!("{}.{}", quote_ident(schema), quote_ident(table))
+    format!("{}.{}", quote_always(schema), quote_always(table))
 }
 
 /// SELECT da aba de tabela. O filtro é uma expressão WHERE crua digitada pelo usuário;
@@ -38,9 +38,14 @@ pub fn select_sql(schema: &str, table: &str, filter: Option<&str>, order: Option
         sql += &format!(" WHERE ({f}\n)");
     }
     if let Some((col, asc)) = order {
-        sql += &format!(" ORDER BY {} {}", quote_ident(col), if asc { "ASC" } else { "DESC" });
+        sql += &format!(" ORDER BY {} {}", quote_always(col), if asc { "ASC" } else { "DESC" });
     }
     sql
+}
+
+/// As colunas do resultado ainda são as do alvo de edição? (A tabela pode ter mudado.)
+pub fn columns_match(target: &EditTarget, cols: &[crate::batch::ColumnInfo]) -> bool {
+    target.columns.len() == cols.len() && target.columns.iter().zip(cols).all(|(t, c)| t.name == c.name)
 }
 
 impl EditTarget {
@@ -63,13 +68,16 @@ fn where_pk(t: &EditTarget, pk_cols: &[usize], pk: &[Option<String>], params: &m
         .zip(pk)
         .map(|(&i, v)| {
             let c = &t.columns[i];
-            format!("{} = {}", quote_ident(&c.name), bind(params, v, &c.type_name))
+            format!("{} = {}", quote_always(&c.name), bind(params, v, &c.cast_type))
         })
         .collect::<Vec<_>>()
         .join(" AND "))
 }
 
 fn writable(t: &EditTarget, cols: &[(usize, Option<String>)]) -> Result<(), DbError> {
+    if cols.iter().any(|(i, _)| *i >= t.columns.len()) {
+        return Err(DbError::Edit("a estrutura da tabela mudou; reabra a aba".into()));
+    }
     match cols.iter().find(|(i, _)| t.columns[*i].generated) {
         Some((i, _)) => Err(DbError::Edit(format!("a coluna {} é gerada e não pode ser editada", t.columns[*i].name))),
         None => Ok(()),
@@ -97,7 +105,7 @@ pub fn build_sql(t: &EditTarget, edits: &[RowEdit]) -> Result<Vec<SqlWithParams>
                     .iter()
                     .map(|(i, v)| {
                         let c = &t.columns[*i];
-                        format!("{} = {}", quote_ident(&c.name), bind(&mut params, v, &c.type_name))
+                        format!("{} = {}", quote_always(&c.name), bind(&mut params, v, &c.cast_type))
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -108,10 +116,10 @@ pub fn build_sql(t: &EditTarget, edits: &[RowEdit]) -> Result<Vec<SqlWithParams>
                 if values.is_empty() {
                     format!("INSERT INTO {table} DEFAULT VALUES")
                 } else {
-                    let cols = values.iter().map(|(i, _)| quote_ident(&t.columns[*i].name)).collect::<Vec<_>>().join(", ");
+                    let cols = values.iter().map(|(i, _)| quote_always(&t.columns[*i].name)).collect::<Vec<_>>().join(", ");
                     let vals = values
                         .iter()
-                        .map(|(i, v)| bind(&mut params, v, &t.columns[*i].type_name))
+                        .map(|(i, v)| bind(&mut params, v, &t.columns[*i].cast_type))
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("INSERT INTO {table} ({cols}) VALUES ({vals})")
@@ -186,7 +194,7 @@ mod tests {
     use super::*;
 
     fn col(name: &str, ty: &str, pk: bool, generated: bool) -> ColumnMeta {
-        ColumnMeta { name: name.into(), type_name: ty.into(), nullable: !pk, default: None, is_pk: pk, generated }
+        ColumnMeta { name: name.into(), type_name: ty.into(), cast_type: ty.into(), nullable: !pk, default: None, is_pk: pk, generated }
     }
 
     fn target() -> EditTarget {
@@ -211,9 +219,20 @@ mod tests {
         assert_eq!(select_sql("Sales", "Order Items", None, None), r#"SELECT * FROM "Sales"."Order Items""#);
         assert_eq!(
             select_sql("public", "t", Some(" a > 1 -- x "), Some(("Name", false))),
-            "SELECT * FROM public.t WHERE (a > 1 -- x\n) ORDER BY \"Name\" DESC"
+            "SELECT * FROM \"public\".\"t\" WHERE (a > 1 -- x\n) ORDER BY \"Name\" DESC"
         );
-        assert_eq!(select_sql("public", "t", Some("   "), Some(("id", true))), "SELECT * FROM public.t ORDER BY id ASC");
+        assert_eq!(select_sql("public", "t", Some("   "), Some(("id", true))), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC"#);
+    }
+
+    #[test]
+    fn generated_sql_always_quotes_identifiers() {
+        assert_eq!(
+            select_sql("public", "t", None, Some(("current_date", true))),
+            r#"SELECT * FROM "public"."t" ORDER BY "current_date" ASC"#
+        );
+        let t = EditTarget { schema: "public".into(), table: "t".into(), columns: vec![col("left", "integer", true, false), col("full", "text", false, false)] };
+        let sql = build_sql(&t, &[RowEdit::Update { pk: vec![s("1")], changes: vec![(1, s("x"))] }]).unwrap();
+        assert_eq!(sql[0].sql, r#"UPDATE "public"."t" SET "full" = ($1::text)::text WHERE "left" = ($2::text)::integer"#);
     }
 
     #[test]
@@ -222,7 +241,7 @@ mod tests {
         assert_eq!(
             sql,
             vec![SqlWithParams {
-                sql: r#"UPDATE "Sales"."Order Items" SET "Name" = ($1::text)::text, mood = ($2::text)::"Sales".mood WHERE id = ($3::text)::integer"#.into(),
+                sql: r#"UPDATE "Sales"."Order Items" SET "Name" = ($1::text)::text, "mood" = ($2::text)::"Sales".mood WHERE "id" = ($3::text)::integer"#.into(),
                 params: vec![s("Ana"), None, s("7")],
                 expect_one: true,
             }]
@@ -236,9 +255,9 @@ mod tests {
             &[RowEdit::Insert { values: vec![(0, s("1")), (1, s("x"))] }, RowEdit::Insert { values: vec![] }, RowEdit::Delete { pk: vec![s("9")] }],
         )
         .unwrap();
-        assert_eq!(sql[0].sql, r#"INSERT INTO "Sales"."Order Items" (id, "Name") VALUES (($1::text)::integer, ($2::text)::text)"#);
+        assert_eq!(sql[0].sql, r#"INSERT INTO "Sales"."Order Items" ("id", "Name") VALUES (($1::text)::integer, ($2::text)::text)"#);
         assert_eq!(sql[1].sql, r#"INSERT INTO "Sales"."Order Items" DEFAULT VALUES"#);
-        assert_eq!(sql[2].sql, r#"DELETE FROM "Sales"."Order Items" WHERE id = ($1::text)::integer"#);
+        assert_eq!(sql[2].sql, r#"DELETE FROM "Sales"."Order Items" WHERE "id" = ($1::text)::integer"#);
         assert_eq!(sql[2].params, vec![s("9")]);
     }
 
@@ -247,7 +266,7 @@ mod tests {
         let mut t = target();
         t.columns[1].is_pk = true;
         let sql = build_sql(&t, &[RowEdit::Delete { pk: vec![s("1"), s("a")] }]).unwrap();
-        assert_eq!(sql[0].sql, r#"DELETE FROM "Sales"."Order Items" WHERE id = ($1::text)::integer AND "Name" = ($2::text)::text"#);
+        assert_eq!(sql[0].sql, r#"DELETE FROM "Sales"."Order Items" WHERE "id" = ($1::text)::integer AND "Name" = ($2::text)::text"#);
     }
 
     #[test]
@@ -257,6 +276,23 @@ mod tests {
         assert!(matches!(build_sql(&t, &[RowEdit::Delete { pk: vec![] }]), Err(DbError::Edit(_))));
         let err = build_sql(&target(), &[RowEdit::Update { pk: vec![s("1")], changes: vec![(2, s("5"))] }]);
         assert!(matches!(err, Err(DbError::Edit(m)) if m.contains("twice")));
+    }
+
+    #[test]
+    fn out_of_range_column_is_an_error_not_a_panic() {
+        let err = build_sql(&target(), &[RowEdit::Update { pk: vec![s("1")], changes: vec![(9, s("x"))] }]);
+        assert!(matches!(err, Err(DbError::Edit(_))));
+        assert!(matches!(build_sql(&target(), &[RowEdit::Insert { values: vec![(9, s("x"))] }]), Err(DbError::Edit(_))));
+    }
+
+    #[test]
+    fn columns_match_detects_schema_changes() {
+        use crate::batch::ColumnInfo;
+        use tokio_postgres::types::Type;
+        let info = |names: &[&str]| names.iter().map(|n| ColumnInfo { name: n.to_string(), type_: Type::TEXT }).collect::<Vec<_>>();
+        assert!(columns_match(&target(), &info(&["id", "Name", "twice", "mood"])));
+        assert!(!columns_match(&target(), &info(&["id", "Name", "twice", "mood", "nova"])));
+        assert!(!columns_match(&target(), &info(&["Name", "twice", "mood"])));
     }
 
     #[test]

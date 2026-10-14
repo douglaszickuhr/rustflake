@@ -37,6 +37,7 @@ fn catalog_queries_cover_tree_and_autocomplete() {
         assert_eq!(names, ["id", "Name", "total", "twice"]);
         assert!(cols[0].is_pk && !cols[0].nullable);
         assert_eq!(cols[0].type_name, "integer");
+        assert_eq!(cols[2].cast_type, "numeric");
         assert!(!cols[1].nullable && !cols[1].is_pk);
         assert_eq!(cols[2].default.as_deref(), Some("0"));
         assert!(cols[3].generated);

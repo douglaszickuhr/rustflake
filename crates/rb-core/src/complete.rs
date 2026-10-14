@@ -213,7 +213,7 @@ mod tests {
     use crate::metadata::{ColumnMeta, SchemaObjects};
 
     fn col(name: &str, ty: &str) -> ColumnMeta {
-        ColumnMeta { name: name.into(), type_name: ty.into(), nullable: true, default: None, is_pk: false, generated: false }
+        ColumnMeta { name: name.into(), type_name: ty.into(), cast_type: ty.into(), nullable: true, default: None, is_pk: false, generated: false }
     }
 
     fn cache() -> MetaCache {

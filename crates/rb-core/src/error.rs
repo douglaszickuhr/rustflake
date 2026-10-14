@@ -17,6 +17,7 @@ pub enum DbError {
     Keychain(String),
     Io(String),
     Edit(String),
+    Unsupported(String),
 }
 
 impl fmt::Display for DbError {
@@ -37,6 +38,7 @@ impl fmt::Display for DbError {
             DbError::Keychain(m) => write!(f, "Keychain: {m}"),
             DbError::Io(m) => write!(f, "E/S: {m}"),
             DbError::Edit(m) => write!(f, "edição: {m}"),
+            DbError::Unsupported(m) => write!(f, "não suportado: {m}"),
         }
     }
 }

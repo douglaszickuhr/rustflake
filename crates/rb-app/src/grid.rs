@@ -20,7 +20,10 @@ pub struct ResultGrid {
     pub sortable: bool,
     pub on_sort: Option<OnSort>,
     pub error: Option<String>,
+    /// Gravação em andamento: bloqueia novas gravações, edições e paginação.
+    pub saving: bool,
     session: Option<Arc<Session>>,
+    exec_id: u64,
     widths: Vec<f32>,
     loading_more: bool,
     /// Muda a cada resultado novo; descarta lotes que chegam de um resultado antigo.
@@ -29,11 +32,24 @@ pub struct ResultGrid {
 
 impl ResultGrid {
     pub fn new(sortable: bool) -> Self {
-        ResultGrid { rs: None, edits: None, sortable, on_sort: None, error: None, session: None, widths: Vec::new(), loading_more: false, generation: 0 }
+        ResultGrid {
+            rs: None,
+            edits: None,
+            sortable,
+            on_sort: None,
+            error: None,
+            saving: false,
+            session: None,
+            exec_id: 0,
+            widths: Vec::new(),
+            loading_more: false,
+            generation: 0,
+        }
     }
 
-    pub fn set_result(&mut self, rs: ResultSet, session: Arc<Session>) {
+    pub fn set_result(&mut self, rs: ResultSet, session: Arc<Session>, exec_id: u64) {
         self.generation += 1;
+        self.exec_id = exec_id;
         self.widths = (0..rs.columns.len())
             .map(|c| {
                 let sample = (0..rs.rows().min(100)).map(|r| rs.display(r, c, 60).map_or(4, |s| s.chars().count())).max().unwrap_or(0);
@@ -45,6 +61,29 @@ impl ResultGrid {
         self.session = Some(session);
         self.loading_more = false;
         self.error = None;
+    }
+
+    /// Pode buscar mais linhas? Não enquanto houver linhas inseridas (elas são endereçadas
+    /// logo depois das carregadas e mudariam de índice) nem durante uma gravação.
+    pub fn can_page(&self) -> bool {
+        self.rs.as_ref().is_some_and(|r| r.more) && !self.saving && self.edits.as_ref().is_none_or(|e| e.inserted_rows() == 0)
+    }
+
+    /// Começa uma gravação se houver edições e nenhuma outra em andamento.
+    pub fn start_save(&mut self) -> bool {
+        if self.saving || self.edits.as_ref().is_none_or(PendingEdits::is_empty) {
+            return false;
+        }
+        self.saving = true;
+        true
+    }
+
+    /// Termina a gravação; só com sucesso as edições pendentes são limpas.
+    pub fn finish_save(&mut self, ok: bool) {
+        self.saving = false;
+        if ok {
+            self.edits = Some(PendingEdits::default());
+        }
     }
 
     pub fn loaded_rows(&self) -> usize {
@@ -136,7 +175,7 @@ impl TableDelegate for ResultGrid {
     }
 
     fn has_more(&self, _: &App) -> bool {
-        self.rs.as_ref().is_some_and(|r| r.more)
+        self.can_page()
     }
 
     fn load_more_threshold(&self) -> usize {
@@ -149,9 +188,9 @@ impl TableDelegate for ResultGrid {
         }
         let Some(session) = self.session.clone() else { return };
         self.loading_more = true;
-        let generation = self.generation;
+        let (generation, exec_id) = (self.generation, self.exec_id);
         cx.spawn(async move |table, cx| {
-            let res = session.fetch_more().await;
+            let res = session.fetch_more(exec_id).await;
             table.update(cx, |t, cx| {
                 let g = t.delegate_mut();
                 if g.generation != generation {
@@ -175,5 +214,45 @@ impl TableDelegate for ResultGrid {
             })
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rb_core::Type;
+    use rb_core::batch::{Batch, ColumnInfo};
+
+    fn grid_with_more() -> ResultGrid {
+        let cols: Arc<[ColumnInfo]> = Arc::from(vec![ColumnInfo { name: "id".into(), type_: Type::INT4 }]);
+        let mut b = Batch::empty(1);
+        b.push_row(&[Some(&1i32.to_be_bytes())]);
+        let mut g = ResultGrid::new(true);
+        g.rs = Some(ResultSet::new(cols, b, true));
+        g.edits = Some(PendingEdits::default());
+        g
+    }
+
+    #[::core::prelude::v1::test]
+    fn no_paging_while_rows_are_inserted() {
+        let mut g = grid_with_more();
+        assert!(g.can_page());
+        g.edits.as_mut().unwrap().add_row();
+        assert!(!g.can_page());
+    }
+
+    #[::core::prelude::v1::test]
+    fn save_is_single_flight() {
+        let mut g = grid_with_more();
+        assert!(!g.start_save(), "nada pendente");
+        g.edits.as_mut().unwrap().set(0, 0, Some("2".into()), 1);
+        assert!(g.start_save());
+        assert!(!g.start_save(), "segundo ⌘S durante a gravação");
+        assert!(!g.can_page());
+        g.finish_save(false);
+        assert!(!g.edits.as_ref().unwrap().is_empty(), "erro mantém as edições");
+        assert!(g.start_save());
+        g.finish_save(true);
+        assert!(g.edits.as_ref().unwrap().is_empty());
     }
 }

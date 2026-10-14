@@ -46,7 +46,53 @@ fn abandoning_a_partial_result_closes_its_transaction() {
             .await
             .unwrap();
         assert_eq!(r[0][0].as_deref(), Some("true"));
-        let f = s.fetch_more().await.unwrap();
+        let f = s.fetch_more(out.exec_id).await.unwrap();
         assert_eq!((f.batch.rows(), f.more), (0, false));
+    });
+}
+
+#[test]
+fn manual_transactions_are_refused() {
+    let Some((_e, s)) = common::open() else { return common::skip() };
+    block_on(async {
+        for sql in ["BEGIN", "/* x */ start transaction isolation level serializable", "savepoint a"] {
+            let res = s.execute(sql.into()).await;
+            assert!(matches!(res, Err(DbError::Unsupported(_))), "{sql}: {res:?}");
+        }
+        // nada ficou aberto: a sessão segue em autocommit
+        let r = s.query_text("select (pg_current_xact_id_if_assigned() is null)::text", &[]).await.unwrap();
+        assert_eq!(r[0][0].as_deref(), Some("true"));
+    });
+}
+
+#[test]
+fn stale_fetch_more_does_not_consume_the_next_result() {
+    let Some((_e, s)) = common::open() else { return common::skip() };
+    block_on(async {
+        let a = s.execute("select g from generate_series(1, 5000) g".into()).await.unwrap();
+        // um FetchMore do resultado A chega depois do Execute de B
+        let (b, stale) = tokio::join!(s.execute("select g from generate_series(1, 5000) g".into()), s.fetch_more(a.exec_id));
+        let b = b.unwrap();
+        assert_eq!(stale.unwrap().batch.rows(), 0);
+        let next = s.fetch_more(b.exec_id).await.unwrap();
+        let rs = rb_core::batch::ResultSet::new(b.columns, next.batch, next.more);
+        assert_eq!(rs.text(0, 0).as_deref(), Some("1001"));
+    });
+}
+
+#[test]
+fn large_dml_returning_is_committed_immediately() {
+    let Some((_e, s)) = common::open() else { return common::skip() };
+    let Some((_e2, other)) = common::open() else { return common::skip() };
+    let t = common::unique("rb_ret");
+    block_on(async {
+        s.execute(format!("create table {t} (id int, v int default 0)")).await.unwrap();
+        s.execute(format!("insert into {t} select generate_series(1, 3000)")).await.unwrap();
+        let out = s.execute(format!("update {t} set v = 1 returning id")).await.unwrap();
+        assert!(!out.more);
+        assert_eq!(out.batch.rows(), 3000);
+        let r = other.query_text(&format!("select count(*)::text from {t} where v = 1"), &[]).await.unwrap();
+        assert_eq!(r[0][0].as_deref(), Some("3000"));
+        s.execute(format!("drop table {t}")).await.unwrap();
     });
 }

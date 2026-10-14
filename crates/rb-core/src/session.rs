@@ -10,6 +10,7 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 use crate::DbError;
 use crate::batch::{Batch, ColumnInfo};
 use crate::config::ConnectionConfig;
+use crate::split::{is_read_only_query, is_transaction_control};
 
 pub const FETCH_ROWS: i32 = 1000;
 
@@ -21,6 +22,8 @@ pub struct Engine {
 
 #[derive(Debug)]
 pub struct ExecOutcome {
+    /// Identifica este resultado; `fetch_more` só busca linhas do resultado com este id.
+    pub exec_id: u64,
     pub columns: Arc<[ColumnInfo]>,
     pub batch: Batch,
     pub more: bool,
@@ -48,7 +51,7 @@ type Reply<T> = oneshot::Sender<Result<T, DbError>>;
 
 enum Cmd {
     Execute { sql: String, reply: Reply<ExecOutcome> },
-    FetchMore { reply: Reply<FetchOutcome> },
+    FetchMore { exec_id: u64, reply: Reply<FetchOutcome> },
     QueryText { sql: String, params: Vec<String>, reply: Reply<Vec<Vec<Option<String>>>> },
     Transaction { stmts: Vec<SqlWithParams>, reply: Reply<u64> },
 }
@@ -57,7 +60,7 @@ impl Cmd {
     fn fail(self, e: DbError) {
         let _ = match self {
             Cmd::Execute { reply, .. } => reply.send(Err(e)).is_ok(),
-            Cmd::FetchMore { reply } => reply.send(Err(e)).is_ok(),
+            Cmd::FetchMore { reply, .. } => reply.send(Err(e)).is_ok(),
             Cmd::QueryText { reply, .. } => reply.send(Err(e)).is_ok(),
             Cmd::Transaction { reply, .. } => reply.send(Err(e)).is_ok(),
         };
@@ -126,7 +129,7 @@ impl Session {
         tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "conectado");
         let cancel = Arc::new(Mutex::new(client.cancel_token()));
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(Actor { client, pg, cancel: cancel.clone() }.run(rx));
+        tokio::spawn(Actor { client, pg, cancel: cancel.clone(), last_exec: 0 }.run(rx));
         Ok(Session { tx, cancel, rt })
     }
 
@@ -140,8 +143,8 @@ impl Session {
         self.call(|reply| Cmd::Execute { sql, reply }).await
     }
 
-    pub async fn fetch_more(&self) -> Result<FetchOutcome, DbError> {
-        self.call(|reply| Cmd::FetchMore { reply }).await
+    pub async fn fetch_more(&self, exec_id: u64) -> Result<FetchOutcome, DbError> {
+        self.call(|reply| Cmd::FetchMore { exec_id, reply }).await
     }
 
     /// Para consultas internas cujas colunas são todas texto (use `::text` no SQL).
@@ -169,6 +172,7 @@ struct Actor {
     client: Client,
     pg: tokio_postgres::Config,
     cancel: Arc<Mutex<CancelToken>>,
+    last_exec: u64,
 }
 
 impl Actor {
@@ -182,7 +186,7 @@ impl Actor {
             }
             next = match cmd {
                 Cmd::Execute { sql, reply } => self.execute(sql, reply, &mut rx).await,
-                Cmd::FetchMore { reply } => {
+                Cmd::FetchMore { reply, .. } => {
                     // Nenhum portal aberto: nada mais a buscar.
                     let _ = reply.send(Ok(FetchOutcome { batch: Batch::empty(0), more: false }));
                     rx.recv().await
@@ -214,6 +218,13 @@ impl Actor {
     /// FetchMore até esgotar ou chegar outro comando — que é devolvido para o loop principal.
     async fn execute(&mut self, sql: String, reply: Reply<ExecOutcome>, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> Option<Cmd> {
         let started = Instant::now();
+        if is_transaction_control(&sql) {
+            let msg = "transações manuais (BEGIN/START/SAVEPOINT): o rustbeaver roda em autocommit";
+            let _ = reply.send(Err(DbError::Unsupported(msg.into())));
+            return rx.recv().await;
+        }
+        self.last_exec += 1;
+        let exec_id = self.last_exec;
         let stmt = match self.client.prepare(&sql).await {
             Ok(s) => s,
             Err(e) => {
@@ -229,6 +240,7 @@ impl Actor {
 
         if columns.is_empty() {
             let res = self.client.execute(&stmt, &[]).await.map_err(DbError::from).map(|n| ExecOutcome {
+                exec_id,
                 columns,
                 batch: Batch::empty(0),
                 more: false,
@@ -255,7 +267,7 @@ impl Actor {
                 return rx.recv().await;
             }
         };
-        let first = match tx.query_portal(&portal, FETCH_ROWS).await {
+        let mut first = match tx.query_portal(&portal, FETCH_ROWS).await {
             Ok(r) => r,
             Err(e) => {
                 let _ = reply.send(Err(e.into()));
@@ -263,14 +275,45 @@ impl Actor {
             }
         };
         let mut more = first.len() == FETCH_ROWS as usize;
+        if !is_read_only_query(&sql) {
+            // Escrita com RETURNING: busca tudo e confirma antes de responder, para não segurar
+            // locks nem deixar uma alteração "feita" sem commit.
+            while more {
+                match tx.query_portal(&portal, FETCH_ROWS).await {
+                    Ok(rows) => {
+                        more = rows.len() == FETCH_ROWS as usize;
+                        first.extend(rows);
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(e.into()));
+                        return rx.recv().await;
+                    }
+                }
+            }
+            let batch = Batch::from_rows(&first, ncols);
+            let res = tx.commit().await.map_err(DbError::from).map(|_| ExecOutcome {
+                exec_id,
+                columns,
+                batch,
+                more: false,
+                affected: None,
+                elapsed: started.elapsed(),
+            });
+            let _ = reply.send(res);
+            return rx.recv().await;
+        }
         let elapsed = started.elapsed();
         tracing::info!(elapsed_ms = elapsed.as_millis() as u64, rows = first.len(), "primeiro lote");
-        let _ = reply.send(Ok(ExecOutcome { columns, batch: Batch::from_rows(&first, ncols), more, affected: None, elapsed }));
+        let _ = reply.send(Ok(ExecOutcome { exec_id, columns, batch: Batch::from_rows(&first, ncols), more, affected: None, elapsed }));
 
         let mut pending: Option<Option<Cmd>> = None;
         while more {
             match rx.recv().await {
-                Some(Cmd::FetchMore { reply }) => match tx.query_portal(&portal, FETCH_ROWS).await {
+                Some(Cmd::FetchMore { exec_id: id, reply }) if id != exec_id => {
+                    // Pedido atrasado de um resultado anterior: não pode consumir este portal.
+                    let _ = reply.send(Ok(FetchOutcome { batch: Batch::empty(0), more: false }));
+                }
+                Some(Cmd::FetchMore { reply, .. }) => match tx.query_portal(&portal, FETCH_ROWS).await {
                     Ok(rows) => {
                         more = rows.len() == FETCH_ROWS as usize;
                         let _ = reply.send(Ok(FetchOutcome { batch: Batch::from_rows(&rows, ncols), more }));
