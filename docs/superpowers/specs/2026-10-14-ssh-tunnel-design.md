@@ -65,8 +65,10 @@ Arquivos `connections.toml` sem o bloco continuam carregando.
 | chaves | `identity_file` | `IdentityFile` (todas) | `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa` que existirem |
 
 `SshTarget` também carrega `known_hosts: PathBuf` (padrão `~/.ssh/known_hosts`) e
-`agent: Option<PathBuf>` (padrão `$SSH_AUTH_SOCK`). Ambos são parâmetros para que os
-testes nunca toquem o `~/.ssh` real. `~` é expandido em todos os caminhos. Um
+`agent: Option<PathBuf>` (padrão `$SSH_AUTH_SOCK`). Os dois vêm de um `SshEnv`
+injetável (`Engine::with_ssh_env`) para que os testes nunca toquem o `~/.ssh` real.
+Blocos `Match` são removidos antes do parse: o `ssh2-config` não os avalia e aplicaria o
+conteúdo a todos os hosts. `~` é expandido em todos os caminhos. Um
 `~/.ssh/config` ausente ou ilegível equivale a vazio; erro de sintaxe vira `DbError::Ssh`.
 
 ### Segredos
@@ -88,8 +90,10 @@ Módulo `rb-core/src/ssh.rs`.
 TLS com o banco (quando `ssl` ≠ `disable`) roda por cima do canal com o mesmo conector
 rustls de hoje (`MakeRustlsConnect::make_tls_connect(host)`).
 
-**Integração com `Session`.** `Engine::connect` abre o `Tunnel` quando `cfg.ssh` existe e o
-guarda na sessão (`Option<Arc<Tunnel>>`). Toda criação de cliente — conexão inicial,
+**Integração com `Session`.** `Engine::connect(cfg, Credentials { password, ssh_passphrase })`
+abre o `Tunnel` quando `cfg.ssh` existe e o guarda na sessão (`Arc<Tunnel>`). O `Engine`
+mantém um cache fraco por conexão do app (id + bloco SSH): a árvore e as abas da mesma
+conexão compartilham um único túnel, que cai quando a última sessão cai. Toda criação de cliente — conexão inicial,
 reconexão automática quando o cliente fecha, cancelamento — abre um canal novo no túnel;
 se `is_closed()`, reconecta o túnel antes. O cancelamento usa
 `CancelToken::cancel_query_raw` sobre um canal próprio. O túnel cai junto com a `Session`
@@ -127,8 +131,8 @@ Mensagens:
 
 ## 4. Interface
 
-**Diálogo de conexão** (`conn_dialog.rs`) ganha a seção "Túnel SSH": caixa "usar túnel",
-campos host/alias, usuário, porta, chave e passphrase (mascarada). Usuário, porta e chave
+**Diálogo de conexão** (`conn_dialog.rs`) ganha a seção "Túnel SSH": campos host/alias
+(vazio = sem túnel), usuário, porta, chave e passphrase (mascarada). Usuário, porta e chave
 mostram como placeholder o valor resolvido do `~/.ssh/config` para o host digitado
 (recalculado ao sair do campo host).
 
@@ -137,8 +141,10 @@ mantendo o `id`. Senha e passphrase em branco mantêm o valor atual no Keychain;
 o túnel apaga a passphrase guardada. Se a conexão editada é a ativa, o app reconecta com
 as regras de troca de conexão atuais (recusa com edições pendentes; salva os scripts).
 
-**Confiança no host.** `HostKeyUnknown` vindo de qualquer conexão abre o diálogo de
-confirmação; "Confiar" grava e repete a ação que falhou.
+**Confiança no host.** `HostKeyUnknown` ao ativar uma conexão na barra lateral abre o
+diálogo de confirmação; "Confiar" grava e repete a conexão. As abas reusam o túnel já
+verificado; se uma delas receber o erro (host trocou de chave durante a sessão), ele aparece
+como notificação.
 
 ## 5. Testes
 
