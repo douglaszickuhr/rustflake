@@ -4,6 +4,7 @@ mod grid;
 mod meta;
 mod schema_tree;
 mod sql_tab;
+mod table_tab;
 mod workspace;
 
 use std::time::Instant;

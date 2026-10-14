@@ -14,6 +14,7 @@ use rb_core::secrets;
 use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
 use crate::sql_tab::SqlTab;
+use crate::table_tab::TableTab;
 use crate::{CloseTab, Db, NewSqlTab, conn_dialog};
 
 pub struct Active {
@@ -25,12 +26,14 @@ pub struct Active {
 #[derive(Clone)]
 pub enum TabView {
     Sql(Entity<SqlTab>),
+    Table(Entity<TableTab>),
 }
 
 impl TabView {
     fn title(&self, cx: &App) -> SharedString {
         match self {
             TabView::Sql(t) => t.read(cx).title(),
+            TabView::Table(t) => t.read(cx).title(),
         }
     }
 }
@@ -117,7 +120,20 @@ impl Workspace {
         .detach();
     }
 
-    pub fn open_table(&mut self, _schema: String, _table: String, _window: &mut Window, _cx: &mut Context<Self>) {}
+    pub fn open_table(&mut self, schema: String, table: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active) = &self.active else { return };
+        let title: SharedString = format!("{schema}.{table}").into();
+        if let Some(ix) = self.tabs.iter().position(|t| matches!(t, TabView::Table(_)) && t.title(cx) == title) {
+            self.active_tab = ix;
+            cx.notify();
+            return;
+        }
+        let (conn, meta) = (active.conn.clone(), active.meta.clone());
+        let tab = cx.new(|cx| TableTab::new(schema, table, conn, meta, window, cx));
+        self.tabs.push(TabView::Table(tab));
+        self.active_tab = self.tabs.len() - 1;
+        cx.notify();
+    }
 
     pub fn new_sql_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.active.as_ref().map(|a| a.conn.clone()) else { return };
@@ -196,6 +212,7 @@ impl Workspace {
         );
         let content = match &self.tabs[self.active_tab] {
             TabView::Sql(t) => t.clone().into_any_element(),
+            TabView::Table(t) => t.clone().into_any_element(),
         };
         v_flex().flex_1().h_full().child(bar).child(div().flex_1().child(content)).into_any_element()
     }
