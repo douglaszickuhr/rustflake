@@ -20,7 +20,7 @@ use gpui_kit::*;
 rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext]);
+gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey]);
 
 /// Runtime de banco compartilhado pela aplicação.
 pub struct Db(pub Engine);
@@ -83,6 +83,8 @@ fn main() {
             KeyBinding::new("cmd-shift-enter", RunScript, Some("SqlTab > Input")),
             // O editor não liga nada a ShowCompletions por padrão.
             KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
+            // Tab aceita a sugestão do autocomplete como o Enter; sem menu aberto, indenta.
+            KeyBinding::new("tab", TabKey, Some("SqlTab > Input")),
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab")),
             // O editor liga cmd-. a ToggleCodeActions; a ligação mais profunda vence.
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab > Input")),

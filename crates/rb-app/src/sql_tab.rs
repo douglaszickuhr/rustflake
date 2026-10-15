@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::highlighter::{Diagnostic, DiagnosticSeverity};
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline, InputEvent};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{DataTable, TableState};
@@ -22,7 +22,7 @@ use rb_core::split::{split_statements, statement_at};
 use crate::completion::SqlCompletion;
 use crate::grid::{self, ResultGrid};
 use crate::meta::{ConnTarget, MetaStore};
-use crate::{CancelQuery, CopyCells, Db, RunScript, RunStatement};
+use crate::{CancelQuery, CopyCells, Db, RunScript, RunStatement, TabKey};
 
 pub struct SqlTab {
     focus: FocusHandle,
@@ -212,6 +212,14 @@ impl Render for SqlTab {
             .on_action(cx.listener(|t, _: &RunStatement, w, cx| t.run(false, w, cx)))
             .on_action(cx.listener(|t, _: &RunScript, w, cx| t.run(true, w, cx)))
             .on_action(cx.listener(|t, _: &CancelQuery, _, _| t.cancel()))
+            .on_action(cx.listener(|t, _: &TabKey, window, cx| {
+                // O editor só consulta o menu no Enter; o Tab dele (IndentInline) indentaria.
+                if t.editor.read(cx).completion_menu_state().open {
+                    window.dispatch_action(Box::new(Enter { secondary: false, shift: false }), cx);
+                } else {
+                    window.dispatch_action(Box::new(IndentInline), cx);
+                }
+            }))
             .child(
                 v_resizable("sql-split")
                     .child(resizable_panel().size(px(280.)).child(Editor::new(&self.editor).h_full()))
