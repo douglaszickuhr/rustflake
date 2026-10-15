@@ -26,7 +26,7 @@ fn pending_edits_round_trip_through_postgres() {
             columns: metadata::columns(&s, &schema, "Order Items").await.unwrap(),
         };
         let read = async || {
-            let out = s.execute(select_sql(&qualified(&schema, "Order Items"), None, Some(("id", true)))).await.unwrap();
+            let out = s.execute(select_sql(&qualified(&schema, "Order Items"), None, Some(("id", true)), None)).await.unwrap();
             ResultSet::new(out.columns, out.batch, out.more)
         };
 

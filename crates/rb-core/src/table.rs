@@ -33,10 +33,11 @@ pub fn qualified(schema: &str, table: &str) -> String {
 
 /// SELECT da aba de tabela. O filtro é uma expressão WHERE crua digitada pelo usuário;
 /// vai entre parênteses e com quebra de linha para que um `--` não engula o ORDER BY.
-/// Linhas que a aba de tabela traz: abrir uma tabela grande não vira um full scan.
+/// Linhas que a aba de tabela traz no Snowflake: lá um SELECT sem limite processa a tabela inteira.
+/// No Postgres não há limite: o portal entrega `FETCH_ROWS` por vez conforme a grade rola.
 pub const TABLE_LIMIT: usize = 1000;
 
-pub fn select_sql(from: &str, filter: Option<&str>, order: Option<(&str, bool)>) -> String {
+pub fn select_sql(from: &str, filter: Option<&str>, order: Option<(&str, bool)>, limit: Option<usize>) -> String {
     let mut sql = format!("SELECT * FROM {from}");
     if let Some(f) = filter.map(str::trim).filter(|f| !f.is_empty()) {
         sql += &format!(" WHERE ({f}\n)");
@@ -44,7 +45,10 @@ pub fn select_sql(from: &str, filter: Option<&str>, order: Option<(&str, bool)>)
     if let Some((col, asc)) = order {
         sql += &format!(" ORDER BY {} {}", quote_always(col), if asc { "ASC" } else { "DESC" });
     }
-    sql + &format!(" LIMIT {TABLE_LIMIT}")
+    match limit {
+        Some(n) => sql + &format!(" LIMIT {n}"),
+        None => sql,
+    }
 }
 
 /// As colunas do resultado ainda são as do alvo de edição? (A tabela pode ter mudado.)
@@ -220,18 +224,23 @@ mod tests {
 
     #[test]
     fn select_sql_quotes_identifiers() {
-        assert_eq!(select_sql(&qualified("Sales", "Order Items"), None, None), r#"SELECT * FROM "Sales"."Order Items" LIMIT 1000"#);
+        assert_eq!(select_sql(&qualified("Sales", "Order Items"), None, None, Some(TABLE_LIMIT)), r#"SELECT * FROM "Sales"."Order Items" LIMIT 1000"#);
         assert_eq!(
-            select_sql(&qualified("public", "t"), Some(" a > 1 -- x "), Some(("Name", false))),
+            select_sql(&qualified("public", "t"), Some(" a > 1 -- x "), Some(("Name", false)), Some(TABLE_LIMIT)),
             "SELECT * FROM \"public\".\"t\" WHERE (a > 1 -- x\n) ORDER BY \"Name\" DESC LIMIT 1000"
         );
-        assert_eq!(select_sql(&qualified("public", "t"), Some("   "), Some(("id", true))), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC LIMIT 1000"#);
+        assert_eq!(select_sql(&qualified("public", "t"), Some("   "), Some(("id", true)), Some(TABLE_LIMIT)), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC LIMIT 1000"#);
+    }
+
+    #[test]
+    fn select_sql_without_limit_leaves_paging_to_the_cursor() {
+        assert_eq!(select_sql(&qualified("public", "t"), None, Some(("id", true)), None), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC"#);
     }
 
     #[test]
     fn generated_sql_always_quotes_identifiers() {
         assert_eq!(
-            select_sql(&qualified("public", "t"), None, Some(("current_date", true))),
+            select_sql(&qualified("public", "t"), None, Some(("current_date", true)), Some(TABLE_LIMIT)),
             r#"SELECT * FROM "public"."t" ORDER BY "current_date" ASC LIMIT 1000"#
         );
         let t = EditTarget { schema: "public".into(), table: "t".into(), columns: vec![col("left", "integer", true, false), col("full", "text", false, false)] };

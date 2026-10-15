@@ -135,7 +135,8 @@ impl TableTab {
             Some((name, asc))
         });
         let from = self.meta.read(cx).cache.dialect.qualified(&self.schema, &self.table);
-        let sql = select_sql(&from, Some(&filter), order_col.as_ref().map(|(n, a)| (n.as_str(), *a)));
+        let limit = (self.meta.read(cx).cache.dialect == Dialect::Snowflake).then_some(TABLE_LIMIT);
+        let sql = select_sql(&from, Some(&filter), order_col.as_ref().map(|(n, a)| (n.as_str(), *a)), limit);
         let conn = self.conn.clone();
         let existing = self.session.clone();
         let engine = cx.global::<Db>().0.clone();
@@ -349,7 +350,7 @@ impl Render for TableTab {
                     .when(spinning, |d| d.child(Spinner::new().small()))
                     .child(t!("grid.rows", n = format!("{rows}{}", if more { "+" } else { "" })).to_string())
                     // Bateu no LIMIT da aba: a tabela pode ter mais; para ver tudo, SQL no editor.
-                    .when(rows >= TABLE_LIMIT, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("table.limited", n = TABLE_LIMIT).to_string())))
+                    .when(sf && rows >= TABLE_LIMIT, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("table.limited", n = TABLE_LIMIT).to_string())))
                     .when(pending, |d| d.child(div().text_color(cx.theme().warning).child(t!("table.pending_edits").to_string())))
                     .when(read_only, |d| {
                         let msg = if sf { t!("table.sf_read_only") } else { t!("table.read_only_no_pk") }.to_string();
