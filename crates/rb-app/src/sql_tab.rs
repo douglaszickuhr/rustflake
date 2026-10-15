@@ -59,6 +59,12 @@ fn panes(has_columns: &[bool], statements: usize) -> (Vec<usize>, bool) {
     (has_columns.iter().enumerate().filter(|(_, c)| **c).map(|(i, _)| i).collect(), statements > 1)
 }
 
+/// A sessão mantém um cursor só: qualquer statement executado depois (inclusive um que falhou)
+/// fecha o do anterior.
+fn cursor_closed(i: usize, executed: usize) -> bool {
+    i + 1 != executed
+}
+
 /// O que o ⌘⇧F formata: a seleção, ou o script inteiro se nada estiver selecionado.
 fn format_target(src: &str, selection: Range<usize>) -> Range<usize> {
     if selection.is_empty() { 0..src.len() } else { selection.start.min(selection.end)..selection.start.max(selection.end) }
@@ -256,13 +262,13 @@ impl SqlTab {
             .collect();
         self.record_history(&outcomes, src, cx);
 
-        // Uma grade por statement com colunas; só a última tem o cursor aberto para paginar.
+        // Uma grade por statement com colunas; só o último executado mantém o cursor para paginar.
         self._grid_subs.clear();
-        let last = with_rows.last().copied();
+        let executed = outcomes.len();
         let mut results = Vec::new();
         for (k, &i) in with_rows.iter().enumerate() {
             let Ok(out) = std::mem::replace(&mut outcomes[i].2, Err(DbError::Connection(String::new()))) else { continue };
-            let truncated = out.more && Some(i) != last;
+            let truncated = out.more && cursor_closed(i, executed);
             let rs = ResultSet::new(out.columns, out.batch, out.more && !truncated);
             let grid = self.new_grid(window, cx);
             grid.update(cx, |t, cx| {
@@ -545,6 +551,14 @@ mod tests {
         assert_eq!(panes(&[true, false, true], 3), (vec![0, 2], true));
         assert_eq!(panes(&[false, false], 2), (vec![], true), "só DML: só mensagens");
         assert_eq!(panes(&[true, false], 3), (vec![0], true), "erro no 2º de 3: o 1º fica, mensagens aparecem");
+    }
+
+    #[::core::prelude::v1::test]
+    fn only_the_last_executed_statement_keeps_its_cursor() {
+        assert!(cursor_closed(0, 2), "SELECT seguido de UPDATE: o UPDATE fechou o cursor");
+        assert!(!cursor_closed(1, 2));
+        assert!(!cursor_closed(0, 1));
+        assert!(cursor_closed(0, 2), "erro no 2º: o 1º também perdeu o cursor");
     }
 
     #[::core::prelude::v1::test]
