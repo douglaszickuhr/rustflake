@@ -1,0 +1,9 @@
+{"GlobalStats":{"partitionsTotal":120,"partitionsAssigned":115,"bytesAssigned":52428800},
+ "Operations":[[
+  {"id":0,"operation":"Result","expressions":["SUM(O.AMOUNT)"]},
+  {"id":1,"parentOperators":[0],"operation":"Aggregate","expressions":["aggExprs: [SUM(O.AMOUNT)]"]},
+  {"id":2,"parentOperators":[1],"operation":"InnerJoin","expressions":["joinKey: (C.ID = O.CUSTOMER_ID)"]},
+  {"id":3,"parentOperators":[2],"operation":"TableScan","objects":["DB.PUBLIC.CUSTOMERS"],"expressions":["ID"],"partitionsAssigned":5,"partitionsTotal":10,"bytesAssigned":2097152},
+  {"id":4,"parentOperators":[2],"operation":"Filter","expressions":["O.STATUS = 'PAID'"]},
+  {"id":5,"parentOperators":[4],"operation":"TableScan","objects":["DB.PUBLIC.ORDERS"],"expressions":["CUSTOMER_ID","AMOUNT","STATUS"],"partitionsAssigned":110,"partitionsTotal":110,"bytesAssigned":50331648}
+ ]]}

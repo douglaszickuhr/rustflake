@@ -174,3 +174,13 @@ es = "estimó %{est} filas, llegaron %{act}"
 en = "sequential scan discarded %{n} rows: an index may help"
 pt = "leitura sequencial descartou %{n} linhas: um índice pode ajudar"
 es = "lectura secuencial descartó %{n} filas: un índice puede ayudar"
+
+[plan.warn_pruning]
+en = "read %{a} of %{t} partitions: poor pruning"
+pt = "leu %{a} de %{t} partições: poda ruim"
+es = "leyó %{a} de %{t} particiones: poda deficiente"
+
+[plan.warn_spill]
+en = "spilled to remote storage"
+pt = "transbordou para o armazenamento remoto"
+es = "desbordó al almacenamiento remoto"

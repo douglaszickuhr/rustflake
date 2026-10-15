@@ -138,6 +138,99 @@ pub fn parse_pg(json: &str, analyzed: bool) -> Result<Plan, DbError> {
     Ok(Plan { root, analyzed, total_ms })
 }
 
+/// Monta a árvore a partir de (id, pai, nó); um nó com vários pais fica sob o primeiro.
+fn tree_from_parents(mut items: Vec<(i64, Option<i64>, PlanNode)>) -> Result<PlanNode, DbError> {
+    fn take(id: i64, items: &mut Vec<(i64, Option<i64>, PlanNode)>) -> Option<PlanNode> {
+        let ix = items.iter().position(|(i, _, _)| *i == id)?;
+        let (_, _, mut node) = items.remove(ix);
+        let kids: Vec<i64> = items.iter().filter(|(_, p, _)| *p == Some(id)).map(|(i, _, _)| *i).collect();
+        node.children = kids.into_iter().filter_map(|k| take(k, items)).collect();
+        Some(node)
+    }
+    let root = items.iter().find(|(_, p, _)| p.is_none()).map(|(i, _, _)| *i).ok_or_else(|| bad_json("root"))?;
+    take(root, &mut items).ok_or_else(|| bad_json("root"))
+}
+
+fn first_parent(v: Option<&Value>) -> Option<i64> {
+    v.and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_i64)
+}
+
+/// Leu mais de 90% das partições de uma tabela com mais de 100: o filtro não podou.
+fn bad_pruning(scanned: f64, total: f64) -> bool {
+    total > 100.0 && scanned / total > 0.9
+}
+
+fn pruning_warn(scanned: f64, total: f64) -> Option<String> {
+    bad_pruning(scanned, total).then(|| t!("plan.warn_pruning", a = short_count(scanned), t = short_count(total)).to_string())
+}
+
+/// `EXPLAIN USING JSON`: operadores ligados por `parentOperators`; o peso são os bytes lidos.
+pub fn parse_sf_explain(json: &str) -> Result<Plan, DbError> {
+    let v: Value = serde_json::from_str(json).map_err(bad_json)?;
+    let steps = v.get("Operations").and_then(Value::as_array).ok_or_else(|| bad_json("Operations"))?;
+    let items = steps
+        .iter()
+        .flat_map(|step| step.as_array().into_iter().flatten())
+        .map(|o| {
+            let mut detail: Vec<(String, String)> = o.get("expressions").and_then(Value::as_array).into_iter().flatten().map(|e| ("expression".to_string(), text(e))).collect();
+            let (pa, pt, bytes) = (num(o, "partitionsAssigned"), num(o, "partitionsTotal"), num(o, "bytesAssigned"));
+            if let (Some(a), Some(t)) = (pa, pt) {
+                detail.push(("partitions".into(), format!("{} / {}", short_count(a), short_count(t))));
+            }
+            if let Some(b) = bytes {
+                detail.push(("bytes".into(), short_count(b)));
+            }
+            let node = PlanNode {
+                op: o.get("operation").and_then(Value::as_str).unwrap_or("?").into(),
+                object: o.get("objects").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).map(str::to_string),
+                detail,
+                cost: bytes,
+                warn: pa.zip(pt).and_then(|(a, t)| pruning_warn(a, t)).into_iter().collect(),
+                ..Default::default()
+            };
+            (o.get("id").and_then(Value::as_i64).unwrap_or(-1), first_parent(o.get("parentOperators")), node)
+        })
+        .collect();
+    let mut root = tree_from_parents(items)?;
+    fill_pct(&mut root, |n| n.cost.unwrap_or(0.0));
+    Ok(Plan { root, analyzed: false, total_ms: None })
+}
+
+/// `GET_QUERY_OPERATOR_STATS`: colunas pelo nome; variants chegam como texto JSON.
+pub fn parse_sf_stats(names: &[String], rows: &[Vec<Option<String>>]) -> Result<Plan, DbError> {
+    let col = |n: &str| names.iter().position(|c| c.eq_ignore_ascii_case(n)).ok_or_else(|| bad_json(n));
+    let (id, parents, op, stats, time, attrs) = (col("OPERATOR_ID")?, col("PARENT_OPERATORS")?, col("OPERATOR_TYPE")?, col("OPERATOR_STATISTICS")?, col("EXECUTION_TIME_BREAKDOWN")?, col("OPERATOR_ATTRIBUTES")?);
+    let cell = |r: &[Option<String>], i: usize| r.get(i).cloned().flatten();
+    let json = |r: &[Option<String>], i: usize| cell(r, i).and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(Value::Null);
+    let items = rows
+        .iter()
+        .map(|r| {
+            let (st, tm, at) = (json(r, stats), json(r, time), json(r, attrs));
+            let mut warn = Vec::new();
+            if st.pointer("/spilling/bytes_spilled_remote_storage").and_then(Value::as_f64).is_some_and(|b| b > 0.0) {
+                warn.push(t!("plan.warn_spill").to_string());
+            }
+            if let (Some(sc), Some(tt)) = (st.pointer("/pruning/partitions_scanned").and_then(Value::as_f64), st.pointer("/pruning/partitions_total").and_then(Value::as_f64)) {
+                warn.extend(pruning_warn(sc, tt));
+            }
+            let mut detail: Vec<(String, String)> = at.as_object().into_iter().flatten().filter(|(k, _)| k.as_str() != "table_name").map(|(k, v)| (k.clone(), text(v))).collect();
+            detail.extend(st.as_object().into_iter().flatten().map(|(k, v)| (k.clone(), text(v))));
+            let node = PlanNode {
+                op: cell(r, op).unwrap_or_default(),
+                object: at.get("table_name").and_then(Value::as_str).map(str::to_string),
+                detail,
+                act_rows: st.get("output_rows").and_then(Value::as_f64),
+                pct: tm.get("overall_percentage").and_then(Value::as_f64).unwrap_or(0.0) * 100.0,
+                warn,
+                ..Default::default()
+            };
+            let parent = first_parent(Some(&json(r, parents)));
+            (cell(r, id).and_then(|s| s.parse().ok()).unwrap_or(-1), parent, node)
+        })
+        .collect();
+    Ok(Plan { root: tree_from_parents(items)?, analyzed: true, total_ms: None })
+}
+
 /// Raiz em cima; cada subárvore ocupa a soma das larguras dos filhos e o pai fica centralizado.
 pub fn layout(root: &PlanNode, box_w: f32, box_h: f32, gap_x: f32, gap_y: f32) -> Vec<Placed> {
     fn width(n: &PlanNode, w: f32, g: f32) -> f32 {
@@ -250,6 +343,38 @@ mod tests {
         let w = parse_pg(json, true).unwrap().root.warn;
         assert_eq!(w.len(), 2, "{w:?}");
         assert!(parse_pg("{}", true).is_err() && parse_pg("nada", false).is_err());
+    }
+
+    #[test]
+    fn sf_explain_links_operations_by_parent() {
+        let p = parse_sf_explain(include_str!("../tests/fixtures/sf_explain.json")).unwrap();
+        assert!(!p.analyzed);
+        assert_eq!(p.root.op, "Result");
+        let join = &p.root.children[0].children[0];
+        assert_eq!(join.op, "InnerJoin");
+        assert_eq!(join.children.len(), 2);
+        let orders = &join.children[1].children[0];
+        assert_eq!(orders.object.as_deref(), Some("DB.PUBLIC.ORDERS"));
+        assert!(orders.pct > 90.0, "bytes do scan / bytes totais: {}", orders.pct);
+        assert_eq!(orders.warn.len(), 1, "110 partições, todas lidas: poda ruim");
+        assert!(join.children[0].warn.is_empty(), "10 partições: abaixo do limite");
+    }
+
+    #[test]
+    fn sf_stats_use_time_share_and_warn_on_spill() {
+        let v: Value = serde_json::from_str(include_str!("../tests/fixtures/sf_stats.json")).unwrap();
+        let names: Vec<String> = v["names"].as_array().unwrap().iter().map(|n| n.as_str().unwrap().to_string()).collect();
+        let rows: Vec<Vec<Option<String>>> = v["rows"].as_array().unwrap().iter().map(|r| r.as_array().unwrap().iter().map(|c| c.as_str().map(str::to_string)).collect()).collect();
+        let p = parse_sf_stats(&names, &rows).unwrap();
+        assert!(p.analyzed);
+        let join = &p.root.children[0].children[0];
+        assert!(join.detail.iter().any(|(k, _)| k == "equality_join_condition"));
+        let orders = &join.children[1];
+        assert_eq!(orders.object.as_deref(), Some("DB.PUBLIC.ORDERS"));
+        assert!((orders.pct - 65.0).abs() < 0.01);
+        assert_eq!(orders.act_rows, Some(990000.0));
+        assert_eq!(orders.warn.len(), 2, "spill remoto e poda ruim: {:?}", orders.warn);
+        assert!(parse_sf_stats(&names[..2], &rows).is_err(), "coluna faltando");
     }
 
     #[test]
