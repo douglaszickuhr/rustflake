@@ -329,6 +329,7 @@ impl Workspace {
     fn open_sql_file(&mut self, path: PathBuf, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some((conn, meta)) = self.open_conn(conn_id).map(|o| (o.conn.clone(), o.meta.clone())) else { return };
         let tab = cx.new(|cx| SqlTab::new(path, conn, meta, window, cx));
+        tab.read(cx).editor.clone().update(cx, |e, cx| e.focus(window, cx));
         self.tabs.push(TabView::Sql(tab));
         self.select_tab(self.tabs.len() - 1, cx);
     }
