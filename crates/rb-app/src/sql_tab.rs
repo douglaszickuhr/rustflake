@@ -24,7 +24,7 @@ use rb_core::split::{split_statements, statement_at};
 use crate::completion::SqlCompletion;
 use crate::grid::{self, ResultGrid};
 use crate::meta::{ConnTarget, MetaStore};
-use crate::{CancelQuery, CopyCells, Db, RunScript, RunStatement, TabKey};
+use crate::{CancelQuery, CopyCells, Db, FormatSql, RunScript, RunStatement, TabKey};
 
 /// Aba visível na área de resultados.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +55,11 @@ struct ResultPane {
 /// "Mensagens" aparece (script com mais de um statement).
 fn panes(has_columns: &[bool], statements: usize) -> (Vec<usize>, bool) {
     (has_columns.iter().enumerate().filter(|(_, c)| **c).map(|(i, _)| i).collect(), statements > 1)
+}
+
+/// O que o ⌘⇧F formata: a seleção, ou o script inteiro se nada estiver selecionado.
+fn format_target(src: &str, selection: Range<usize>) -> Range<usize> {
+    if selection.is_empty() { 0..src.len() } else { selection.start.min(selection.end)..selection.start.max(selection.end) }
 }
 
 fn sql_head(sql: &str) -> String {
@@ -336,6 +341,27 @@ impl SqlTab {
         }
     }
 
+    /// Uma edição só (`replace`): um ⌘Z volta ao texto anterior. Texto igual não suja o desfazer.
+    fn format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (src, sel) = {
+            let e = self.editor.read(cx);
+            (e.value().to_string(), e.selected_range())
+        };
+        let range = format_target(&src, sel);
+        let Some(original) = src.get(range.clone()) else { return };
+        let formatted = rb_core::format::format_sql(original);
+        if formatted == original {
+            return;
+        }
+        let whole = range.len() == src.len();
+        self.editor.update(cx, |e, cx| {
+            if whole {
+                e.select_all(window, cx);
+            }
+            e.replace(formatted, window, cx);
+        });
+    }
+
     fn cancel(&mut self) {
         if let Some(s) = &self.session {
             s.cancel();
@@ -419,6 +445,7 @@ impl Render for SqlTab {
             .on_action(cx.listener(|t, _: &RunStatement, w, cx| t.run(false, w, cx)))
             .on_action(cx.listener(|t, _: &RunScript, w, cx| t.run(true, w, cx)))
             .on_action(cx.listener(|t, _: &CancelQuery, _, _| t.cancel()))
+            .on_action(cx.listener(|t, _: &FormatSql, w, cx| t.format(w, cx)))
             .on_action(cx.listener(|t, _: &TabKey, window, cx| {
                 // O editor só consulta o menu no Enter; o Tab dele (IndentInline) indentaria.
                 if t.editor.read(cx).completion_menu_state().open {
@@ -460,6 +487,12 @@ mod tests {
         assert_eq!(panes(&[true, false, true], 3), (vec![0, 2], true));
         assert_eq!(panes(&[false, false], 2), (vec![], true), "só DML: só mensagens");
         assert_eq!(panes(&[true, false], 3), (vec![0], true), "erro no 2º de 3: o 1º fica, mensagens aparecem");
+    }
+
+    #[::core::prelude::v1::test]
+    fn format_target_is_selection_or_everything() {
+        assert_eq!(format_target("select 1; select 2", 0..0), 0..18);
+        assert_eq!(format_target("select 1; select 2", 10..18), 10..18);
     }
 
     #[::core::prelude::v1::test]
