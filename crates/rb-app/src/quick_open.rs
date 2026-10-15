@@ -229,6 +229,7 @@ impl Render for QuickOpen {
 pub fn open(meta: Entity<MetaStore>, indexer: Option<Entity<Indexer>>, on_pick: impl Fn(Hit, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| QuickOpen::new(meta, indexer, Rc::new(on_pick), window, cx));
     let input = view.read(cx).input.clone();
-    input.update(cx, |s, cx| s.focus(window, cx));
     window.open_dialog(cx, move |dialog, _, _| dialog.title(t!("quick.title").to_string()).w(px(640.)).child(view.clone()));
+    // Depois de abrir: o diálogo foca um handle próprio e guarda o foco anterior para devolver ao fechar.
+    input.update(cx, |s, cx| s.focus(window, cx));
 }

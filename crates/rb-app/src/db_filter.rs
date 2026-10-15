@@ -120,7 +120,6 @@ impl Render for DbFilterEditor {
 pub fn open(current: Vec<String>, apply: impl Fn(Vec<String>, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
     let editor = cx.new(|cx| DbFilterEditor::new(current, window, cx));
     let input = editor.read(cx).input.clone();
-    input.update(cx, |s, cx| s.focus(window, cx));
     let apply = Rc::new(apply);
     window.open_dialog(cx, move |dialog, _, _| {
         let (clear, save, ed) = (apply.clone(), apply.clone(), editor.clone());
@@ -140,6 +139,8 @@ pub fn open(current: Vec<String>, apply: impl Fn(Vec<String>, &mut Window, &mut 
                 })),
         )
     });
+    // Depois de abrir: o diálogo foca um handle próprio e guarda o foco anterior para devolver ao fechar.
+    input.update(cx, |s, cx| s.focus(window, cx));
 }
 
 #[cfg(test)]

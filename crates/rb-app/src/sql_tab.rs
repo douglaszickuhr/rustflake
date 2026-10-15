@@ -64,9 +64,10 @@ fn format_target(src: &str, selection: Range<usize>) -> Range<usize> {
     if selection.is_empty() { 0..src.len() } else { selection.start.min(selection.end)..selection.start.max(selection.end) }
 }
 
-fn sql_head(sql: &str) -> String {
-    let line = sql.trim().lines().next().unwrap_or("").trim();
-    if line.chars().count() > 80 { line.chars().take(80).collect::<String>() + "…" } else { line.to_string() }
+/// Resumo de uma linha: junta as linhas (SQL formatado começa com "SELECT" sozinho) e corta em 80.
+pub(crate) fn sql_head(sql: &str) -> String {
+    let line = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() > 80 { line.chars().take(80).collect::<String>() + "…" } else { line }
 }
 
 type Outcome = (Range<usize>, Duration, Result<ExecOutcome, DbError>);
@@ -553,8 +554,9 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn sql_head_is_first_line_trimmed() {
-        assert_eq!(sql_head("\n  select *\n from t"), "select *");
+    fn sql_head_joins_lines_and_caps_length() {
+        assert_eq!(sql_head("\n  select *\n from t"), "select * from t", "SQL formatado: junta as linhas");
+        assert_eq!(sql_head("SELECT\n  1 AS a,\n  'x' AS b"), "SELECT 1 AS a, 'x' AS b");
         assert_eq!(sql_head(&"x".repeat(200)).chars().count(), 81);
     }
 }

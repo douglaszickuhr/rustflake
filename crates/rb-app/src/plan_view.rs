@@ -12,7 +12,9 @@ use rb_core::explain::{Placed, Plan, PlanNode, edge_width, hottest, layout, node
 use crate::{PlanFit, PlanZoomIn, PlanZoomOut};
 
 const BOX_W: f32 = 220.0;
-const BOX_H: f32 = 64.0;
+const BOX_H: f32 = 76.0;
+/// Margem interna da área do diagrama (`p_4`), descontada no ajustar à tela.
+const PAD: f32 = 16.0;
 const GAP_X: f32 = 32.0;
 const GAP_Y: f32 = 56.0;
 
@@ -59,8 +61,8 @@ impl PlanView {
     }
 
     fn fit(&mut self) {
-        if let Some(v) = self.viewport.get().filter(|v| v.0 > 0.0 && v.1 > 0.0) {
-            self.zoom = fit_zoom(self.content_size(), v);
+        if let Some(v) = self.viewport.get().filter(|v| v.0 > 2.0 * PAD && v.1 > 2.0 * PAD) {
+            self.zoom = fit_zoom(self.content_size(), (v.0 - 2.0 * PAD, v.1 - 2.0 * PAD));
             self.fitted = true;
         }
     }
@@ -223,7 +225,7 @@ impl Render for PlanView {
                             .flex_1()
                             .h_full()
                             .overflow_scroll()
-                            .p_4()
+                            .p(px(PAD))
                             .child(canvas(move |b, _, _| viewport.set(Some((f32::from(b.size.width), f32::from(b.size.height)))), |_, _, _, _| {}).absolute().size_full())
                             .child(content),
                     )

@@ -93,7 +93,7 @@ impl Render for HistoryPopup {
         let theme = cx.theme();
         let now = history::now_ms();
         let rows = self.hits.iter().enumerate().map(|(i, e)| {
-            let head = e.sql.trim().lines().next().unwrap_or("").to_string();
+            let head = crate::sql_tab::sql_head(&e.sql);
             let mut info = format!("{} · {} ms", when_label(e.ts, now, &chrono::Local), e.ms);
             if let Some(n) = e.rows {
                 info += &format!(" · {}", t!("grid.rows", n = n));
@@ -140,8 +140,9 @@ impl Render for HistoryPopup {
 pub fn open(conn_name: String, path: PathBuf, on_pick: impl Fn(String, bool, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| HistoryPopup::new(path, Rc::new(on_pick), window, cx));
     let input = view.read(cx).input.clone();
-    input.update(cx, |s, cx| s.focus(window, cx));
     window.open_dialog(cx, move |dialog, _, _| dialog.title(t!("history.title", conn = conn_name).to_string()).w(px(640.)).child(view.clone()));
+    // Depois de abrir: o diálogo foca um handle próprio e guarda o foco anterior para devolver ao fechar.
+    input.update(cx, |s, cx| s.focus(window, cx));
 }
 
 #[cfg(test)]
