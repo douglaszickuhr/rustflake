@@ -65,6 +65,18 @@ fn cursor_closed(i: usize, executed: usize) -> bool {
     i + 1 != executed
 }
 
+/// Texto a inserir do histórico: começa um statement novo se o cursor está depois de um.
+fn text_for_insert(before: &str, sql: &str) -> String {
+    let prev = before.trim_end();
+    if prev.is_empty() || before.ends_with('\n') {
+        sql.to_string()
+    } else if prev.ends_with(';') {
+        format!("\n{sql}")
+    } else {
+        format!(";\n{sql}")
+    }
+}
+
 /// O que o ⌘⇧F formata: a seleção, ou o script inteiro se nada estiver selecionado.
 fn format_target(src: &str, selection: Range<usize>) -> Range<usize> {
     if selection.is_empty() { 0..src.len() } else { selection.start.min(selection.end)..selection.start.max(selection.end) }
@@ -159,7 +171,9 @@ impl SqlTab {
     /// Insere no cursor (histórico) e devolve o foco ao editor.
     pub fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |e, cx| {
-            e.insert(text.to_string(), window, cx);
+            let value = e.value().to_string();
+            let before = value.get(..e.cursor()).unwrap_or(&value);
+            e.insert(text_for_insert(before, text), window, cx);
             e.focus(window, cx);
         });
     }
@@ -565,6 +579,16 @@ mod tests {
         assert!(!cursor_closed(1, 2));
         assert!(!cursor_closed(0, 1));
         assert!(cursor_closed(0, 2), "erro no 2º: o 1º também perdeu o cursor");
+    }
+
+    #[::core::prelude::v1::test]
+    fn history_insert_starts_a_new_statement_when_needed() {
+        assert_eq!(text_for_insert("", "select 2"), "select 2");
+        assert_eq!(text_for_insert("select 1;\n", "select 2"), "select 2");
+        assert_eq!(text_for_insert("select 1;", "select 2"), "\nselect 2");
+        assert_eq!(text_for_insert("select 1", "select 2"), ";\nselect 2");
+        assert_eq!(text_for_insert("select 1  ", "select 2"), ";\nselect 2");
+        assert_eq!(text_for_insert("   ", "select 2"), "select 2");
     }
 
     #[::core::prelude::v1::test]
