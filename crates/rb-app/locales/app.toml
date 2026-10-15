@@ -749,3 +749,23 @@ es = "Consultas por día"
 en = "+ disabled"
 pt = "+ desabilitados"
 es = "+ deshabilitados"
+
+[results.result]
+en = "Result %{n}"
+pt = "Resultado %{n}"
+es = "Resultado %{n}"
+
+[results.messages]
+en = "Messages"
+pt = "Mensagens"
+es = "Mensajes"
+
+[results.first_rows_only]
+en = "first rows only"
+pt = "só as primeiras"
+es = "solo las primeras"
+
+[results.affected]
+en = "%{n} affected"
+pt = "%{n} afetada(s)"
+es = "%{n} afectada(s)"
