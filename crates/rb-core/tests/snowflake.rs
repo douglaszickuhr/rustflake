@@ -40,6 +40,7 @@ fn env() -> Option<Env> {
             warehouse: v("WAREHOUSE"),
             role: v("ROLE"),
             schema: None,
+            db_filter: Vec::new(),
         }),
     };
     let creds = Credentials { password: pat, ..Default::default() };

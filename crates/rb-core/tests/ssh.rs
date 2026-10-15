@@ -63,6 +63,7 @@ fn trusted_known_hosts(e: &Env) -> PathBuf {
     kh
 }
 
+/// Mensagens no idioma padrão dos testes (`en`: ninguém chama `set_locale`).
 fn ssh_err(res: Option<DbError>, needle: &str) {
     assert!(matches!(&res, Some(DbError::Ssh(m)) if m.contains(needle)), "esperava SSH com {needle:?}: {res:?}");
 }
@@ -78,7 +79,7 @@ fn unreachable_bastion() {
         agent: None,
         known_hosts: scratch("unreach").join("known_hosts"),
     };
-    ssh_err(run(Tunnel::connect(t, None)).err(), "bastion 127.0.0.1:1 inacessível");
+    ssh_err(run(Tunnel::connect(t, None)).err(), "bastion 127.0.0.1:1 unreachable");
 }
 
 #[test]
@@ -105,7 +106,7 @@ fn changed_host_key_is_refused_without_touching_known_hosts() {
     parts[2] = fake.split_whitespace().nth(1).unwrap().to_string();
     let tampered = format!("{}\n", parts.join(" "));
     std::fs::write(&kh, &tampered).unwrap();
-    ssh_err(run(Tunnel::connect(target(&e, "id_plain", kh.clone(), None), None)).err(), "mudou");
+    ssh_err(run(Tunnel::connect(target(&e, "id_plain", kh.clone(), None), None)).err(), "changed");
     assert_eq!(std::fs::read_to_string(&kh).unwrap(), tampered);
 }
 
@@ -114,8 +115,8 @@ fn key_file_with_passphrase() {
     let Some(e) = env() else { return skip() };
     let kh = trusted_known_hosts(&e);
     let t = || target(&e, "id_pass", kh.clone(), None);
-    ssh_err(run(Tunnel::connect(t(), None)).err(), "exige passphrase");
-    ssh_err(run(Tunnel::connect(t(), Some("errada".into()))).err(), "passphrase incorreta");
+    ssh_err(run(Tunnel::connect(t(), None)).err(), "requires a passphrase");
+    ssh_err(run(Tunnel::connect(t(), Some("errada".into()))).err(), "wrong passphrase");
     assert!(run(Tunnel::connect(t(), Some("segredo".into()))).is_ok());
 }
 
@@ -124,7 +125,7 @@ fn rejected_user_lists_what_was_tried() {
     let Some(e) = env() else { return skip() };
     let mut t = target(&e, "id_plain", trusted_known_hosts(&e), None);
     t.user = "ninguem".into();
-    ssh_err(run(Tunnel::connect(t, None)).err(), "nenhuma chave aceita por ninguem@");
+    ssh_err(run(Tunnel::connect(t, None)).err(), "no key accepted for ninguem@");
 }
 
 #[test]
@@ -164,7 +165,7 @@ fn channels_to_open_and_closed_ports() {
     run(async {
         let t = Tunnel::connect(target(&e, "id_plain", kh, None), None).await.unwrap();
         assert!(t.open_stream("rb-pg", 5432).await.is_ok());
-        ssh_err(t.open_stream("rb-pg", 9).await.err(), "recusou abrir canal para rb-pg:9");
+        ssh_err(t.open_stream("rb-pg", 9).await.err(), "refused to open a channel to rb-pg:9");
     });
 }
 
@@ -262,7 +263,7 @@ fn slow_channel_does_not_block_others_and_times_out() {
         let started = std::time::Instant::now();
         assert!(t.open_stream("rb-pg", 5432).await.is_ok());
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
-        ssh_err(slow.await.unwrap(), "não respondeu");
+        ssh_err(slow.await.unwrap(), "did not respond");
     });
 }
 

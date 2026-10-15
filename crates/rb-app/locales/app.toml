@@ -1,0 +1,721 @@
+_version = 2
+
+# Comuns
+
+[common.cancel]
+en = "Cancel"
+pt = "Cancelar"
+es = "Cancelar"
+
+[common.save]
+en = "Save"
+pt = "Salvar"
+es = "Guardar"
+
+# Barra lateral e abas
+
+[ws.connections]
+en = "Connections"
+pt = "Conexões"
+es = "Conexiones"
+
+[ws.connecting]
+en = "connecting…"
+pt = "conectando…"
+es = "conectando…"
+
+[ws.connect_failed]
+en = "Failed to connect: %{error}"
+pt = "Falha ao conectar: %{error}"
+es = "No se pudo conectar: %{error}"
+
+[ws.disconnect]
+en = "Disconnect"
+pt = "Desconectar"
+es = "Desconectar"
+
+[ws.no_connection]
+en = "No open connection"
+pt = "Nenhuma conexão aberta"
+es = "Ninguna conexión abierta"
+
+[ws.new_script_hint]
+en = "⌘T opens a script"
+pt = "⌘T abre um script"
+es = "⌘T abre un script"
+
+[ws.open_connection_to_search]
+en = "open a connection to search"
+pt = "abra uma conexão para buscar"
+es = "abre una conexión para buscar"
+
+[ws.pending_before_edit]
+en = "save or discard pending edits before editing the open connection"
+pt = "grave ou descarte as edições pendentes antes de editar a conexão aberta"
+es = "guarda o descarta los cambios pendientes antes de editar la conexión abierta"
+
+[ws.pending_before_close]
+en = "save (⌘S) or discard your edits before closing the tab"
+pt = "grave (⌘S) ou descarte as edições antes de fechar a aba"
+es = "guarda (⌘S) o descarta los cambios antes de cerrar la pestaña"
+
+[ws.pending_before_remove]
+en = "save or discard pending edits before removing the connection"
+pt = "grave ou descarte as edições pendentes antes de remover a conexão"
+es = "guarda o descarta los cambios pendientes antes de eliminar la conexión"
+
+[ws.pending_before_disconnect]
+en = "save or discard pending edits before disconnecting"
+pt = "grave ou descarte as edições pendentes antes de desconectar"
+es = "guarda o descarta los cambios pendientes antes de desconectar"
+
+[ws.remove_title]
+en = "Remove connection"
+pt = "Remover conexão"
+es = "Eliminar conexión"
+
+[ws.remove_confirm]
+en = "Remove \"%{name}\"? The password saved in the Keychain will also be deleted."
+pt = "Remover \"%{name}\"? A senha salva no Keychain também será apagada."
+es = "¿Eliminar \"%{name}\"? La contraseña guardada en el Llavero también se borrará."
+
+[ws.remove]
+en = "Remove"
+pt = "Remover"
+es = "Eliminar"
+
+[ws.unknown_host_title]
+en = "Unknown SSH host"
+pt = "Host SSH desconhecido"
+es = "Host SSH desconocido"
+
+[ws.unknown_host_body]
+en = "%{host}:%{port} is not in known_hosts.\n%{fingerprint}\nTrust it and continue?"
+pt = "%{host}:%{port} não está no known_hosts.\n%{fingerprint}\nConfiar e continuar?"
+es = "%{host}:%{port} no está en known_hosts.\n%{fingerprint}\n¿Confiar y continuar?"
+
+[ws.trust]
+en = "Trust"
+pt = "Confiar"
+es = "Confiar"
+
+[ws.choose]
+en = "Choose %{kind}"
+pt = "Escolher %{kind}"
+es = "Elegir %{kind}"
+
+# Diálogo de conexão
+
+[conn.new_title]
+en = "New connection"
+pt = "Nova conexão"
+es = "Nueva conexión"
+
+[conn.edit_title]
+en = "Edit connection"
+pt = "Editar conexão"
+es = "Editar conexión"
+
+[conn.keep_current]
+en = "(leave blank to keep the current one)"
+pt = "(em branco mantém a atual)"
+es = "(en blanco mantiene la actual)"
+
+[conn.kind]
+en = "Type"
+pt = "Tipo"
+es = "Tipo"
+
+[conn.name]
+en = "Name"
+pt = "Nome"
+es = "Nombre"
+
+[conn.account]
+en = "Account (e.g. xy12345.us-east-1)"
+pt = "Conta (ex.: xy12345.us-east-1)"
+es = "Cuenta (p. ej. xy12345.us-east-1)"
+
+[conn.user]
+en = "User"
+pt = "Usuário"
+es = "Usuario"
+
+[conn.auth]
+en = "Authentication"
+pt = "Autenticação"
+es = "Autenticación"
+
+[conn.auth_sso]
+en = "Browser SSO"
+pt = "SSO navegador"
+es = "SSO en navegador"
+
+[conn.sf_key]
+en = "Private key (.p8)"
+pt = "Chave privada (.p8)"
+es = "Clave privada (.p8)"
+
+[conn.key_passphrase]
+en = "Key passphrase"
+pt = "Passphrase da chave"
+es = "Frase de contraseña de la clave"
+
+[conn.pat]
+en = "PAT token"
+pt = "Token PAT"
+es = "Token PAT"
+
+[conn.port]
+en = "Port"
+pt = "Porta"
+es = "Puerto"
+
+[conn.database]
+en = "Database"
+pt = "Banco"
+es = "Base de datos"
+
+[conn.password]
+en = "Password"
+pt = "Senha"
+es = "Contraseña"
+
+[conn.ssh_host]
+en = "SSH tunnel: host or ~/.ssh/config alias (empty = no tunnel)"
+pt = "Túnel SSH: host ou alias do ~/.ssh/config (vazio = sem túnel)"
+es = "Túnel SSH: host o alias de ~/.ssh/config (vacío = sin túnel)"
+
+[conn.ssh_user]
+en = "SSH user"
+pt = "Usuário SSH"
+es = "Usuario SSH"
+
+[conn.ssh_port]
+en = "SSH port"
+pt = "Porta SSH"
+es = "Puerto SSH"
+
+[conn.ssh_key]
+en = "Private key"
+pt = "Chave privada"
+es = "Clave privada"
+
+[conn.default_keys]
+en = "agent / default keys"
+pt = "agente / chaves padrão"
+es = "agente / claves predeterminadas"
+
+[conn.err_account]
+en = "enter the Snowflake account (e.g. xy12345.us-east-1)"
+pt = "informe a conta Snowflake (ex.: xy12345.us-east-1)"
+es = "indica la cuenta de Snowflake (p. ej. xy12345.us-east-1)"
+
+[conn.err_key_path]
+en = "key-pair needs the private key path (.p8)"
+pt = "key-pair precisa do caminho da chave privada (.p8)"
+es = "key-pair necesita la ruta de la clave privada (.p8)"
+
+[conn.err_ssh_port]
+en = "invalid SSH port"
+pt = "porta SSH inválida"
+es = "puerto SSH no válido"
+
+[conn.err_name_user]
+en = "fill in name and user"
+pt = "preencha nome e usuário"
+es = "completa nombre y usuario"
+
+[conn.err_port]
+en = "invalid port"
+pt = "porta inválida"
+es = "puerto no válido"
+
+[conn.err_ssl]
+en = "ssl must be disable, prefer or require (not %{value})"
+pt = "ssl deve ser disable, prefer ou require (não %{value})"
+es = "ssl debe ser disable, prefer o require (no %{value})"
+
+[conn.err_required]
+en = "fill in name, host, database and user"
+pt = "preencha nome, host, banco e usuário"
+es = "completa nombre, host, base de datos y usuario"
+
+# Árvore
+
+[tree.loading]
+en = "loading…"
+pt = "carregando…"
+es = "cargando…"
+
+[tree.databases]
+en = "Databases"
+pt = "Databases"
+es = "Bases de datos"
+
+[tree.tables]
+en = "Tables"
+pt = "Tabelas"
+es = "Tablas"
+
+[tree.views]
+en = "Views"
+pt = "Views"
+es = "Vistas"
+
+[tree.matviews]
+en = "Materialized views"
+pt = "Views materializadas"
+es = "Vistas materializadas"
+
+[tree.functions]
+en = "Functions"
+pt = "Funções"
+es = "Funciones"
+
+[tree.columns]
+en = "Columns"
+pt = "Colunas"
+es = "Columnas"
+
+[tree.indexes]
+en = "Indexes"
+pt = "Índices"
+es = "Índices"
+
+# Filtro de databases
+
+[filter.title]
+en = "Filter databases"
+pt = "Filtrar databases"
+es = "Filtrar bases de datos"
+
+[filter.placeholder]
+en = "DEV_*, !*_TMP — Enter or comma adds"
+pt = "DEV_*, !*_TMP — Enter ou vírgula adiciona"
+es = "DEV_*, !*_TMP — Enter o coma añade"
+
+[filter.hint]
+en = "`*` is a wildcard: DEV_* starts with DEV_, *_PROD ends with _PROD. `!` excludes. Case-insensitive. Double-click a chip to edit it."
+pt = "`*` é coringa: DEV_* começa com DEV_, *_PROD termina com _PROD. `!` exclui. Sem diferenciar maiúsculas. Duplo clique num chip edita."
+es = "`*` es comodín: DEV_* empieza por DEV_, *_PROD termina en _PROD. `!` excluye. Sin distinguir mayúsculas. Doble clic en un chip para editarlo."
+
+[filter.clear]
+en = "Clear"
+pt = "Limpar"
+es = "Limpiar"
+
+[filter.apply]
+en = "Apply"
+pt = "Aplicar"
+es = "Aplicar"
+
+# Busca rápida
+
+[quick.title]
+en = "Search"
+pt = "Buscar"
+es = "Buscar"
+
+[quick.placeholder]
+en = "database, schema, table or view"
+pt = "database, schema, tabela ou view"
+es = "base de datos, esquema, tabla o vista"
+
+[quick.no_results]
+en = "no results"
+pt = "nenhum resultado"
+es = "sin resultados"
+
+[quick.searching]
+en = "searching…"
+pt = "buscando…"
+es = "buscando…"
+
+[quick.indexing]
+en = "indexing…"
+pt = "indexando…"
+es = "indexando…"
+
+[quick.index_failed]
+en = "indexing failed: %{error}"
+pt = "falha ao indexar: %{error}"
+es = "falló la indexación: %{error}"
+
+[quick.index_size]
+en = "index: %{n} objects"
+pt = "índice: %{n} objetos"
+es = "índice: %{n} objetos"
+
+[quick.updating]
+en = "updating…"
+pt = "atualizando…"
+es = "actualizando…"
+
+[quick.last_update_failed]
+en = "last update failed: %{error}"
+pt = "falha na última atualização: %{error}"
+es = "falló la última actualización: %{error}"
+
+[quick.refresh_index]
+en = "Refresh index"
+pt = "Atualizar índice"
+es = "Actualizar índice"
+
+[quick.kind_database]
+en = "database"
+pt = "database"
+es = "base de datos"
+
+[quick.kind_schema]
+en = "schema"
+pt = "schema"
+es = "esquema"
+
+[quick.kind_table]
+en = "table"
+pt = "tabela"
+es = "tabla"
+
+[quick.kind_view]
+en = "view"
+pt = "view"
+es = "vista"
+
+[quick.kind_matview]
+en = "mat. view"
+pt = "view mat."
+es = "vista mat."
+
+# Editor SQL e grade
+
+[sql.running]
+en = "running…"
+pt = "executando…"
+es = "ejecutando…"
+
+[sql.rows_affected]
+en = "%{n} row(s) affected"
+pt = "%{n} linha(s) afetada(s)"
+es = "%{n} fila(s) afectada(s)"
+
+[sql.error]
+en = "error"
+pt = "erro"
+es = "error"
+
+[grid.rows]
+en = "%{n} row(s)"
+pt = "%{n} linha(s)"
+es = "%{n} fila(s)"
+
+# Aba de tabela
+
+[table.filter_placeholder]
+en = "WHERE filter, e.g. id > 10 — Enter applies"
+pt = "filtro WHERE, ex.: id > 10 — Enter aplica"
+es = "filtro WHERE, p. ej. id > 10 — Enter aplica"
+
+[table.save_before_reload]
+en = "save (⌘S) or discard your edits before reloading"
+pt = "grave (⌘S) ou descarte as edições antes de recarregar"
+es = "guarda (⌘S) o descarta los cambios antes de recargar"
+
+[table.structure_changed]
+en = "the table structure changed: editing disabled; reopen the tab"
+pt = "a estrutura da tabela mudou: edição desativada; reabra a aba"
+es = "la estructura de la tabla cambió: edición desactivada; vuelve a abrir la pestaña"
+
+[table.generated_column]
+en = "generated column: not editable"
+pt = "coluna gerada: não editável"
+es = "columna generada: no editable"
+
+[table.set_null]
+en = "Set NULL"
+pt = "Definir NULL"
+es = "Poner NULL"
+
+[table.nothing_to_save]
+en = "nothing to save"
+pt = "nada para gravar"
+es = "nada que guardar"
+
+[table.saving]
+en = "saving…"
+pt = "gravando…"
+es = "guardando…"
+
+[table.rows_saved]
+en = "%{n} row(s) saved"
+pt = "%{n} linha(s) gravada(s)"
+es = "%{n} fila(s) guardada(s)"
+
+[table.save_failed]
+en = "Save failed — nothing was changed: %{error}"
+pt = "Erro ao gravar — nada foi alterado: %{error}"
+es = "Error al guardar — no se cambió nada: %{error}"
+
+[table.reload]
+en = "Reload"
+pt = "Recarregar"
+es = "Recargar"
+
+[table.row]
+en = "Row"
+pt = "Linha"
+es = "Fila"
+
+[table.delete_row]
+en = "Delete row"
+pt = "Excluir linha"
+es = "Eliminar fila"
+
+[table.discard]
+en = "Discard"
+pt = "Descartar"
+es = "Descartar"
+
+[table.limited]
+en = "first %{n} rows only — use the SQL editor to see more"
+pt = "só as primeiras %{n} linhas — use o editor SQL para ver mais"
+es = "solo las primeras %{n} filas — usa el editor SQL para ver más"
+
+[table.pending_edits]
+en = "pending edits"
+pt = "edições pendentes"
+es = "cambios pendientes"
+
+[table.sf_read_only]
+en = "Snowflake: read-only"
+pt = "Snowflake: somente leitura"
+es = "Snowflake: solo lectura"
+
+[table.read_only_no_pk]
+en = "read-only: table has no primary key"
+pt = "somente leitura: tabela sem chave primária"
+es = "solo lectura: la tabla no tiene clave primaria"
+
+# Idioma
+
+[lang.title]
+en = "Language"
+pt = "Idioma"
+es = "Idioma"
+
+# Usuários & Roles
+
+[admin.title]
+en = "Users & Roles"
+pt = "Usuários & Roles"
+es = "Usuarios y roles"
+
+[admin.users]
+en = "Users"
+pt = "Usuários"
+es = "Usuarios"
+
+[admin.roles]
+en = "Roles"
+pt = "Roles"
+es = "Roles"
+
+[admin.filter]
+en = "Filter…"
+pt = "Filtrar…"
+es = "Filtrar…"
+
+[admin.reload]
+en = "Reload"
+pt = "Recarregar"
+es = "Recargar"
+
+[admin.disabled]
+en = "disabled"
+pt = "desabilitado"
+es = "deshabilitado"
+
+[admin.pick]
+en = "Pick a user or role on the left."
+pt = "Escolha um usuário ou role à esquerda."
+es = "Elige un usuario o rol a la izquierda."
+
+[admin.truncated]
+en = "showing the first %{n}: SHOW limit reached"
+pt = "mostrando os primeiros %{n}: limite do SHOW"
+es = "mostrando los primeros %{n}: límite de SHOW"
+
+[admin.hint_grants]
+en = "The current role needs MANAGE GRANTS or ownership."
+pt = "A role atual precisa de MANAGE GRANTS ou ownership."
+es = "El rol actual necesita MANAGE GRANTS u ownership."
+
+[admin.hint_activity]
+en = "Needs IMPORTED PRIVILEGES on the SNOWFLAKE database."
+pt = "Precisa de IMPORTED PRIVILEGES no database SNOWFLAKE."
+es = "Necesita IMPORTED PRIVILEGES en la base SNOWFLAKE."
+
+[admin.hint_warehouse]
+en = "Set a warehouse for this connection."
+pt = "Defina um warehouse para esta conexão."
+es = "Define un warehouse para esta conexión."
+
+[admin.back]
+en = "Back"
+pt = "Voltar"
+es = "Volver"
+
+[admin.properties]
+en = "Properties"
+pt = "Propriedades"
+es = "Propiedades"
+
+[admin.default_role]
+en = "Default role"
+pt = "Role padrão"
+es = "Rol por defecto"
+
+[admin.default_warehouse]
+en = "Default warehouse"
+pt = "Warehouse padrão"
+es = "Warehouse por defecto"
+
+[admin.default_namespace]
+en = "Default namespace"
+pt = "Namespace padrão"
+es = "Namespace por defecto"
+
+[admin.status]
+en = "Status"
+pt = "Situação"
+es = "Estado"
+
+[admin.active]
+en = "active"
+pt = "ativo"
+es = "activo"
+
+[admin.locked]
+en = "locked"
+pt = "bloqueado"
+es = "bloqueado"
+
+[admin.created]
+en = "Created"
+pt = "Criado em"
+es = "Creado"
+
+[admin.last_login]
+en = "Last login"
+pt = "Último login"
+es = "Último inicio de sesión"
+
+[admin.never]
+en = "never"
+pt = "nunca"
+es = "nunca"
+
+[admin.auth]
+en = "Authentication"
+pt = "Autenticação"
+es = "Autenticación"
+
+[admin.direct_roles]
+en = "Granted roles"
+pt = "Roles concedidas"
+es = "Roles concedidos"
+
+[admin.effective_roles]
+en = "Effective roles (inherited)"
+pt = "Roles efetivas (herdadas)"
+es = "Roles efectivos (heredados)"
+
+[admin.none]
+en = "none"
+pt = "nenhuma"
+es = "ninguno"
+
+[admin.granted_to]
+en = "Granted to"
+pt = "Concedida a"
+es = "Concedido a"
+
+[admin.inherits]
+en = "Inherits"
+pt = "Herda"
+es = "Hereda"
+
+[admin.privileges]
+en = "Privileges (%{n})"
+pt = "Privilégios (%{n})"
+es = "Privilegios (%{n})"
+
+[admin.owner]
+en = "Owner"
+pt = "Owner"
+es = "Owner"
+
+[admin.display_name]
+en = "Display name"
+pt = "Nome de exibição"
+es = "Nombre visible"
+
+[admin.email]
+en = "E-mail"
+pt = "E-mail"
+es = "Correo"
+
+[admin.comment]
+en = "Comment"
+pt = "Comentário"
+es = "Comentario"
+
+[admin.password]
+en = "password"
+pt = "senha"
+es = "contraseña"
+
+[admin.activity]
+en = "Activity (last 30 days)"
+pt = "Atividade (últimos 30 dias)"
+es = "Actividad (últimos 30 días)"
+
+[admin.activity_lag]
+en = "ACCOUNT_USAGE data, up to ~2 h behind"
+pt = "dados do ACCOUNT_USAGE, com até ~2 h de atraso"
+es = "datos de ACCOUNT_USAGE, con hasta ~2 h de retraso"
+
+[admin.logins]
+en = "Logins: %{ok} ok, %{failed} failed"
+pt = "Logins: %{ok} ok, %{failed} com falha"
+es = "Inicios de sesión: %{ok} ok, %{failed} fallidos"
+
+[admin.queries]
+en = "Queries: %{n} · last %{last} · %{time} total"
+pt = "Queries: %{n} · última %{last} · %{time} no total"
+es = "Consultas: %{n} · última %{last} · %{time} en total"
+
+[admin.top_warehouses]
+en = "Top warehouses"
+pt = "Warehouses mais usados"
+es = "Warehouses más usados"
+
+[admin.top_roles]
+en = "Top roles"
+pt = "Roles mais usadas"
+es = "Roles más usados"
+
+[admin.recent_logins]
+en = "Recent logins"
+pt = "Logins recentes"
+es = "Inicios de sesión recientes"
+
+[admin.queries_per_day]
+en = "Queries per day"
+pt = "Queries por dia"
+es = "Consultas por día"
+
+[admin.show_disabled]
+en = "+ disabled"
+pt = "+ desabilitados"
+es = "+ deshabilitados"

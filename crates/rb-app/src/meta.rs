@@ -5,6 +5,7 @@ use gpui_kit::*;
 use rb_core::config::ConnectionConfig;
 use rb_core::dialect::Dialect;
 use rb_core::metadata::{self, ColumnMeta, IndexMeta, MetaCache, MetaRequest, SchemaObjects};
+use rb_core::quick_open::{IndexDiff, refresh_plan};
 use rb_core::session::{Credentials, Session};
 
 #[derive(Clone)]
@@ -67,6 +68,22 @@ impl MetaStore {
         .detach();
     }
 
+    /// Corrige o cache com o diff do índice: refaz por cima o que a árvore já carregou (sem apagar
+    /// antes, para colunas e nós abertos continuarem) e tira os schemas que sumiram.
+    pub fn apply_index_diff(&mut self, d: IndexDiff, cx: &mut Context<Self>) {
+        let plan = refresh_plan(&d, &self.cache);
+        for s in plan.drop_schemas {
+            self.cache.invalidate_schema(&s);
+        }
+        for req in plan.reload {
+            self.fetch(req, cx);
+        }
+        if plan.reload_roots {
+            self.reload_roots(cx);
+        }
+        cx.notify();
+    }
+
     /// Algum pedaço do catálogo ainda a caminho.
     pub fn loading(&self) -> bool {
         !self.inflight.is_empty()
@@ -74,7 +91,14 @@ impl MetaStore {
 
     /// Carrega um pedaço do catálogo se ainda não estiver em cache nem a caminho.
     pub fn request(&mut self, req: MetaRequest, cx: &mut Context<Self>) {
-        if self.cache.has(&req) || !self.inflight.insert(req.clone()) {
+        if !self.cache.has(&req) {
+            self.fetch(req, cx);
+        }
+    }
+
+    /// Busca no banco mesmo com o pedaço em cache; a resposta substitui o que havia.
+    fn fetch(&mut self, req: MetaRequest, cx: &mut Context<Self>) {
+        if !self.inflight.insert(req.clone()) {
             return;
         }
         let s = self.session.clone();

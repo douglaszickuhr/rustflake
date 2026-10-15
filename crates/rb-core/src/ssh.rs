@@ -1,5 +1,6 @@
 //! Túnel SSH em processo: resolução do `~/.ssh/config`, autenticação e known_hosts.
 
+use rust_i18n::t;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -186,7 +187,7 @@ impl client::Handler for Checker {
 
     async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, DbError> {
         let PublicKeyOrCertificate::PublicKey { key, .. } = key else {
-            return Err(DbError::Ssh(format!("{} apresentou certificado de host, não suportado", self.host)));
+            return Err(DbError::Ssh(t!("err.ssh.host_certificate", host = self.host).to_string()));
         };
         match russh::keys::check_known_hosts_path(&self.host, self.port, key, &self.known_hosts) {
             Ok(true) => Ok(true),
@@ -196,11 +197,9 @@ impl client::Handler for Checker {
                 fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
                 key: key.to_openssh().map_err(|e| DbError::Ssh(e.to_string()))?,
             }),
-            Err(russh::keys::Error::KeyChanged { line }) => Err(DbError::Ssh(format!(
-                "chave do host {} mudou ({}:{line})",
-                self.host,
-                self.known_hosts.display()
-            ))),
+            Err(russh::keys::Error::KeyChanged { line }) => Err(DbError::Ssh(
+                t!("err.ssh.host_key_changed", host = self.host, file = self.known_hosts.display(), line = line).to_string(),
+            )),
             Err(e) => Err(DbError::Ssh(format!("{}: {e}", self.known_hosts.display()))),
         }
     }
@@ -233,17 +232,17 @@ impl Tunnel {
         };
         tokio::time::timeout(CONNECT_TIMEOUT, h.channel_open_direct_tcpip(host, port.into(), "127.0.0.1", 0))
             .await
-            .map_err(|_| DbError::Ssh(format!("{host}:{port} não respondeu pelo bastion em {} s", CONNECT_TIMEOUT.as_secs())))?
+            .map_err(|_| DbError::Ssh(t!("err.ssh.no_response", host = host, port = port, secs = CONNECT_TIMEOUT.as_secs()).to_string()))?
             .map(Channel::into_stream)
-            .map_err(|e| DbError::Ssh(format!("o bastion recusou abrir canal para {host}:{port}: {e}")))
+            .map_err(|e| DbError::Ssh(t!("err.ssh.channel_refused", host = host, port = port, error = e).to_string()))
     }
 }
 
 async fn open_session(t: &SshTarget, passphrase: Option<&str>) -> Result<Handle<Checker>, DbError> {
-    let unreachable = |cause: String| DbError::Ssh(format!("bastion {}:{} inacessível: {cause}", t.hostname, t.port));
+    let unreachable = |cause: String| DbError::Ssh(t!("err.ssh.unreachable", host = t.hostname, port = t.port, cause = cause).to_string());
     let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((t.hostname.as_str(), t.port)))
         .await
-        .map_err(|_| unreachable("tempo esgotado".into()))?
+        .map_err(|_| unreachable(t!("err.ssh.timeout").to_string()))?
         .map_err(|e| unreachable(e.to_string()))?;
     let _ = tcp.set_nodelay(true);
     let mut config = client::Config {
@@ -255,7 +254,7 @@ async fn open_session(t: &SshTarget, passphrase: Option<&str>) -> Result<Handle<
     let checker = Checker { host: t.hostname.clone(), port: t.port, known_hosts: t.known_hosts.clone() };
     let mut h = tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(Arc::new(config), tcp, checker))
         .await
-        .map_err(|_| unreachable("tempo esgotado no handshake".into()))??;
+        .map_err(|_| unreachable(t!("err.ssh.handshake_timeout").to_string()))??;
     authenticate(&mut h, t, passphrase).await?;
     Ok(h)
 }
@@ -295,10 +294,10 @@ fn load_key(path: &Path, passphrase: Option<&str>) -> Result<PrivateKey, DbError
     match load_secret_key(path, None) {
         Ok(k) => Ok(k),
         Err(KeyError::KeyIsEncrypted) => match passphrase {
-            None => Err(DbError::Ssh(format!("{shown} exige passphrase"))),
-            Some(p) => load_secret_key(path, Some(p)).map_err(|_| DbError::Ssh(format!("passphrase incorreta para {shown}"))),
+            None => Err(DbError::Ssh(t!("err.ssh.needs_passphrase", key = shown).to_string())),
+            Some(p) => load_secret_key(path, Some(p)).map_err(|_| DbError::Ssh(t!("err.ssh.wrong_passphrase", key = shown).to_string())),
         },
-        Err(e) => Err(DbError::Ssh(format!("não foi possível ler {shown}: {e}"))),
+        Err(e) => Err(DbError::Ssh(t!("err.ssh.cannot_read", key = shown, error = e).to_string())),
     }
 }
 
@@ -356,13 +355,8 @@ async fn authenticate(h: &mut Handle<Checker>, t: &SshTarget, passphrase: Option
     if let Some(e) = key_error {
         return Err(e);
     }
-    let files = if files.is_empty() { "nenhum arquivo".to_string() } else { files.join(", ") };
-    Err(DbError::Ssh(format!(
-        "nenhuma chave aceita por {}@{} (tentadas: agente ×{}, {files})",
-        t.user,
-        t.hostname,
-        via_agent.len()
-    )))
+    let files = if files.is_empty() { t!("err.ssh.no_files").to_string() } else { files.join(", ") };
+    Err(DbError::Ssh(t!("err.ssh.no_key_accepted", user = t.user, host = t.hostname, agent = via_agent.len(), files = files).to_string()))
 }
 
 /// Grava a chave do host no known_hosts, depois que o usuário confirmou o fingerprint.

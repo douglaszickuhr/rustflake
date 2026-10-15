@@ -1,7 +1,12 @@
+mod admin_tab;
 mod completion;
 mod conn_dialog;
+mod db_filter;
 mod grid;
+mod indexer;
+mod lang;
 mod meta;
+mod quick_open;
 mod schema_tree;
 mod sql_tab;
 mod table_tab;
@@ -10,9 +15,11 @@ mod workspace;
 use std::time::Instant;
 
 use gpui_kit::*;
+
+rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit]);
+gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext]);
 
 /// Runtime de banco compartilhado pela aplicação.
 pub struct Db(pub Engine);
@@ -20,7 +27,7 @@ pub struct Db(pub Engine);
 impl Global for Db {}
 
 // Ícones fora do conjunto padrão do gpui-kit; só estes entram no binário.
-gpui_kit::assets::icon_assets!(ExtraIcons, [Database, Layers, Table, Sheet, SquareFunction, Columns3, Hash, KeyRound, ListTree]);
+gpui_kit::assets::icon_assets!(ExtraIcons, [Database, Layers, Table, Sheet, SquareFunction, Columns3, Hash, KeyRound, ListTree, Cpu, CircleUser, Funnel, Users]);
 
 struct AppAssets;
 
@@ -65,6 +72,7 @@ fn main() {
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
+        lang::init(cx);
         #[cfg(target_os = "macos")]
         set_dock_icon();
         cx.set_global(Db(engine));
@@ -84,6 +92,10 @@ fn main() {
             KeyBinding::new("cmd-r", RefreshNode, Some("SchemaTree")),
             KeyBinding::new("cmd-c", CopyCells, Some("ResultGrid")),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-k", QuickOpen, Some("Workspace")),
+            // O campo usa ↑↓ para mover o cursor; a ligação mais profunda vence.
+            KeyBinding::new("up", QuickPrev, Some("QuickOpen > Input")),
+            KeyBinding::new("down", QuickNext, Some("QuickOpen > Input")),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
 

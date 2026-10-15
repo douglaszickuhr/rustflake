@@ -1,5 +1,6 @@
 //! Snowflake: conversão de valores, paginação, metadados e sessão compartilhada.
 
+use rust_i18n::t;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -90,7 +91,7 @@ fn col_index(names: &[String], col: &str) -> Option<usize> {
     names.iter().position(|n| n.eq_ignore_ascii_case(col))
 }
 
-fn field<'a>(names: &[String], row: &'a [Option<String>], col: &str) -> Option<&'a str> {
+pub(crate) fn field<'a>(names: &[String], row: &'a [Option<String>], col: &str) -> Option<&'a str> {
     col_index(names, col).and_then(|i| row.get(i)).and_then(|v| v.as_deref())
 }
 
@@ -151,14 +152,14 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(48 * 3600);
 async fn create_session(client: &sf::Client) -> Result<sf::Session, DbError> {
     match tokio::time::timeout(LOGIN_TIMEOUT, client.create_session()).await {
         Ok(r) => r.map_err(sf_err),
-        Err(_) => Err(DbError::Connection("login Snowflake não concluído em 90 s (o SSO precisa terminar em até 60 s)".into())),
+        Err(_) => Err(DbError::Connection(t!("err.sf_login_timeout").to_string())),
     }
 }
 
 pub(crate) fn sf_err(e: sf::Error) -> DbError {
     match e.snowflake_code() {
         Some(code) => DbError::Snowflake { code: code.to_string(), message: e.snowflake_message().unwrap_or_default().to_string() },
-        None if e.is_cancelled() => DbError::Snowflake { code: "cancelada".into(), message: "query cancelada".into() },
+        None if e.is_cancelled() => DbError::Snowflake { code: t!("err.cancelled_code").to_string(), message: t!("err.cancelled").to_string() },
         None => DbError::Connection(e.to_string()),
     }
 }
@@ -184,15 +185,15 @@ pub(crate) struct SfShared {
 
 impl SfShared {
     pub(crate) async fn login(cfg: &ConnectionConfig, creds: &Credentials) -> Result<SfShared, DbError> {
-        let s = cfg.snowflake.as_ref().ok_or_else(|| DbError::Config("conexão sem bloco snowflake".into()))?;
+        let s = cfg.snowflake.as_ref().ok_or_else(|| DbError::Config(t!("err.sf_no_block").to_string()))?;
         let auth = match s.auth {
             SnowflakeAuth::ExternalBrowser => sf::AuthConfig::external_browser(sf::ExternalBrowserConfig::default()),
             SnowflakeAuth::Pat => {
-                let token = creds.password.clone().ok_or_else(|| DbError::Config("token PAT não informado".into()))?;
+                let token = creds.password.clone().ok_or_else(|| DbError::Config(t!("err.sf_no_pat").to_string()))?;
                 sf::AuthConfig::password(sf::PasswordConfig::new(token))
             }
             SnowflakeAuth::KeyPair => {
-                let path = s.private_key.as_deref().ok_or_else(|| DbError::Config("chave privada não informada".into()))?;
+                let path = s.private_key.as_deref().ok_or_else(|| DbError::Config(t!("err.sf_no_key").to_string()))?;
                 let pem = std::fs::read_to_string(expand_home(path)).map_err(|e| DbError::Config(format!("{path}: {e}")))?;
                 let key = match &creds.key_passphrase {
                     Some(p) => sf::KeyPairConfig::from_encrypted_pem(pem, p.as_bytes().to_vec()),
@@ -301,7 +302,7 @@ impl SfActor {
                     rx.recv().await
                 }
                 Cmd::Transaction { reply, .. } => {
-                    let _ = reply.send(Err(DbError::Unsupported("Snowflake: somente leitura".into())));
+                    let _ = reply.send(Err(DbError::Unsupported(t!("err.sf_read_only").to_string())));
                     rx.recv().await
                 }
             };
@@ -337,7 +338,7 @@ impl SfActor {
     async fn execute(&mut self, sql: String, reply: Reply<ExecOutcome>, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> Option<Cmd> {
         let started = Instant::now();
         if is_transaction_control(&sql) {
-            let msg = "transações manuais (BEGIN/START/SAVEPOINT): o rustbeaver roda em autocommit";
+            let msg = t!("err.manual_transactions");
             let _ = reply.send(Err(DbError::Unsupported(msg.into())));
             return rx.recv().await;
         }

@@ -1,4 +1,5 @@
 use std::ops::Range;
+use rust_i18n::t;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,7 +111,7 @@ impl SqlTab {
         }
         self.ran_use = ranges.iter().any(|r| src[r.clone()].trim_start().get(..4).is_some_and(|w| w.eq_ignore_ascii_case("use ")));
         self.running = true;
-        self.status = "executando…".into();
+        self.status = t!("sql.running").to_string().into();
         cx.notify();
 
         let conn = self.conn.clone();
@@ -145,7 +146,7 @@ impl SqlTab {
         let Some(out) = last else { return };
         let ms = out.elapsed.as_millis();
         self.status = match out.affected {
-            Some(n) => format!("{n} linha(s) afetada(s) · {ms} ms"),
+            Some(n) => format!("{} · {ms} ms", t!("sql.rows_affected", n = n)),
             None => format!("{ms} ms"),
         }
         .into();
@@ -161,7 +162,7 @@ impl SqlTab {
 
     fn finish_error(&mut self, src: &str, range: Option<Range<usize>>, e: DbError, window: &mut Window, cx: &mut Context<Self>) {
         self.running = false;
-        self.status = "erro".into();
+        self.status = t!("sql.error").to_string().into();
         if let (Some(r), DbError::Postgres { position: Some(p), .. }) = (&range, &e) {
             let at = r.start + error_byte_offset(&src[r.clone()], *p);
             let word_end = src[at..].find(|c: char| c.is_whitespace() || c == ',' || c == ')' || c == ';').map_or(src.len(), |n| at + n);
@@ -217,11 +218,11 @@ impl Render for SqlTab {
                     .py_1()
                     .gap_3()
                     .text_sm()
-                    .child(format!("{rows}{} linha(s)", if more { "+" } else { "" }))
+                    .child(t!("grid.rows", n = format!("{rows}{}", if more { "+" } else { "" })).to_string())
                     .child(self.status.clone())
                     .when_some(grid_error, |d, e| d.child(e))
                     .when(self.running, |d| {
-                        d.child(Button::new("cancel").label("Cancelar ⌘.").ghost().on_click(cx.listener(|t, _, _, _| t.cancel())))
+                        d.child(Button::new("cancel").label(format!("{} ⌘.", t!("common.cancel"))).ghost().on_click(cx.listener(|t, _, _, _| t.cancel())))
                     }),
             )
     }

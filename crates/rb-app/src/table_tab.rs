@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use rust_i18n::t;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -11,9 +12,10 @@ use rb_core::batch::ResultSet;
 use rb_core::dialect::Dialect;
 use rb_core::metadata::MetaRequest;
 use rb_core::session::Session;
-use rb_core::table::{EditTarget, PendingEdits, build_sql, columns_match, select_sql};
+use rb_core::table::{EditTarget, PendingEdits, TABLE_LIMIT, build_sql, columns_match, select_sql};
 
 use crate::grid::{self, ResultGrid};
+use crate::lang::Lang;
 use crate::meta::{ConnTarget, MetaStore};
 use crate::{CancelQuery, CopyCells, Db, SaveEdits};
 
@@ -37,7 +39,7 @@ pub struct TableTab {
 
 impl TableTab {
     pub fn new(schema: String, table: String, conn: ConnTarget, meta: Entity<MetaStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("filtro WHERE, ex.: id > 10 — Enter aplica"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("table.filter_placeholder").to_string()));
         let grid = cx.new(|cx| TableState::new(ResultGrid::new(true), window, cx).cell_selectable(true));
 
         let weak = cx.entity().downgrade();
@@ -51,6 +53,10 @@ impl TableTab {
         grid.update(cx, |t, _| t.delegate_mut().on_sort = Some(on_sort));
 
         let subs = vec![
+            // O placeholder fica no estado do campo: troca junto com o idioma.
+            cx.observe_global_in::<Lang>(window, |this, window, cx| {
+                this.filter.update(cx, |s, cx| s.set_placeholder(t!("table.filter_placeholder").to_string(), window, cx));
+            }),
             cx.subscribe_in(&filter, window, |this, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::PressEnter { .. }) {
                     this.load(cx);
@@ -76,7 +82,7 @@ impl TableTab {
             grid,
             target: None,
             sort: None,
-            status: "carregando…".into(),
+            status: t!("tree.loading").to_string().into(),
             after_load: None,
             loaded_once: false,
             _subs: subs,
@@ -115,7 +121,7 @@ impl TableTab {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         if self.has_pending(cx) {
-            self.status = "grave (⌘S) ou descarte as edições antes de recarregar".into();
+            self.status = t!("table.save_before_reload").to_string().into();
             cx.notify();
             return;
         }
@@ -129,7 +135,7 @@ impl TableTab {
         let conn = self.conn.clone();
         let existing = self.session.clone();
         let engine = cx.global::<Db>().0.clone();
-        self.status = "carregando…".into();
+        self.status = t!("tree.loading").to_string().into();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = async {
@@ -151,7 +157,7 @@ impl TableTab {
                             tab.grid.update(cx, |t, _| t.delegate_mut().edits = None);
                             let (schema, table) = (tab.schema.clone(), tab.table.clone());
                             tab.meta.update(cx, |m, _| m.cache.invalidate_table(&schema, &table));
-                            tab.after_load = Some("a estrutura da tabela mudou: edição desativada; reabra a aba".into());
+                            tab.after_load = Some(t!("table.structure_changed").to_string().into());
                         }
                         tab.status = tab.after_load.take().unwrap_or_else(|| format!("{} ms", out.elapsed.as_millis()).into());
                         let exec_id = out.exec_id;
@@ -186,7 +192,7 @@ impl TableTab {
             return;
         }
         if target.columns.get(col).is_some_and(|c| c.generated) {
-            self.status = "coluna gerada: não editável".into();
+            self.status = t!("table.generated_column").to_string().into();
             cx.notify();
             return;
         }
@@ -211,8 +217,8 @@ impl TableTab {
                 h_flex()
                     .justify_end()
                     .gap_2()
-                    .child(Button::new("cell-null").label("Definir NULL").on_click(move |_, w, cx| set_null(None, w, cx)))
-                    .child(Button::new("cell-cancel").label("Cancelar").on_click(|_, w, cx| w.close_dialog(cx)))
+                    .child(Button::new("cell-null").label(t!("table.set_null").to_string()).on_click(move |_, w, cx| set_null(None, w, cx)))
+                    .child(Button::new("cell-cancel").label(t!("common.cancel").to_string()).on_click(|_, w, cx| w.close_dialog(cx)))
                     .child(Button::new("cell-ok").label("OK").primary().on_click(move |_, w, cx| {
                         let v = ed.read(cx).value().to_string();
                         set_ok(Some(v), w, cx)
@@ -247,7 +253,7 @@ impl TableTab {
         let g = self.grid.read(cx).delegate();
         let built = match (&g.edits, &g.rs) {
             (Some(edits), Some(rs)) => build_sql(&target, &edits.to_row_edits(&target, |r, c| rs.text(r, c))),
-            _ => Err(rb_core::DbError::Edit("nada para gravar".into())),
+            _ => Err(rb_core::DbError::Edit(t!("table.nothing_to_save").to_string())),
         };
         let stmts = match built {
             Ok(s) => s,
@@ -258,19 +264,19 @@ impl TableTab {
                 return;
             }
         };
-        self.status = "gravando…".into();
+        self.status = t!("table.saving").to_string().into();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let res = session.run_in_transaction(stmts).await;
             this.update(cx, |tab, cx| match res {
                 Ok(n) => {
                     tab.grid.update(cx, |t, _| t.delegate_mut().finish_save(true));
-                    tab.after_load = Some(format!("{n} linha(s) gravada(s)").into());
+                    tab.after_load = Some(t!("table.rows_saved", n = n).to_string().into());
                     tab.load(cx);
                 }
                 Err(e) => {
                     tab.grid.update(cx, |t, _| t.delegate_mut().finish_save(false));
-                    tab.status = format!("Erro ao gravar — nada foi alterado: {e}").into();
+                    tab.status = t!("table.save_failed", error = e).to_string().into();
                     cx.notify();
                 }
             })
@@ -305,18 +311,18 @@ impl Render for TableTab {
                     .p_2()
                     .gap_2()
                     .child(div().flex_1().child(Input::new(&self.filter)))
-                    .child(Button::new("reload").label("Recarregar").ghost().on_click(cx.listener(|t, _, _, cx| t.load(cx))))
+                    .child(Button::new("reload").label(t!("table.reload").to_string()).ghost().on_click(cx.listener(|t, _, _, cx| t.load(cx))))
                     .when(editable, |d| {
-                        d.child(Button::new("add-row").label("+ Linha").ghost().on_click(cx.listener(|t, _, _, cx| t.with_edits(cx, |e, _| e.add_row()))))
-                            .child(Button::new("del-row").label("Excluir linha").ghost().on_click(cx.listener(|t, _, _, cx| {
+                        d.child(Button::new("add-row").label(format!("+ {}", t!("table.row"))).ghost().on_click(cx.listener(|t, _, _, cx| t.with_edits(cx, |e, _| e.add_row()))))
+                            .child(Button::new("del-row").label(t!("table.delete_row").to_string()).ghost().on_click(cx.listener(|t, _, _, cx| {
                                 if let Some(r) = t.selected_row(cx) {
                                     t.with_edits(cx, |e, loaded| e.toggle_delete(r, loaded));
                                 }
                             })))
-                            .child(Button::new("discard").label("Descartar").ghost().on_click(cx.listener(|t, _, _, cx| {
+                            .child(Button::new("discard").label(t!("table.discard").to_string()).ghost().on_click(cx.listener(|t, _, _, cx| {
                                 t.with_edits(cx, |e, _| *e = PendingEdits::default());
                             })))
-                            .child(Button::new("save").label("Salvar ⌘S").primary().disabled(!pending).on_click(cx.listener(|t, _, _, cx| t.save(cx))))
+                            .child(Button::new("save").label(format!("{} ⌘S", t!("common.save"))).primary().disabled(!pending).on_click(cx.listener(|t, _, _, cx| t.save(cx))))
                     }),
             )
             .child(
@@ -332,10 +338,12 @@ impl Render for TableTab {
                     .py_1()
                     .gap_3()
                     .text_sm()
-                    .child(format!("{rows}{} linha(s)", if more { "+" } else { "" }))
-                    .when(pending, |d| d.child(div().text_color(cx.theme().warning).child("edições pendentes")))
+                    .child(t!("grid.rows", n = format!("{rows}{}", if more { "+" } else { "" })).to_string())
+                    // Bateu no LIMIT da aba: a tabela pode ter mais; para ver tudo, SQL no editor.
+                    .when(rows >= TABLE_LIMIT, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("table.limited", n = TABLE_LIMIT).to_string())))
+                    .when(pending, |d| d.child(div().text_color(cx.theme().warning).child(t!("table.pending_edits").to_string())))
                     .when(read_only, |d| {
-                        let msg = if sf { "Snowflake: somente leitura" } else { "somente leitura: tabela sem chave primária" };
+                        let msg = if sf { t!("table.sf_read_only") } else { t!("table.read_only_no_pk") }.to_string();
                         d.child(div().text_color(cx.theme().muted_foreground).child(msg))
                     })
                     .child(self.status.clone()),

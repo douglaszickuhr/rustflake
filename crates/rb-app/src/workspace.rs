@@ -1,38 +1,48 @@
 use std::path::PathBuf;
+use rust_i18n::t;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::assets::IconName;
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use rb_core::config::{self, ConfigFile, ConnectionConfig};
+use rb_core::config::{self, ConfigFile, ConnectionConfig, Language};
 use rb_core::dialect::Dialect;
 use rb_core::lexer::quote_always;
+use rb_core::quick_open::{Hit, HitKind};
 use rb_core::secrets;
 use rb_core::session::Credentials;
 use rb_core::ssh::{self, SshEnv};
 
+use crate::admin_tab::AdminTab;
+use crate::indexer::Indexer;
+use crate::lang::{self, Lang};
 use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
 use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
-use crate::{CloseTab, Db, NewSqlTab, Quit, conn_dialog};
+use crate::{CloseTab, Db, NewSqlTab, Quit, QuickOpen, conn_dialog, db_filter, quick_open};
 
 /// Conexão aberta: sessão de metadados e árvore próprias; cada aba guarda a sua sessão.
 pub struct Open {
     pub conn: ConnTarget,
     pub meta: Entity<MetaStore>,
     pub tree: Entity<SchemaTree>,
+    /// Índice da busca rápida (só Snowflake).
+    pub indexer: Option<Entity<Indexer>>,
 }
 
 #[derive(Clone)]
 pub enum TabView {
     Sql(Entity<SqlTab>),
     Table(Entity<TableTab>),
+    Admin(Entity<AdminTab>),
 }
 
 impl TabView {
@@ -40,6 +50,7 @@ impl TabView {
         match self {
             TabView::Sql(t) => t.read(cx).title(),
             TabView::Table(t) => t.read(cx).title(),
+            TabView::Admin(t) => t.read(cx).title(),
         }
     }
 
@@ -47,6 +58,7 @@ impl TabView {
         match self {
             TabView::Sql(t) => t.read(cx).conn_id().to_string(),
             TabView::Table(t) => t.read(cx).conn_id().to_string(),
+            TabView::Admin(t) => t.read(cx).conn_id().to_string(),
         }
     }
 }
@@ -93,12 +105,16 @@ impl Workspace {
 
     /// Cria ou atualiza (mesmo id). Senha/passphrase vazias mantêm o Keychain; sem túnel, a
     /// passphrase guardada é apagada. Editar uma conexão aberta reconecta. Devolve `false` se recusou.
-    pub fn save_connection(&mut self, cfg: ConnectionConfig, password: String, passphrase: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub fn save_connection(&mut self, mut cfg: ConnectionConfig, password: String, passphrase: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let id = cfg.id.clone();
         let reconnect = self.open_conn(&id).is_some();
         if reconnect && self.has_pending_edits(&id, cx) {
-            window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de editar a conexão aberta"), cx);
+            window.push_notification(Notification::error(t!("ws.pending_before_edit").to_string()), cx);
             return false;
+        }
+        // O diálogo não edita o filtro de databases: mantém o que já estava salvo.
+        if let (Some(new), Some(old)) = (cfg.snowflake.as_mut(), self.connections.iter().find(|c| c.id == id).and_then(|c| c.snowflake.as_ref())) {
+            new.db_filter = old.db_filter.clone();
         }
         let has_ssh = cfg.ssh.is_some();
         let is_sf = cfg.snowflake.is_some();
@@ -191,7 +207,12 @@ impl Workspace {
                 match result {
                     Ok((conn, session)) => {
                         let id = conn.cfg.id.clone();
-                        let meta = cx.new(|cx| MetaStore::new(Arc::new(session), cx));
+                        let db_filter = conn.cfg.snowflake.as_ref().map(|s| s.db_filter.clone()).unwrap_or_default();
+                        let meta = cx.new(|cx| {
+                            let mut m = MetaStore::new(Arc::new(session), cx);
+                            m.cache.db_filter = db_filter;
+                            m
+                        });
                         cx.observe(&meta, |_, _, cx| cx.notify()).detach();
                         let ws_weak = cx.entity().downgrade();
                         let tree_id = id.clone();
@@ -199,7 +220,8 @@ impl Workspace {
                             ws_weak.update(cx, |ws, cx| ws.open_table(&tree_id, schema, table, window, cx)).ok();
                         });
                         let tree = cx.new(|cx| SchemaTree::new(meta.clone(), open, cx));
-                        ws.open.push(Open { conn, meta, tree });
+                        let indexer = conn.cfg.snowflake.is_some().then(|| cx.new(|cx| Indexer::new(conn.clone(), meta.clone(), cx)));
+                        ws.open.push(Open { conn, meta, tree, indexer });
                         ws.current = Some(id.clone());
                         ws.collapsed = false;
                         ws.on_connected(&id, window, cx);
@@ -207,7 +229,7 @@ impl Workspace {
                     Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => {
                         ws.confirm_trust(ix, host, port, fingerprint, key, window, cx)
                     }
-                    Err(e) => window.push_notification(Notification::error(format!("Falha ao conectar: {e}")), cx),
+                    Err(e) => window.push_notification(Notification::error(t!("ws.connect_failed", error = e).to_string()), cx),
                 }
                 cx.notify();
             })
@@ -226,6 +248,51 @@ impl Workspace {
         let tab = cx.new(|cx| TableTab::new(schema, table, conn, meta, window, cx));
         self.tabs.push(TabView::Table(tab));
         self.select_tab(self.tabs.len() - 1, cx);
+    }
+
+    /// Uma aba de usuários & roles por conexão: se já existe, só foca.
+    fn open_admin(&mut self, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(conn) = self.open_conn(conn_id).map(|o| o.conn.clone()) else { return };
+        if let Some(ix) = self.tabs.iter().position(|t| matches!(t, TabView::Admin(_)) && t.conn_id(cx) == conn_id) {
+            self.select_tab(ix, cx);
+            return;
+        }
+        let tab = cx.new(|cx| AdminTab::new(conn, window, cx));
+        self.tabs.push(TabView::Admin(tab));
+        self.select_tab(self.tabs.len() - 1, cx);
+    }
+
+    /// Busca rápida (⌘K) na conexão atual.
+    fn quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(o) = self.current_open() else {
+            window.push_notification(Notification::error(t!("ws.open_connection_to_search").to_string()), cx);
+            return;
+        };
+        let (meta, indexer, id) = (o.meta.clone(), o.indexer.clone(), o.conn.cfg.id.clone());
+        let ws = cx.entity().downgrade();
+        quick_open::open(
+            meta,
+            indexer,
+            move |hit, window, cx| {
+                ws.update(cx, |ws, cx| ws.reveal_hit(&id, hit, window, cx)).ok();
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Mostra o objeto na árvore; tabela/view também abre a aba.
+    fn reveal_hit(&mut self, conn_id: &str, hit: Hit, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tree) = self.open_conn(conn_id).map(|o| o.tree.clone()) else { return };
+        self.current = Some(conn_id.to_string());
+        self.collapsed = false;
+        tree.update(cx, |t, cx| t.reveal(hit.tree_path(), cx));
+        if matches!(hit.kind, HitKind::Table | HitKind::View)
+            && let Some(schema) = hit.schema_key()
+        {
+            self.open_table(conn_id, schema, hit.name, window, cx);
+        }
+        cx.notify();
     }
 
     /// Script novo na conexão atual.
@@ -272,7 +339,7 @@ impl Workspace {
         if let TabView::Table(t) = tab
             && t.read(cx).has_pending(cx)
         {
-            window.push_notification(Notification::error("grave (⌘S) ou descarte as edições antes de fechar a aba"), cx);
+            window.push_notification(Notification::error(t!("ws.pending_before_close").to_string()), cx);
             return;
         }
         if let TabView::Sql(t) = self.tabs.remove(ix) {
@@ -303,8 +370,8 @@ impl Workspace {
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.tabs.is_empty() {
             let msg = match self.current_open() {
-                Some(o) => format!("{} — ⌘T abre um script", o.conn.cfg.name),
-                None => "Nenhuma conexão aberta".into(),
+                Some(o) => format!("{} — {}", o.conn.cfg.name, t!("ws.new_script_hint")),
+                None => t!("ws.no_connection").to_string(),
             };
             return v_flex().flex_1().h_full().items_center().justify_center().child(msg).into_any_element();
         }
@@ -335,6 +402,7 @@ impl Workspace {
         let content = match &self.tabs[self.active_tab] {
             TabView::Sql(t) => t.clone().into_any_element(),
             TabView::Table(t) => t.clone().into_any_element(),
+            TabView::Admin(t) => t.clone().into_any_element(),
         };
         // min_w_0: sem ele o item flex mede no mínimo a largura do conteúdo (todas as colunas da
         // grade) e vaza da janela em vez de deixar a grade rolar na horizontal.
@@ -353,15 +421,15 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             let (ws, id) = (ws.clone(), c.id.clone());
             dialog
-                .title("Remover conexão")
+                .title(t!("ws.remove_title").to_string())
                 .w(px(420.))
-                .child(format!("Remover \"{}\"? A senha salva no Keychain também será apagada.", c.name))
+                .child(t!("ws.remove_confirm", name = c.name).to_string())
                 .footer(
                     h_flex()
                         .justify_end()
                         .gap_2()
-                        .child(Button::new("rm-cancel").label("Cancelar").on_click(|_, window, cx| window.close_dialog(cx)))
-                        .child(Button::new("rm-ok").label("Remover").danger().on_click(move |_, window, cx| {
+                        .child(Button::new("rm-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("rm-ok").label(t!("ws.remove").to_string()).danger().on_click(move |_, window, cx| {
                             window.close_dialog(cx);
                             ws.update(cx, |ws, cx| ws.remove_connection(&id, window, cx)).ok();
                         })),
@@ -373,7 +441,7 @@ impl Workspace {
     fn remove_connection(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.open_conn(id).is_some() {
             if self.has_pending_edits(id, cx) {
-                window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de remover a conexão"), cx);
+                window.push_notification(Notification::error(t!("ws.pending_before_remove").to_string()), cx);
                 return;
             }
             self.disconnect(id, cx);
@@ -415,7 +483,7 @@ impl Workspace {
 
     fn request_disconnect(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.has_pending_edits(id, cx) {
-            window.push_notification(Notification::error("grave ou descarte as edições pendentes antes de desconectar"), cx);
+            window.push_notification(Notification::error(t!("ws.pending_before_disconnect").to_string()), cx);
             return;
         }
         self.disconnect(id, cx);
@@ -428,15 +496,15 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             let (ws, host, key) = (ws.clone(), host.clone(), key.clone());
             dialog
-                .title("Host SSH desconhecido")
+                .title(t!("ws.unknown_host_title").to_string())
                 .w(px(480.))
-                .child(format!("{host}:{port} não está no known_hosts.\n{fingerprint}\nConfiar e continuar?"))
+                .child(t!("ws.unknown_host_body", host = host, port = port, fingerprint = fingerprint).to_string())
                 .footer(
                     h_flex()
                         .justify_end()
                         .gap_2()
-                        .child(Button::new("trust-cancel").label("Cancelar").on_click(|_, window, cx| window.close_dialog(cx)))
-                        .child(Button::new("trust-ok").label("Confiar").primary().on_click(move |_, window, cx| {
+                        .child(Button::new("trust-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("trust-ok").label(t!("ws.trust").to_string()).primary().on_click(move |_, window, cx| {
                             window.close_dialog(cx);
                             // ponytail: append de uma linha no known_hosts na thread de UI; arquivo pequeno.
                             match ssh::trust_host(&SshEnv::system().known_hosts, &host, port, &key) {
@@ -451,6 +519,52 @@ impl Workspace {
     }
 
     /// Lista warehouses ou roles (`SHOW …`) e roda `USE …` na escolhida; a sessão é compartilhada.
+    /// Idioma da interface: Auto (segue o macOS) ou um dos três; troca na hora.
+    fn pick_language(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = cx.global::<Lang>().0;
+        window.open_dialog(cx, move |dialog, _, _| {
+            let options = [Language::Auto, Language::Pt, Language::En, Language::Es];
+            let list = options.into_iter().enumerate().fold(v_flex().gap_1(), |l, (i, choice)| {
+                let mark = if choice == current { "✓ " } else { "   " };
+                l.child(Button::new(("lang", i)).label(format!("{mark}{}", lang::label(choice))).ghost().on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    lang::set(choice, cx);
+                }))
+            });
+            dialog.title(t!("lang.title").to_string()).w(px(320.)).child(list)
+        });
+    }
+
+    /// Diálogo do filtro de databases (Snowflake): chips, `*` coringa, `!` exclui.
+    fn edit_db_filter(&mut self, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.open_conn(conn_id).map(|o| o.meta.read(cx).cache.db_filter.clone()).unwrap_or_default();
+        let (ws, id) = (cx.entity().downgrade(), conn_id.to_string());
+        db_filter::open(current, move |patterns, window, cx| {
+            ws.update(cx, |ws, cx| ws.set_db_filter(&id, patterns, window, cx)).ok();
+        }, window, cx);
+    }
+
+    /// Grava o filtro no TOML e aplica na árvore e no autocomplete, sem reconectar.
+    fn set_db_filter(&mut self, conn_id: &str, patterns: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sf) = self.connections.iter_mut().find(|c| c.id == conn_id).and_then(|c| c.snowflake.as_mut()) else { return };
+        sf.db_filter = patterns.clone();
+        if let Some(o) = self.open_conn(conn_id) {
+            o.meta.update(cx, |m, cx| {
+                m.cache.db_filter = patterns;
+                cx.notify();
+            });
+        }
+        let file = ConfigFile { connections: self.connections.clone() };
+        cx.spawn_in(window, async move |_, cx| {
+            if let Err(e) = cx.background_spawn(async move { config::save(&config::connections_path(), &file) }).await {
+                cx.update(|window, cx| window.push_notification(Notification::error(e.to_string()), cx))?;
+            }
+            anyhow::Ok(())
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn pick_context(&mut self, conn_id: &str, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(meta) = self.open_conn(conn_id).map(|o| o.meta.clone()) else { return };
         let session = meta.read(cx).session.clone();
@@ -475,7 +589,7 @@ impl Workspace {
                                 .detach();
                         }))
                     });
-                    dialog.title(format!("Escolher {kind}")).w(px(360.)).child(list)
+                    dialog.title(t!("ws.choose", kind = kind).to_string()).w(px(360.)).child(list)
                 }),
             })
         })
@@ -493,7 +607,7 @@ impl Workspace {
                     .gap_1()
                     .child(side_item(("conn", ix), Some(logo(c)), c.name.clone(), current, cx).flex_1().on_click(cx.listener(move |ws, _, window, cx| ws.connect(ix, window, cx))))
                     .when(open.is_some(), |r| {
-                        r.child(Button::new(("disc-conn", ix)).label("⏏").ghost().tooltip("Desconectar").on_click(cx.listener(move |ws, _, window, cx| ws.request_disconnect(&id, window, cx))))
+                        r.child(Button::new(("disc-conn", ix)).label("⏏").ghost().tooltip(t!("ws.disconnect").to_string()).on_click(cx.listener(move |ws, _, window, cx| ws.request_disconnect(&id, window, cx))))
                     })
                     .child(Button::new(("edit-conn", ix)).label("✎").ghost().on_click(cx.listener(move |ws, _, window, cx| {
                         let c = ws.connections[ix].clone();
@@ -505,16 +619,57 @@ impl Workspace {
             if let Some(o) = open.filter(|_| current && !self.collapsed) {
                 let cache = &o.meta.read(cx).cache;
                 let ctx = (cache.dialect == Dialect::Snowflake).then(|| (cache.warehouse.clone().unwrap_or_else(|| "—".into()), cache.role.clone().unwrap_or_else(|| "—".into())));
-                let (wh_id, role_id) = (c.id.clone(), c.id.clone());
+                // Badge só com filtro ativo; os padrões ficam no tooltip.
+                let filter = (cache.dialect == Dialect::Snowflake).then(|| {
+                    let badge = (!cache.db_filter.is_empty()).then(|| format!("{}/{}", cache.visible_databases().count(), cache.databases.len()));
+                    let tip = if cache.db_filter.is_empty() { t!("filter.title").to_string() } else { cache.db_filter.join(", ") };
+                    (badge, tip)
+                });
+                let (wh_id, role_id, filter_id, admin_id) = (c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone());
                 list = list.child(
                     v_flex()
                         .flex_1()
                         .min_h_0()
                         .pl_3()
+                        .gap_1()
                         .when_some(ctx, |d, (wh, role)| {
-                            // Um por linha: lado a lado o role era cortado em barras estreitas.
-                            d.child(side_item("pick-wh", None, format!("WH: {wh}"), false, cx).on_click(cx.listener(move |ws, _, w, cx| ws.pick_context(&wh_id, "warehouse", w, cx))))
-                                .child(side_item("pick-role", None, format!("Role: {role}"), false, cx).on_click(cx.listener(move |ws, _, w, cx| ws.pick_context(&role_id, "role", w, cx))))
+                            // Lado a lado, cada um com metade da largura: o valor corta com "…" e aparece inteiro no tooltip.
+                            d.child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(chip("pick-wh", IconName::Cpu, format!("Warehouse: {wh}"), wh, cx).on_click(cx.listener(move |ws, _, w, cx| ws.pick_context(&wh_id, "warehouse", w, cx))))
+                                    .child(chip("pick-role", IconName::CircleUser, format!("Role: {role}"), role, cx).on_click(cx.listener(move |ws, _, w, cx| ws.pick_context(&role_id, "role", w, cx)))),
+                            )
+                            .child(
+                                side_item("adm-open", Some(Icon::new(IconName::Users)), t!("admin.title").to_string(), false, cx)
+                                    .on_click(cx.listener(move |ws, _, w, cx| ws.open_admin(&admin_id, w, cx))),
+                            )
+                        })
+                        .when_some(filter, |d, (badge, tip)| {
+                            let theme = cx.theme();
+                            let active = badge.is_some();
+                            let funnel = h_flex()
+                                .id("db-filter")
+                                .gap_1()
+                                .px_1()
+                                .rounded(theme.radius)
+                                .cursor_pointer()
+                                .hover(|d| d.bg(theme.secondary_hover))
+                                .text_color(if active { theme.primary } else { theme.muted_foreground })
+                                .child(Icon::new(IconName::Funnel).small())
+                                .when_some(badge, |d, b| d.child(div().text_xs().child(b)))
+                                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                                .on_click(cx.listener(move |ws, _, w, cx| ws.edit_db_filter(&filter_id, w, cx)));
+                            d.child(
+                                h_flex()
+                                    .justify_between()
+                                    .pt_1()
+                                    .pr_1()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(t!("tree.databases").to_string().to_uppercase())
+                                    .child(funnel),
+                            )
                         })
                         .child(div().flex_1().min_h_0().child(o.tree.clone())),
                 );
@@ -527,12 +682,35 @@ impl Workspace {
             .child(
                 h_flex()
                     .justify_between()
-                    .child("Conexões")
+                    .child(t!("ws.connections").to_string())
                     .child(Button::new("new-conn").label("+").ghost().on_click(cx.listener(|_, _, window, cx| conn_dialog::open(None, window, cx)))),
             )
             .child(list)
-            .when(self.connecting, |d| d.child("conectando…"))
+            .when(self.connecting, |d| d.child(t!("ws.connecting").to_string()))
+            // `list` cresce (flex_1): o seletor fica no pé da barra.
+            .child(side_item("lang", None, format!("🌐 {}", lang::label(cx.global::<Lang>().0)), false, cx).on_click(cx.listener(|ws, _, w, cx| ws.pick_language(w, cx))))
     }
+}
+
+/// Pílula de contexto (warehouse/role): ícone + valor cortado; o valor inteiro vai no tooltip.
+fn chip(id: &'static str, icon: IconName, tip: String, value: String, cx: &App) -> Stateful<Div> {
+    let t = cx.theme();
+    h_flex()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .gap_1()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .border_1()
+        .border_color(t.border)
+        .text_xs()
+        .cursor_pointer()
+        .hover(|d| d.bg(t.secondary_hover))
+        .child(Icon::new(icon).xsmall().flex_shrink_0().text_color(t.muted_foreground))
+        .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(value))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
 }
 
 /// Item clicável da barra lateral, alinhado à esquerda (o Button sempre centraliza).
@@ -565,6 +743,7 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(|ws, _: &NewSqlTab, window, cx| ws.new_sql_tab(window, cx)))
+            .on_action(cx.listener(|ws, _: &QuickOpen, window, cx| ws.quick_open(window, cx)))
             .on_action(cx.listener(|ws, _: &CloseTab, window, cx| ws.close_tab(ws.active_tab, window, cx)))
             .on_action(cx.listener(|ws, _: &Quit, _, cx| {
                 ws.save_all(cx);

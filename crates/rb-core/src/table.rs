@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use rust_i18n::t;
 use crate::DbError;
 use crate::lexer::quote_always;
 use crate::metadata::ColumnMeta;
@@ -32,6 +33,9 @@ pub fn qualified(schema: &str, table: &str) -> String {
 
 /// SELECT da aba de tabela. O filtro é uma expressão WHERE crua digitada pelo usuário;
 /// vai entre parênteses e com quebra de linha para que um `--` não engula o ORDER BY.
+/// Linhas que a aba de tabela traz: abrir uma tabela grande não vira um full scan.
+pub const TABLE_LIMIT: usize = 1000;
+
 pub fn select_sql(from: &str, filter: Option<&str>, order: Option<(&str, bool)>) -> String {
     let mut sql = format!("SELECT * FROM {from}");
     if let Some(f) = filter.map(str::trim).filter(|f| !f.is_empty()) {
@@ -40,7 +44,7 @@ pub fn select_sql(from: &str, filter: Option<&str>, order: Option<(&str, bool)>)
     if let Some((col, asc)) = order {
         sql += &format!(" ORDER BY {} {}", quote_always(col), if asc { "ASC" } else { "DESC" });
     }
-    sql
+    sql + &format!(" LIMIT {TABLE_LIMIT}")
 }
 
 /// As colunas do resultado ainda são as do alvo de edição? (A tabela pode ter mudado.)
@@ -61,7 +65,7 @@ fn bind(params: &mut Vec<Option<String>>, value: &Option<String>, type_name: &st
 
 fn where_pk(t: &EditTarget, pk_cols: &[usize], pk: &[Option<String>], params: &mut Vec<Option<String>>) -> Result<String, DbError> {
     if pk.len() != pk_cols.len() {
-        return Err(DbError::Edit("valores de chave primária incompletos".into()));
+        return Err(DbError::Edit(t!("err.edit.pk_incomplete").to_string()));
     }
     Ok(pk_cols
         .iter()
@@ -76,10 +80,10 @@ fn where_pk(t: &EditTarget, pk_cols: &[usize], pk: &[Option<String>], params: &m
 
 fn writable(t: &EditTarget, cols: &[(usize, Option<String>)]) -> Result<(), DbError> {
     if cols.iter().any(|(i, _)| *i >= t.columns.len()) {
-        return Err(DbError::Edit("a estrutura da tabela mudou; reabra a aba".into()));
+        return Err(DbError::Edit(t!("err.edit.table_changed").to_string()));
     }
     match cols.iter().find(|(i, _)| t.columns[*i].generated) {
-        Some((i, _)) => Err(DbError::Edit(format!("a coluna {} é gerada e não pode ser editada", t.columns[*i].name))),
+        Some((i, _)) => Err(DbError::Edit(t!("err.edit.generated_column", column = t.columns[*i].name).to_string())),
         None => Ok(()),
     }
 }
@@ -89,7 +93,7 @@ fn writable(t: &EditTarget, cols: &[(usize, Option<String>)]) -> Result<(), DbEr
 pub fn build_sql(t: &EditTarget, edits: &[RowEdit]) -> Result<Vec<SqlWithParams>, DbError> {
     let pk_cols = t.pk();
     if pk_cols.is_empty() {
-        return Err(DbError::Edit("a tabela não tem chave primária; edição desativada".into()));
+        return Err(DbError::Edit(t!("err.edit.no_pk").to_string()));
     }
     let table = qualified(&t.schema, &t.table);
     let mut out = Vec::new();
@@ -216,19 +220,19 @@ mod tests {
 
     #[test]
     fn select_sql_quotes_identifiers() {
-        assert_eq!(select_sql(&qualified("Sales", "Order Items"), None, None), r#"SELECT * FROM "Sales"."Order Items""#);
+        assert_eq!(select_sql(&qualified("Sales", "Order Items"), None, None), r#"SELECT * FROM "Sales"."Order Items" LIMIT 1000"#);
         assert_eq!(
             select_sql(&qualified("public", "t"), Some(" a > 1 -- x "), Some(("Name", false))),
-            "SELECT * FROM \"public\".\"t\" WHERE (a > 1 -- x\n) ORDER BY \"Name\" DESC"
+            "SELECT * FROM \"public\".\"t\" WHERE (a > 1 -- x\n) ORDER BY \"Name\" DESC LIMIT 1000"
         );
-        assert_eq!(select_sql(&qualified("public", "t"), Some("   "), Some(("id", true))), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC"#);
+        assert_eq!(select_sql(&qualified("public", "t"), Some("   "), Some(("id", true))), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC LIMIT 1000"#);
     }
 
     #[test]
     fn generated_sql_always_quotes_identifiers() {
         assert_eq!(
             select_sql(&qualified("public", "t"), None, Some(("current_date", true))),
-            r#"SELECT * FROM "public"."t" ORDER BY "current_date" ASC"#
+            r#"SELECT * FROM "public"."t" ORDER BY "current_date" ASC LIMIT 1000"#
         );
         let t = EditTarget { schema: "public".into(), table: "t".into(), columns: vec![col("left", "integer", true, false), col("full", "text", false, false)] };
         let sql = build_sql(&t, &[RowEdit::Update { pk: vec![s("1")], changes: vec![(1, s("x"))] }]).unwrap();

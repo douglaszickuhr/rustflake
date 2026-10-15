@@ -1,0 +1,161 @@
+_version = 2
+
+[err.session_closed]
+en = "session closed"
+pt = "sessão encerrada"
+es = "sesión cerrada"
+
+[err.prefix.connection]
+en = "connection"
+pt = "conexão"
+es = "conexión"
+
+[err.prefix.config]
+en = "configuration"
+pt = "configuração"
+es = "configuración"
+
+[err.prefix.io]
+en = "I/O"
+pt = "E/S"
+es = "E/S"
+
+[err.prefix.edit]
+en = "edit"
+pt = "edição"
+es = "edición"
+
+[err.prefix.unsupported]
+en = "not supported"
+pt = "não suportado"
+es = "no soportado"
+
+[err.host_unknown]
+en = "host %{host}:%{port} is not in known_hosts (%{fingerprint})"
+pt = "host %{host}:%{port} não está no known_hosts (%{fingerprint})"
+es = "el host %{host}:%{port} no está en known_hosts (%{fingerprint})"
+
+[err.manual_transactions]
+en = "manual transactions (BEGIN/START/SAVEPOINT): rustbeaver runs in autocommit"
+pt = "transações manuais (BEGIN/START/SAVEPOINT): o rustbeaver roda em autocommit"
+es = "transacciones manuales (BEGIN/START/SAVEPOINT): rustbeaver funciona en autocommit"
+
+[err.expected_one_row]
+en = "expected to change 1 row, changed %{n}: %{sql}"
+pt = "esperava alterar 1 linha, alterou %{n}: %{sql}"
+es = "se esperaba modificar 1 fila, se modificaron %{n}: %{sql}"
+
+[err.sf_login_timeout]
+en = "Snowflake login did not finish within 90 s (SSO must complete within 60 s)"
+pt = "login Snowflake não concluído em 90 s (o SSO precisa terminar em até 60 s)"
+es = "el inicio de sesión en Snowflake no terminó en 90 s (el SSO debe completarse en 60 s)"
+
+[err.cancelled_code]
+en = "cancelled"
+pt = "cancelada"
+es = "cancelada"
+
+[err.cancelled]
+en = "query cancelled"
+pt = "query cancelada"
+es = "consulta cancelada"
+
+[err.sf_no_block]
+en = "connection has no snowflake block"
+pt = "conexão sem bloco snowflake"
+es = "conexión sin bloque snowflake"
+
+[err.sf_no_pat]
+en = "PAT token not provided"
+pt = "token PAT não informado"
+es = "token PAT no indicado"
+
+[err.sf_no_key]
+en = "private key not provided"
+pt = "chave privada não informada"
+es = "clave privada no indicada"
+
+[err.sf_read_only]
+en = "Snowflake: read-only"
+pt = "Snowflake: somente leitura"
+es = "Snowflake: solo lectura"
+
+[err.ssh.host_certificate]
+en = "%{host} presented a host certificate, which is not supported"
+pt = "%{host} apresentou certificado de host, não suportado"
+es = "%{host} presentó un certificado de host, no soportado"
+
+[err.ssh.host_key_changed]
+en = "host key for %{host} changed (%{file}:%{line})"
+pt = "chave do host %{host} mudou (%{file}:%{line})"
+es = "la clave del host %{host} cambió (%{file}:%{line})"
+
+[err.ssh.no_response]
+en = "%{host}:%{port} did not respond through the bastion within %{secs} s"
+pt = "%{host}:%{port} não respondeu pelo bastion em %{secs} s"
+es = "%{host}:%{port} no respondió a través del bastión en %{secs} s"
+
+[err.ssh.channel_refused]
+en = "the bastion refused to open a channel to %{host}:%{port}: %{error}"
+pt = "o bastion recusou abrir canal para %{host}:%{port}: %{error}"
+es = "el bastión rechazó abrir un canal a %{host}:%{port}: %{error}"
+
+[err.ssh.unreachable]
+en = "bastion %{host}:%{port} unreachable: %{cause}"
+pt = "bastion %{host}:%{port} inacessível: %{cause}"
+es = "bastión %{host}:%{port} inaccesible: %{cause}"
+
+[err.ssh.timeout]
+en = "timed out"
+pt = "tempo esgotado"
+es = "tiempo agotado"
+
+[err.ssh.handshake_timeout]
+en = "handshake timed out"
+pt = "tempo esgotado no handshake"
+es = "tiempo agotado en el handshake"
+
+[err.ssh.needs_passphrase]
+en = "%{key} requires a passphrase"
+pt = "%{key} exige passphrase"
+es = "%{key} requiere una frase de contraseña"
+
+[err.ssh.wrong_passphrase]
+en = "wrong passphrase for %{key}"
+pt = "passphrase incorreta para %{key}"
+es = "frase de contraseña incorrecta para %{key}"
+
+[err.ssh.cannot_read]
+en = "could not read %{key}: %{error}"
+pt = "não foi possível ler %{key}: %{error}"
+es = "no se pudo leer %{key}: %{error}"
+
+[err.ssh.no_files]
+en = "no files"
+pt = "nenhum arquivo"
+es = "ningún archivo"
+
+[err.ssh.no_key_accepted]
+en = "no key accepted for %{user}@%{host} (tried: agent ×%{agent}, %{files})"
+pt = "nenhuma chave aceita por %{user}@%{host} (tentadas: agente ×%{agent}, %{files})"
+es = "ninguna clave aceptada para %{user}@%{host} (probadas: agente ×%{agent}, %{files})"
+
+[err.edit.pk_incomplete]
+en = "incomplete primary key values"
+pt = "valores de chave primária incompletos"
+es = "valores de clave primaria incompletos"
+
+[err.edit.table_changed]
+en = "the table structure changed; reopen the tab"
+pt = "a estrutura da tabela mudou; reabra a aba"
+es = "la estructura de la tabla cambió; vuelve a abrir la pestaña"
+
+[err.edit.generated_column]
+en = "column %{column} is generated and cannot be edited"
+pt = "a coluna %{column} é gerada e não pode ser editada"
+es = "la columna %{column} es generada y no se puede editar"
+
+[err.edit.no_pk]
+en = "the table has no primary key; editing disabled"
+pt = "a tabela não tem chave primária; edição desativada"
+es = "la tabla no tiene clave primaria; edición desactivada"

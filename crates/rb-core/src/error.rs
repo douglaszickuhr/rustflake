@@ -1,5 +1,6 @@
 use std::fmt;
 
+use rust_i18n::t;
 use tokio_postgres::error::ErrorPosition;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,16 +40,16 @@ impl fmt::Display for DbError {
                 }
                 Ok(())
             }
-            DbError::Connection(m) => write!(f, "conexão: {m}"),
-            DbError::Config(m) => write!(f, "configuração: {m}"),
+            DbError::Connection(m) => write!(f, "{}: {m}", t!("err.prefix.connection")),
+            DbError::Config(m) => write!(f, "{}: {m}", t!("err.prefix.config")),
             DbError::Keychain(m) => write!(f, "Keychain: {m}"),
-            DbError::Io(m) => write!(f, "E/S: {m}"),
-            DbError::Edit(m) => write!(f, "edição: {m}"),
-            DbError::Unsupported(m) => write!(f, "não suportado: {m}"),
+            DbError::Io(m) => write!(f, "{}: {m}", t!("err.prefix.io")),
+            DbError::Edit(m) => write!(f, "{}: {m}", t!("err.prefix.edit")),
+            DbError::Unsupported(m) => write!(f, "{}: {m}", t!("err.prefix.unsupported")),
             DbError::Ssh(m) => write!(f, "SSH: {m}"),
             DbError::Snowflake { code, message } => write!(f, "[{code}] {message}"),
             DbError::HostKeyUnknown { host, port, fingerprint, .. } => {
-                write!(f, "SSH: host {host}:{port} não está no known_hosts ({fingerprint})")
+                write!(f, "SSH: {}", t!("err.host_unknown", host = host, port = port, fingerprint = fingerprint))
             }
         }
     }

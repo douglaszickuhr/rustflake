@@ -14,7 +14,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=rustbeaver-dev" 
   -addext "extendedKeyUsage=critical,codeSigning" \
   -addext "keyUsage=critical,digitalSignature" \
   -addext "basicConstraints=critical,CA:false" 2>/dev/null
+# Algoritmos explícitos: o padrão do OpenSSL 3 (AES/SHA-256) o `security` não importa.
 openssl pkcs12 -export -inkey "$tmp/key.pem" -in "$tmp/cert.pem" -name rustbeaver-dev \
+  -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
   -out "$tmp/id.p12" -passout pass:rustbeaver
 # -T: só o codesign usa a chave privada sem perguntar.
 security import "$tmp/id.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P rustbeaver -T /usr/bin/codesign

@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use rust_i18n::t;
 use std::rc::Rc;
 
 use gpui_kit::component::WindowExt as _;
@@ -41,13 +42,13 @@ struct Fields {
 /// Bloco Snowflake a partir dos campos do diálogo.
 fn parse_snowflake(account: &str, auth: SnowflakeAuth, key: &str, warehouse: &str, role: &str, schema: &str) -> Result<SnowflakeConfig, String> {
     if account.is_empty() {
-        return Err("informe a conta Snowflake (ex.: xy12345.us-east-1)".into());
+        return Err(t!("conn.err_account").to_string());
     }
     if auth == SnowflakeAuth::KeyPair && key.is_empty() {
-        return Err("key-pair precisa do caminho da chave privada (.p8)".into());
+        return Err(t!("conn.err_key_path").to_string());
     }
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
-    Ok(SnowflakeConfig { account: account.into(), auth, private_key: opt(key), warehouse: opt(warehouse), role: opt(role), schema: opt(schema) })
+    Ok(SnowflakeConfig { account: account.into(), auth, private_key: opt(key), warehouse: opt(warehouse), role: opt(role), schema: opt(schema), db_filter: Vec::new() })
 }
 
 /// Bloco SSH a partir dos campos do diálogo; host vazio = sem túnel.
@@ -58,7 +59,7 @@ fn parse_ssh(host: &str, user: &str, port: &str, key: &str) -> Result<Option<Ssh
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
     let port = match port {
         "" => None,
-        p => Some(p.parse::<u16>().map_err(|_| "porta SSH inválida".to_string())?),
+        p => Some(p.parse::<u16>().map_err(|_| t!("conn.err_ssh_port").to_string())?),
     };
     Ok(Some(SshConfig { host: host.into(), user: opt(user), port, identity_file: opt(key) }))
 }
@@ -70,7 +71,7 @@ impl Fields {
         if self.snowflake.get() {
             let snowflake = parse_snowflake(&v(&self.sf_account), self.sf_auth.get(), &v(&self.sf_key), &v(&self.sf_warehouse), &v(&self.sf_role), &v(&self.sf_schema))?;
             if v(&self.name).is_empty() || v(&self.user).is_empty() {
-                return Err("preencha nome e usuário".into());
+                return Err(t!("conn.err_name_user").to_string());
             }
             let cfg = ConnectionConfig {
                 id: self.id.clone(),
@@ -85,12 +86,12 @@ impl Fields {
             };
             return Ok((cfg, self.password.read(cx).value().to_string(), self.sf_key_pass.read(cx).value().to_string()));
         }
-        let port = v(&self.port).parse::<u16>().map_err(|_| "porta inválida".to_string())?;
+        let port = v(&self.port).parse::<u16>().map_err(|_| t!("conn.err_port").to_string())?;
         let ssl = match v(&self.ssl).as_str() {
             "" | "disable" => SslMode::Disable,
             "prefer" => SslMode::Prefer,
             "require" => SslMode::Require,
-            other => return Err(format!("ssl deve ser disable, prefer ou require (não {other})")),
+            other => return Err(t!("conn.err_ssl", value = other).to_string()),
         };
         let cfg = ConnectionConfig {
             id: self.id.clone(),
@@ -104,7 +105,7 @@ impl Fields {
             snowflake: None,
         };
         if cfg.name.is_empty() || cfg.host.is_empty() || cfg.database.is_empty() || cfg.user.is_empty() {
-            return Err("preencha nome, host, banco e usuário".into());
+            return Err(t!("conn.err_required").to_string());
         }
         Ok((cfg, self.password.read(cx).value().to_string(), self.ssh_passphrase.read(cx).value().to_string()))
     }
@@ -119,7 +120,7 @@ fn show_resolved(host: &str, user: &WeakEntity<InputState>, port: &WeakEntity<In
         Some(t) => (
             t.user,
             t.port.to_string(),
-            t.identity_files.first().map_or("agente / chaves padrão".into(), |p| p.display().to_string()),
+            t.identity_files.first().map_or(t!("conn.default_keys").to_string(), |p| p.display().to_string()),
         ),
         None => Default::default(),
     };
@@ -189,7 +190,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
     .detach();
 
     let ws = cx.entity().downgrade();
-    let (title, keep) = if editing { ("Editar conexão", " (em branco mantém a atual)") } else { ("Nova conexão", "") };
+    let (title, keep) = if editing { (t!("conn.edit_title").to_string(), format!(" {}", t!("conn.keep_current"))) } else { (t!("conn.new_title").to_string(), String::new()) };
     window.open_dialog(cx, move |dialog, _window, _cx| {
         let (f, ws) = (f.clone(), ws.clone());
         // O builder roda a cada render: os botões de tipo e de autenticação trocam os campos.
@@ -207,10 +208,10 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                     w.refresh();
                 }))
         };
-        let form = v_form().child(field().label("Tipo").child(tipo)).child(field().label("Nome").child(Input::new(&f.name)));
+        let form = v_form().child(field().label(t!("conn.kind").to_string()).child(tipo)).child(field().label(t!("conn.name").to_string()).child(Input::new(&f.name)));
         let form = if snowflake {
             let auth = f.sf_auth.get();
-            let pick = |id: &'static str, label: &'static str, a: SnowflakeAuth| {
+            let pick = |id: &'static str, label: String, a: SnowflakeAuth| {
                 let cell = f.sf_auth.clone();
                 Button::new(id).label(label).selected(auth == a).on_click(move |_, w, _| {
                     cell.set(a);
@@ -218,24 +219,24 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                 })
             };
             let mut form = form
-                .child(field().label("Conta (ex.: xy12345.us-east-1)").child(Input::new(&f.sf_account)))
-                .child(field().label("Usuário").child(Input::new(&f.user)))
+                .child(field().label(t!("conn.account").to_string()).child(Input::new(&f.sf_account)))
+                .child(field().label(t!("conn.user").to_string()).child(Input::new(&f.user)))
                 .child(
-                    field().label("Autenticação").child(
+                    field().label(t!("conn.auth").to_string()).child(
                         h_flex()
                             .gap_2()
-                            .child(pick("auth-sso", "SSO navegador", SnowflakeAuth::ExternalBrowser))
-                            .child(pick("auth-key", "Key-pair", SnowflakeAuth::KeyPair))
-                            .child(pick("auth-pat", "PAT", SnowflakeAuth::Pat)),
+                            .child(pick("auth-sso", t!("conn.auth_sso").to_string(), SnowflakeAuth::ExternalBrowser))
+                            .child(pick("auth-key", "Key-pair".into(), SnowflakeAuth::KeyPair))
+                            .child(pick("auth-pat", "PAT".into(), SnowflakeAuth::Pat)),
                     ),
                 );
             if auth == SnowflakeAuth::KeyPair {
                 form = form
-                    .child(field().label("Chave privada (.p8)").child(Input::new(&f.sf_key)))
-                    .child(field().label(format!("Passphrase da chave{keep}")).child(Input::new(&f.sf_key_pass).mask_toggle()));
+                    .child(field().label(t!("conn.sf_key").to_string()).child(Input::new(&f.sf_key)))
+                    .child(field().label(format!("{}{keep}", t!("conn.key_passphrase"))).child(Input::new(&f.sf_key_pass).mask_toggle()));
             }
             if auth == SnowflakeAuth::Pat {
-                form = form.child(field().label(format!("Token PAT{keep}")).child(Input::new(&f.password).mask_toggle()));
+                form = form.child(field().label(format!("{}{keep}", t!("conn.pat"))).child(Input::new(&f.password).mask_toggle()));
             }
             form.child(field().label("Warehouse").child(Input::new(&f.sf_warehouse)))
                 .child(field().label("Role").child(Input::new(&f.sf_role)))
@@ -243,27 +244,27 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                 .child(field().label("Schema").child(Input::new(&f.sf_schema)))
         } else {
             form.child(field().label("Host").child(Input::new(&f.host)))
-                    .child(field().label("Porta").child(Input::new(&f.port)))
-                    .child(field().label("Banco").child(Input::new(&f.database)))
-                    .child(field().label("Usuário").child(Input::new(&f.user)))
-                    .child(field().label(format!("Senha{keep}")).child(Input::new(&f.password).mask_toggle()))
+                    .child(field().label(t!("conn.port").to_string()).child(Input::new(&f.port)))
+                    .child(field().label(t!("conn.database").to_string()).child(Input::new(&f.database)))
+                    .child(field().label(t!("conn.user").to_string()).child(Input::new(&f.user)))
+                    .child(field().label(format!("{}{keep}", t!("conn.password"))).child(Input::new(&f.password).mask_toggle()))
                     .child(field().label("SSL (disable | prefer | require)").child(Input::new(&f.ssl)))
-                    .child(field().label("Túnel SSH: host ou alias do ~/.ssh/config (vazio = sem túnel)").child(Input::new(&f.ssh_host)))
-                    .child(field().label("Usuário SSH").child(Input::new(&f.ssh_user)))
-                    .child(field().label("Porta SSH").child(Input::new(&f.ssh_port)))
-                    .child(field().label("Chave privada").child(Input::new(&f.ssh_key)))
-                .child(field().label(format!("Passphrase da chave{keep}")).child(Input::new(&f.ssh_passphrase).mask_toggle()))
+                    .child(field().label(t!("conn.ssh_host").to_string()).child(Input::new(&f.ssh_host)))
+                    .child(field().label(t!("conn.ssh_user").to_string()).child(Input::new(&f.ssh_user)))
+                    .child(field().label(t!("conn.ssh_port").to_string()).child(Input::new(&f.ssh_port)))
+                    .child(field().label(t!("conn.ssh_key").to_string()).child(Input::new(&f.ssh_key)))
+                .child(field().label(format!("{}{keep}", t!("conn.key_passphrase"))).child(Input::new(&f.ssh_passphrase).mask_toggle()))
         };
         dialog
-            .title(title)
+            .title(title.clone())
             .w(px(480.))
             .child(form)
             .footer(
                 h_flex()
                     .justify_end()
                     .gap_2()
-                    .child(Button::new("conn-cancel").label("Cancelar").on_click(|_, window, cx| window.close_dialog(cx)))
-                    .child(Button::new("conn-save").label("Salvar").primary().on_click(move |_, window, cx| {
+                    .child(Button::new("conn-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx)))
+                    .child(Button::new("conn-save").label(t!("common.save").to_string()).primary().on_click(move |_, window, cx| {
                         match f.read(cx) {
                             Ok((cfg, password, passphrase)) => {
                                 let saved = ws.update(cx, |ws, cx| ws.save_connection(cfg, password, passphrase, window, cx)).unwrap_or(false);

@@ -10,7 +10,10 @@ use gpui_kit::*;
 use rb_core::dialect::Dialect;
 use rb_core::metadata::{MetaCache, MetaRequest};
 
+use rust_i18n::t;
+
 use crate::RefreshNode;
+use crate::lang::Lang;
 use crate::meta::MetaStore;
 
 const SEP: &str = "\u{1f}";
@@ -19,8 +22,19 @@ fn id(parts: &[&str]) -> SharedString {
     parts.join(SEP).into()
 }
 
+/// Ids da árvore a partir das partes de `Hit::tree_path`.
+pub fn path_ids(path: &[Vec<String>]) -> Vec<SharedString> {
+    path.iter().map(|p| id(&p.iter().map(String::as_str).collect::<Vec<_>>())).collect()
+}
+
+/// Nó a selecionar depois de `set_items` (que zera a seleção): o alvo de uma busca pendente,
+/// senão o que já estava selecionado. `true` = é o alvo da busca (rolar até ele).
+fn selection_after_rebuild(pending: Option<SharedString>, previous: Option<SharedString>) -> Option<(SharedString, bool)> {
+    pending.map(|p| (p, true)).or(previous.map(|p| (p, false)))
+}
+
 fn loading(parent: &SharedString) -> TreeItem {
-    TreeItem::new(format!("{parent}{SEP}loading"), "carregando…")
+    TreeItem::new(format!("{parent}{SEP}loading"), t!("tree.loading").to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +106,8 @@ pub struct SchemaTree {
     meta: Entity<MetaStore>,
     state: Entity<TreeState>,
     expanded: HashSet<SharedString>,
+    /// Nó a selecionar assim que aparecer (busca rápida); os ancestrais podem estar carregando.
+    pending_reveal: Option<SharedString>,
     on_open_table: OpenTable,
     _subs: Vec<Subscription>,
 }
@@ -100,42 +116,74 @@ impl SchemaTree {
     pub fn new(meta: Entity<MetaStore>, on_open_table: OpenTable, cx: &mut Context<Self>) -> Self {
         let state = cx.new(|cx| TreeState::new(cx));
         let subs = vec![
+            // Rótulos ("Tabelas (n)", "carregando…") ficam nos itens: idioma novo, itens novos.
+            cx.observe_global::<Lang>(|this, cx| this.rebuild(cx)),
             cx.observe(&meta, |this, _, cx| this.rebuild(cx)),
             cx.subscribe(&state, |this, _, ev: &TreeEvent, cx| this.on_tree_event(ev, cx)),
         ];
-        let mut this = SchemaTree { meta, state, expanded: HashSet::new(), on_open_table, _subs: subs };
+        let mut this = SchemaTree { meta, state, expanded: HashSet::new(), pending_reveal: None, on_open_table, _subs: subs };
         this.rebuild(cx);
         this
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let items = build_items(&self.meta.read(cx).cache, &self.expanded);
-        // ponytail: set_items zera a seleção; restaurar quando incomodar.
-        self.state.update(cx, |st, cx| st.set_items(items, cx));
+        let pending = self.pending_reveal.clone();
+        let revealed = self.state.update(cx, |st, cx| {
+            let previous = st.selected_item().map(|i| i.id.clone());
+            st.set_items(items, cx);
+            let (target, is_reveal) = selection_after_rebuild(pending, previous)?;
+            let ix = st.index_of(&target)?;
+            st.set_selected_index(Some(ix), cx);
+            if is_reveal {
+                st.reveal_item(&target, ScrollStrategy::Center, cx);
+            }
+            is_reveal.then_some(())
+        });
+        if revealed.is_some() {
+            self.pending_reveal = None;
+        }
         cx.notify();
+    }
+
+    /// Expande do topo até o alvo (pedindo o que falta carregar) e seleciona o alvo quando ele aparecer.
+    pub fn reveal(&mut self, path: Vec<Vec<String>>, cx: &mut Context<Self>) {
+        let ids = path_ids(&path);
+        let Some((target, ancestors)) = ids.split_last() else { return };
+        for node in ancestors {
+            self.expanded.insert(node.clone());
+            self.load_children(node, cx);
+        }
+        self.pending_reveal = Some(target.clone());
+        self.rebuild(cx);
     }
 
     fn on_tree_event(&mut self, ev: &TreeEvent, cx: &mut Context<Self>) {
         match ev {
             TreeEvent::Expanded(node) => {
                 self.expanded.insert(node.clone());
-                let parts: Vec<&str> = node.split(SEP).collect();
-                self.meta.update(cx, |m, cx| match parts.as_slice() {
-                    ["d", db] => m.request(MetaRequest::Schemas(db.to_string()), cx),
-                    ["s", schema] => m.request(MetaRequest::Objects(schema.to_string()), cx),
-                    ["r", schema, rel] => {
-                        m.request(MetaRequest::Columns(schema.to_string(), rel.to_string()), cx);
-                        if m.cache.dialect == Dialect::Postgres {
-                            m.request(MetaRequest::Indexes(schema.to_string(), rel.to_string()), cx);
-                        }
-                    }
-                    _ => {}
-                });
+                self.load_children(node, cx);
             }
             TreeEvent::Collapsed(node) => {
                 self.expanded.remove(node);
             }
         }
+    }
+
+    /// Pede ao cache os filhos de um nó que acabou de abrir.
+    fn load_children(&mut self, node: &SharedString, cx: &mut Context<Self>) {
+        let parts: Vec<&str> = node.split(SEP).collect();
+        self.meta.update(cx, |m, cx| match parts.as_slice() {
+            ["d", db] => m.request(MetaRequest::Schemas(db.to_string()), cx),
+            ["s", schema] => m.request(MetaRequest::Objects(schema.to_string()), cx),
+            ["r", schema, rel] => {
+                m.request(MetaRequest::Columns(schema.to_string(), rel.to_string()), cx);
+                if m.cache.dialect == Dialect::Postgres {
+                    m.request(MetaRequest::Indexes(schema.to_string(), rel.to_string()), cx);
+                }
+            }
+            _ => {}
+        });
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -167,8 +215,7 @@ fn build_items(c: &MetaCache, expanded: &HashSet<SharedString>) -> Vec<TreeItem>
     let open = |id: &SharedString| expanded.contains(id);
     if c.dialect == Dialect::Snowflake {
         return c
-            .databases
-            .iter()
+            .visible_databases()
             .map(|db| {
                 let did = id(&["d", db]);
                 let prefix = format!("{db}.");
@@ -198,10 +245,10 @@ fn schema_item(c: &MetaCache, s: &str, label: &str, expanded: &HashSet<SharedStr
             };
             let fid = id(&["g", s, "functions"]);
             vec![
-                rel_group("tables", "Tabelas", &o.tables),
-                rel_group("views", "Views", &o.views),
-                rel_group("matviews", "Views materializadas", &o.matviews),
-                TreeItem::new(fid.clone(), format!("Funções ({})", o.functions.len()))
+                rel_group("tables", &t!("tree.tables"), &o.tables),
+                rel_group("views", &t!("tree.views"), &o.views),
+                rel_group("matviews", &t!("tree.matviews"), &o.matviews),
+                TreeItem::new(fid.clone(), format!("{} ({})", t!("tree.functions"), o.functions.len()))
                     .expanded(open(&fid))
                     .children(o.functions.iter().map(|f| TreeItem::new(id(&["f", s, f]), f.clone()))),
             ]
@@ -216,7 +263,7 @@ fn relation(c: &MetaCache, schema: &str, rel: &str, expanded: &HashSet<SharedStr
     let children = match (c.columns.get(&key), c.indexes.get(&key)) {
         (Some(cols), idx) => {
             let cg = id(&["cg", schema, rel]);
-            let mut groups = vec![TreeItem::new(cg.clone(), format!("Colunas ({})", cols.len())).expanded(expanded.contains(&cg)).children(
+            let mut groups = vec![TreeItem::new(cg.clone(), format!("{} ({})", t!("tree.columns"), cols.len())).expanded(expanded.contains(&cg)).children(
                 cols.iter().map(|col| TreeItem::new(id(&["c", schema, rel, &col.name]), col.name.clone())),
             )];
             if c.dialect == Dialect::Postgres
@@ -224,7 +271,7 @@ fn relation(c: &MetaCache, schema: &str, rel: &str, expanded: &HashSet<SharedStr
             {
                 let ig = id(&["ig", schema, rel]);
                 groups.push(
-                    TreeItem::new(ig.clone(), format!("Índices ({})", idx.len()))
+                    TreeItem::new(ig.clone(), format!("{} ({})", t!("tree.indexes"), idx.len()))
                         .expanded(expanded.contains(&ig))
                         .children(idx.iter().map(|i| TreeItem::new(id(&["i", schema, rel, &i.name]), i.name.clone()))),
                 );
@@ -322,7 +369,10 @@ mod tests {
         assert_eq!(items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["DB", "OUTRO"]);
         assert_eq!(items[0].children.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["PUBLIC"]);
         assert_eq!(describe(&id(&["d", "DB"]), &c).0, Kind::Database);
-        assert_eq!(items[1].children[0].label.to_string(), "carregando…");
+        assert_eq!(items[1].children[0].label.to_string(), t!("tree.loading"));
+        c.db_filter = vec!["out*".into()];
+        let items = build_items(&c, &HashSet::new());
+        assert_eq!(items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["OUTRO"]);
     }
 
     #[::core::prelude::v1::test]
@@ -341,6 +391,28 @@ mod tests {
         assert_eq!(k(&["c", "public", "t", "n"]), Kind::Column);
         assert_eq!(k(&["ig", "public", "t"]), Kind::Indexes);
         assert_eq!(k(&["i", "public", "t", "t_pkey"]), Kind::Index);
+    }
+
+    #[::core::prelude::v1::test]
+    fn rebuild_keeps_selection_unless_a_reveal_is_pending() {
+        let (a, b): (SharedString, SharedString) = ("a".into(), "b".into());
+        assert_eq!(selection_after_rebuild(None, Some(a.clone())), Some((a.clone(), false)));
+        assert_eq!(selection_after_rebuild(Some(b.clone()), Some(a)), Some((b, true)));
+        assert_eq!(selection_after_rebuild(None, None), None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn revealed_path_is_built_expanded() {
+        let mut c = cache();
+        c.schemas = vec!["public".into()];
+        let hit = rb_core::quick_open::Hit { kind: rb_core::quick_open::HitKind::Table, matview: false, database: None, schema: Some("public".into()), name: "t".into() };
+        let ids = path_ids(&hit.tree_path());
+        let expanded: HashSet<SharedString> = ids[..ids.len() - 1].iter().cloned().collect();
+        let items = build_items(&c, &expanded);
+        let schema = items.iter().find(|i| i.id == ids[0]).unwrap();
+        assert!(schema.is_expanded());
+        let group = schema.children.iter().find(|i| i.id == ids[1]).unwrap();
+        assert!(group.is_expanded() && group.children.iter().any(|i| i.id == ids[2]));
     }
 
     #[::core::prelude::v1::test]

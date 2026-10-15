@@ -144,7 +144,7 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
             out.candidates.push(Candidate { insert: cache.dialect.quote(&label), label, kind: CandidateKind::Schema, detail: None });
         }
         if cache.dialect == Dialect::Snowflake {
-            out.candidates.extend(cache.databases.iter().map(|d| Candidate { label: d.clone(), insert: cache.dialect.quote(d), kind: CandidateKind::Database, detail: None }));
+            out.candidates.extend(cache.visible_databases().map(|d| Candidate { label: d.clone(), insert: cache.dialect.quote(d), kind: CandidateKind::Database, detail: None }));
         }
     } else {
         for r in &refs {
@@ -417,6 +417,12 @@ mod tests {
         let src = "select * from ";
         let dbs: Vec<String> = complete(src, src.len(), &c).candidates.iter().filter(|x| x.kind == CandidateKind::Database).map(|x| x.label.clone()).collect();
         assert_eq!(dbs, vec!["DB".to_string(), "LEARN".to_string()]);
+        // O filtro da conexão esconde databases da lista, mas `LEARN.` qualificado continua valendo.
+        c.db_filter = vec!["d*".into()];
+        let dbs: Vec<String> = complete(src, src.len(), &c).candidates.iter().filter(|x| x.kind == CandidateKind::Database).map(|x| x.label.clone()).collect();
+        assert_eq!(dbs, vec!["DB".to_string()]);
+        let src = "select * from LEARN.";
+        assert_eq!(complete(src, src.len(), &c).candidates.iter().map(|x| x.insert.as_str()).collect::<Vec<_>>(), vec!["STAGE"]);
     }
 
     #[test]

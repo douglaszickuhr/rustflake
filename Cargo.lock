@@ -6069,6 +6069,9 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "rb-core",
+ "rust-i18n",
+ "sys-locale",
+ "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
 ]
@@ -6080,6 +6083,7 @@ dependencies = [
  "chrono",
  "pollster 1.0.1",
  "russh",
+ "rust-i18n",
  "rustls",
  "rustls-native-certs",
  "security-framework",

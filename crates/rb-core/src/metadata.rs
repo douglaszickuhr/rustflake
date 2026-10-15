@@ -61,11 +61,22 @@ pub struct MetaCache {
     /// Snowflake: databases da conta e quais já tiveram os schemas carregados.
     pub databases: Vec<String>,
     pub loaded_dbs: HashSet<String>,
+    /// Padrões da conexão (`SnowflakeConfig::db_filter`); vazio = todas as databases.
+    pub db_filter: Vec<String>,
     pub warehouse: Option<String>,
     pub role: Option<String>,
 }
 
 impl MetaCache {
+    /// Databases que passam no filtro da conexão (árvore e autocomplete): casam com algum padrão
+    /// de inclusão (sem nenhum, todas casam) e com nenhum `!padrão` de exclusão.
+    pub fn visible_databases(&self) -> impl Iterator<Item = &String> {
+        let (exclude, include): (Vec<_>, Vec<_>) = self.db_filter.iter().partition(|p| p.starts_with('!'));
+        self.databases.iter().filter(move |d| {
+            (include.is_empty() || include.iter().any(|p| glob_match(p, d))) && !exclude.iter().any(|p| glob_match(&p[1..], d))
+        })
+    }
+
     pub fn has(&self, req: &MetaRequest) -> bool {
         match req {
             MetaRequest::Objects(s) => self.objects.contains_key(s),
@@ -151,6 +162,29 @@ pub struct Context {
     pub search_path: Vec<String>,
     pub warehouse: Option<String>,
     pub role: Option<String>,
+}
+
+/// `*` casa qualquer sequência; o resto é literal, sem diferenciar caixa. `DEV_*` = começa com DEV_.
+pub fn glob_match(pattern: &str, name: &str) -> bool {
+    let (p, s) = (pattern.to_uppercase(), name.to_uppercase());
+    let parts: Vec<&str> = p.split('*').collect();
+    let [first, .., last] = parts.as_slice() else { return p == s };
+    if s.len() < first.len() + last.len() || !s.starts_with(first) || !s.ends_with(last) {
+        return false;
+    }
+    let mut rest = &s[first.len()..s.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+/// `"DEV_*, !*_TMP"` → `["DEV_*", "!*_TMP"]`; vírgulas e espaços separam, vazios somem.
+pub fn parse_db_filter(text: &str) -> Vec<String> {
+    text.split([',', ' ', '\n']).map(str::trim).filter(|p| !p.is_empty() && *p != "!").map(String::from).collect()
 }
 
 pub async fn databases(s: &Session) -> Result<Vec<String>, DbError> {
@@ -246,4 +280,40 @@ pub async fn indexes(s: &Session, schema: &str, table: &str) -> Result<Vec<Index
         .into_iter()
         .map(|r| IndexMeta { name: text(&r, 0), definition: text(&r, 1) })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glob_matches_prefix_suffix_middle_and_exact() {
+        assert!(glob_match("DEV_*", "DEV_SALES") && glob_match("dev_*", "Dev_x") && glob_match("DEV_*", "DEV_"));
+        assert!(!glob_match("DEV_*", "DEVX_SALES") && !glob_match("DEV_*", "AI_DEV_X"));
+        assert!(glob_match("*_PROD", "AI_PROD") && !glob_match("*_PROD", "AI_PROD_OLD"));
+        assert!(glob_match("*DBT*", "AI_DBT_TEMP") && glob_match("A*B*C", "AXXBYYC") && !glob_match("A*B*C", "ACB"));
+        assert!(glob_match("AB*BA", "ABBA") && !glob_match("AB*BA", "ABA"));
+        assert!(glob_match("AI_MARTS", "ai_marts") && !glob_match("AI_MARTS", "AI_MARTS2"));
+        assert!(glob_match("*", "QUALQUER"));
+    }
+
+    #[test]
+    fn filter_text_splits_on_commas_and_spaces() {
+        assert_eq!(parse_db_filter(" DEV_*, AI_*  ,,X "), vec!["DEV_*", "AI_*", "X"]);
+        assert!(parse_db_filter("  ! ").is_empty());
+        assert_eq!(parse_db_filter("!X_*"), vec!["!X_*"]);
+    }
+
+    #[test]
+    fn visible_databases_follow_filter() {
+        let mut c = MetaCache { databases: vec!["AI_PROD".into(), "DEV_A".into(), "CX_OPS".into()], ..Default::default() };
+        assert_eq!(c.visible_databases().count(), 3);
+        c.db_filter = vec!["DEV_*".into(), "*_PROD".into()];
+        assert_eq!(c.visible_databases().collect::<Vec<_>>(), ["AI_PROD", "DEV_A"]);
+        // `!` exclui; só exclusões = todas menos essas.
+        c.db_filter = vec!["!dev_*".into()];
+        assert_eq!(c.visible_databases().collect::<Vec<_>>(), ["AI_PROD", "CX_OPS"]);
+        c.db_filter = vec!["*_*".into(), "!*_PROD".into()];
+        assert_eq!(c.visible_databases().collect::<Vec<_>>(), ["DEV_A", "CX_OPS"]);
+    }
 }

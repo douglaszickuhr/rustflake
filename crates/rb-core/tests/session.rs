@@ -105,3 +105,37 @@ fn transaction_rolls_back_when_expect_one_fails() {
         assert_eq!(rows[0][0].as_deref(), Some("0"));
     });
 }
+
+#[test]
+fn quick_open_pg_search_finds_schema_and_tables_literally() {
+    use rb_core::quick_open::{HitKind, pg_search};
+    let Some((_e, s)) = common::open() else { return common::skip() };
+    let schema = common::unique("qo");
+    block_on(async {
+        s.execute(format!("create schema {schema}")).await.unwrap();
+        s.execute(format!("create table {schema}.dev_orders(id int)")).await.unwrap();
+        s.execute(format!("create table {schema}.devxorders(id int)")).await.unwrap();
+        let hits = pg_search(&s, "dev_ord").await.unwrap();
+        let names: Vec<_> = hits.iter().filter(|h| h.schema.as_deref() == Some(schema.as_str())).map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["dev_orders"]);
+        let found = pg_search(&s, &schema).await.unwrap();
+        assert_eq!((found[0].kind, found[0].name.as_str()), (HitKind::Schema, schema.as_str()));
+        s.execute(format!("drop schema {schema} cascade")).await.unwrap();
+    });
+}
+
+#[test]
+fn quick_open_pg_search_keeps_exact_match_in_large_catalog() {
+    use rb_core::quick_open::pg_search;
+    let Some((_e, s)) = common::open() else { return common::skip() };
+    let schema = common::unique("qobig");
+    block_on(async {
+        s.execute(format!("create schema {schema}")).await.unwrap();
+        // 300 nomes que contêm o texto, criados antes do exato: o corte do servidor pegaria estes.
+        s.execute(format!("do $$ begin for i in 1..300 loop execute format('create table {schema}.zzqk_long_%s(id int)', i); end loop; end $$")).await.unwrap();
+        s.execute(format!("create table {schema}.zzqk(id int)")).await.unwrap();
+        let hits = pg_search(&s, "zzqk").await.unwrap();
+        assert_eq!(hits.first().map(|h| h.name.as_str()), Some("zzqk"));
+        s.execute(format!("drop schema {schema} cascade")).await.unwrap();
+    });
+}

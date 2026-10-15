@@ -51,6 +51,9 @@ pub struct SnowflakeConfig {
     pub role: Option<String>,
     #[serde(default)]
     pub schema: Option<String>,
+    /// Padrões (`DEV_*`) das databases mostradas na árvore e no autocomplete; vazio = todas.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub db_filter: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,13 +200,52 @@ pub fn load(path: &Path) -> Result<ConfigFile, DbError> {
 
 /// Grava de forma atômica (arquivo temporário + rename).
 pub fn save(path: &Path, cfg: &ConfigFile) -> Result<(), DbError> {
-    let text = toml::to_string_pretty(cfg).map_err(|e| DbError::Config(e.to_string()))?;
+    write_atomic(path, &toml::to_string_pretty(cfg).map_err(|e| DbError::Config(e.to_string()))?)
+}
+
+fn write_atomic(path: &Path, text: &str) -> Result<(), DbError> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, text).map_err(io)?;
     std::fs::rename(&tmp, path).map_err(io)
+}
+
+/// Idioma da interface; `Auto` segue o macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    #[default]
+    Auto,
+    Pt,
+    En,
+    Es,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub language: Language,
+}
+
+pub fn settings_path() -> PathBuf {
+    app_dir().join("settings.toml")
+}
+
+/// Ausente ou inválido = padrão (com aviso no log): preferência não vale uma tela de erro.
+pub fn load_settings(path: &Path) -> Settings {
+    match std::fs::read_to_string(path) {
+        Ok(s) => toml::from_str(&s).unwrap_or_else(|e| {
+            tracing::warn!("{}: {e}", path.display());
+            Settings::default()
+        }),
+        Err(_) => Settings::default(),
+    }
+}
+
+pub fn save_settings(path: &Path, s: &Settings) -> Result<(), DbError> {
+    write_atomic(path, &toml::to_string_pretty(s).map_err(|e| DbError::Config(e.to_string()))?)
 }
 
 #[cfg(test)]
@@ -241,11 +283,12 @@ mod tests {
             warehouse: Some("COMPUTE_WH".into()),
             role: None,
             schema: Some("PUBLIC".into()),
+            db_filter: vec!["DEV_*".into(), "AI_*".into()],
         });
         let cfg = ConfigFile { connections: vec![c] };
         save(&path, &cfg).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("[connection.snowflake]") && text.contains("auth = \"keypair\""), "{text}");
+        assert!(text.contains("[connection.snowflake]") && text.contains("auth = \"keypair\"") && text.contains("db_filter = ["), "{text}");
         assert_eq!(load(&path).unwrap(), cfg);
 
         std::fs::write(&path, "[[connection]]\nid = \"s\"\nname = \"n\"\ndatabase = \"\"\nuser = \"u\"\n[connection.snowflake]\naccount = \"a\"\n").unwrap();
@@ -279,6 +322,17 @@ mod tests {
 
         std::fs::write(&path, "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 5432\ndatabase = \"d\"\nuser = \"u\"\n").unwrap();
         assert_eq!(load(&path).unwrap().connections[0].ssh, None);
+    }
+
+    #[test]
+    fn settings_round_trip_and_fall_back_to_auto() {
+        let path = tmp("settings").with_file_name("settings.toml");
+        save_settings(&path, &Settings { language: Language::Es }).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("language = \"es\""));
+        assert_eq!(load_settings(&path).language, Language::Es);
+        std::fs::write(&path, "language = \"klingon\"").unwrap();
+        assert_eq!(load_settings(&path).language, Language::Auto);
+        assert_eq!(load_settings(&path.with_file_name("nao-existe.toml")).language, Language::Auto);
     }
 
     #[test]

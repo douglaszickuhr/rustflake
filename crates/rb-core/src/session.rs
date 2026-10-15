@@ -11,6 +11,8 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::{CancelToken, Client};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+use rust_i18n::t;
+
 use crate::DbError;
 use crate::batch::{Batch, ColumnInfo};
 use crate::config::{ConnectionConfig, SnowflakeConfig, SshConfig};
@@ -250,7 +252,7 @@ pub struct Session {
 }
 
 fn closed() -> DbError {
-    DbError::Connection("sessão encerrada".into())
+    DbError::Connection(t!("err.session_closed").to_string())
 }
 
 impl Session {
@@ -390,7 +392,7 @@ impl Actor {
     async fn execute(&mut self, sql: String, reply: Reply<ExecOutcome>, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> Option<Cmd> {
         let started = Instant::now();
         if is_transaction_control(&sql) {
-            let msg = "transações manuais (BEGIN/START/SAVEPOINT): o rustbeaver roda em autocommit";
+            let msg = t!("err.manual_transactions");
             let _ = reply.send(Err(DbError::Unsupported(msg.into())));
             return rx.recv().await;
         }
@@ -532,7 +534,7 @@ impl Actor {
             let p: Vec<&(dyn ToSql + Sync)> = s.params.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
             let n = tx.execute(s.sql.as_str(), &p).await?;
             if s.expect_one && n != 1 {
-                return Err(DbError::Edit(format!("esperava alterar 1 linha, alterou {n}: {}", s.sql)));
+                return Err(DbError::Edit(t!("err.expected_one_row", n = n, sql = s.sql).to_string()));
             }
             total += n;
         }
