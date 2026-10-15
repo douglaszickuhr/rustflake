@@ -2,27 +2,40 @@
 
 use sqlformat::{FormatOptions, Indent, QueryParams};
 
+use crate::lexer::{TokKind, tokenize};
+
+/// Formata statement a statement e só aceita o resultado se os tokens forem os mesmos (palavras
+/// sem diferenciar caixa; strings, identificadores, `$$` e comentários byte a byte). O sqlformat
+/// não conhece `standard_conforming_strings` nem corpos `$tag$`: quando erra, o statement fica como estava.
 pub fn format_sql(sql: &str) -> String {
     let opts = FormatOptions { indent: Indent::Spaces(2), uppercase: Some(true), lines_between_queries: 2, ..FormatOptions::default() };
-    let fmt = |s: &str| sqlformat::format(s, &QueryParams::None, &opts);
-    if !sql.contains("$$") {
-        return fmt(sql);
-    }
-    // O sqlformat quebra linhas dentro de corpos `$$`: formata statement a statement e deixa
-    // como está o que tem `$$`. Cada pedaço vai do fim do anterior até o seu `;` (com comentários).
-    let mut out = Vec::new();
+    let mut chunks = Vec::new();
     let mut from = 0;
-    for r in crate::split::split_statements(sql) {
-        let end = sql[r.end..].find(';').map_or(r.end, |i| r.end + i + 1);
-        let chunk = sql[from..end].trim();
-        out.push(if chunk.contains("$$") { chunk.to_string() } else { fmt(chunk) });
-        from = end;
+    for t in tokenize(sql).iter().filter(|t| t.kind == TokKind::Semicolon) {
+        chunks.push(&sql[from..t.end]);
+        from = t.end;
     }
-    let rest = sql[from..].trim();
-    if !rest.is_empty() {
-        out.push(rest.to_string());
+    if !sql[from..].trim().is_empty() {
+        chunks.push(&sql[from..]);
     }
-    out.join("\n\n")
+    chunks
+        .into_iter()
+        .map(|chunk| {
+            let chunk = chunk.trim();
+            let out = sqlformat::format(chunk, &QueryParams::None, &opts);
+            if same_tokens(chunk, &out) { out } else { chunk.to_string() }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn same_tokens(a: &str, b: &str) -> bool {
+    let (ta, tb) = (tokenize(a), tokenize(b));
+    ta.len() == tb.len()
+        && ta.iter().zip(&tb).all(|(x, y)| {
+            let (sx, sy) = (&a[x.start..x.end], &b[y.start..y.end]);
+            x.kind == y.kind && if x.kind == TokKind::Word { sx.eq_ignore_ascii_case(sy) } else { sx == sy }
+        })
 }
 
 #[cfg(test)]
@@ -61,6 +74,38 @@ mod tests {
         let out = format_sql("-- cria\ncreate function f() returns int language sql as $$ select 1 $$; select a from t");
         assert!(out.starts_with("-- cria\ncreate function f() returns int language sql as $$ select 1 $$;"), "{out}");
         assert!(out.ends_with("SELECT\n  a\nFROM\n  t"), "{out}");
+    }
+
+    #[test]
+    fn backslashes_in_strings_never_change_literals() {
+        // O sqlformat lê `\'` como aspa escapada; no Postgres (standard_conforming_strings) `'\'` é uma string completa.
+        for src in [
+            r"select 'a\' as x, 'b' as y from t",
+            r"select * from t where a like 'a\_%' escape '\' and c = 'k'",
+            r"select E'\\' as bs, 'x' as y",
+        ] {
+            let out = format_sql(src);
+            for lit in ["'b'", "'k'", "'x'"] {
+                if src.contains(lit) {
+                    assert!(out.contains(lit), "{src} → {out}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tagged_dollar_bodies_stay_intact() {
+        let body = "$fn$ declare r t%rowtype; begin select * into r from t; end $fn$";
+        let out = format_sql(&format!("create function f() returns void language plpgsql as {body}; select 1"));
+        assert!(out.contains(body), "{out}");
+        assert!(out.ends_with("SELECT\n  1"), "{out}");
+    }
+
+    #[test]
+    fn semicolon_inside_a_comment_does_not_split_the_script() {
+        let out = format_sql("select 1 -- a;b\n; select $$ x $$");
+        assert!(out.contains("-- a;b"), "{out}");
+        assert!(!out.lines().any(|l| l.trim() == "b;"), "comentário virou código: {out}");
     }
 
     #[test]
