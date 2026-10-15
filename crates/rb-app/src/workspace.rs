@@ -28,7 +28,7 @@ use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
 use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
-use crate::{CloseTab, Db, NewSqlTab, Quit, QuickOpen, conn_dialog, db_filter, quick_open};
+use crate::{CloseTab, Db, NewSqlTab, Quit, QuickOpen, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
 
 /// Conexão aberta: sessão de metadados e árvore próprias; cada aba guarda a sua sessão.
 pub struct Open {
@@ -286,6 +286,45 @@ impl Workspace {
             window,
             cx,
         );
+    }
+
+    /// ⌘Y: histórico da conexão atual.
+    fn show_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(o) = self.current_open() else {
+            window.push_notification(Notification::error(t!("ws.open_connection_to_search").to_string()), cx);
+            return;
+        };
+        let (id, name) = (o.conn.cfg.id.clone(), o.conn.cfg.name.clone());
+        let path = rb_core::history::history_path(&id);
+        let ws = cx.entity().downgrade();
+        history_popup::open(
+            name,
+            path,
+            move |sql, new_tab, window, cx| {
+                ws.update(cx, |ws, cx| ws.use_history(&id, &sql, new_tab, window, cx)).ok();
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Insere a query na aba SQL ativa (se for desta conexão) ou num script novo.
+    fn use_history(&mut self, conn_id: &str, sql: &str, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let same_conn = |t: &Entity<SqlTab>, cx: &App| t.read(cx).conn_id() == conn_id;
+        let target = match self.tabs.get(self.active_tab) {
+            Some(TabView::Sql(t)) if !new_tab && same_conn(t, cx) => Some(t.clone()),
+            _ => {
+                self.current = Some(conn_id.to_string());
+                self.new_sql_tab(window, cx);
+                match self.tabs.last() {
+                    Some(TabView::Sql(t)) if same_conn(t, cx) => Some(t.clone()),
+                    _ => None,
+                }
+            }
+        };
+        if let Some(t) = target {
+            t.update(cx, |t, cx| t.insert_text(sql, window, cx));
+        }
     }
 
     /// Mostra o objeto na árvore; tabela/view também abre a aba.
@@ -768,6 +807,7 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(|ws, _: &NewSqlTab, window, cx| ws.new_sql_tab(window, cx)))
             .on_action(cx.listener(|ws, _: &QuickOpen, window, cx| ws.quick_open(window, cx)))
+            .on_action(cx.listener(|ws, _: &ShowHistory, window, cx| ws.show_history(window, cx)))
             .on_action(cx.listener(|ws, _: &CloseTab, window, cx| ws.close_tab(ws.active_tab, window, cx)))
             .on_action(cx.listener(|ws, _: &Quit, _, cx| {
                 ws.save_all(cx);

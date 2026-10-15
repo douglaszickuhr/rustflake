@@ -769,3 +769,38 @@ es = "solo las primeras"
 en = "%{n} affected"
 pt = "%{n} afetada(s)"
 es = "%{n} afectada(s)"
+
+[history.title]
+en = "History — %{conn}"
+pt = "Histórico — %{conn}"
+es = "Historial — %{conn}"
+
+[history.placeholder]
+en = "search queries…"
+pt = "buscar queries…"
+es = "buscar consultas…"
+
+[history.empty]
+en = "nothing yet"
+pt = "nada ainda"
+es = "nada todavía"
+
+[history.error]
+en = "error"
+pt = "erro"
+es = "error"
+
+[history.today]
+en = "today %{time}"
+pt = "hoje %{time}"
+es = "hoy %{time}"
+
+[history.yesterday]
+en = "yesterday %{time}"
+pt = "ontem %{time}"
+es = "ayer %{time}"
+
+[history.hint]
+en = "Enter inserts · ⌘Enter opens in a new tab"
+pt = "Enter insere · ⌘Enter abre em aba nova"
+es = "Enter inserta · ⌘Enter abre en pestaña nueva"

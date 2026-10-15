@@ -4,6 +4,7 @@ mod completion;
 mod conn_dialog;
 mod db_filter;
 mod grid;
+mod history_popup;
 mod indexer;
 mod lang;
 mod meta;
@@ -20,7 +21,7 @@ use gpui_kit::*;
 rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql]);
+gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory]);
 
 /// Runtime de banco compartilhado pela aplicação.
 pub struct Db(pub Engine);
@@ -100,6 +101,7 @@ fn main() {
             KeyBinding::new("cmd-c", CopyCells, Some("ResultGrid")),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-k", QuickOpen, Some("Workspace")),
+            KeyBinding::new("cmd-y", ShowHistory, Some("Workspace")),
             // O campo usa ↑↓ para mover o cursor; a ligação mais profunda vence.
             KeyBinding::new("up", QuickPrev, Some("QuickOpen > Input")),
             KeyBinding::new("down", QuickNext, Some("QuickOpen > Input")),

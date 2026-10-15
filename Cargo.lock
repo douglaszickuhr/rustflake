@@ -6063,6 +6063,7 @@ name = "rb-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "gpui-kit",
  "lsp-types",
  "objc2 0.6.5",
