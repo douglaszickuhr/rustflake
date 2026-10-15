@@ -159,3 +159,18 @@ es = "la columna %{column} es generada y no se puede editar"
 en = "the table has no primary key; editing disabled"
 pt = "a tabela não tem chave primária; edição desativada"
 es = "la tabla no tiene clave primaria; edición desactivada"
+
+[err.explain_parse]
+en = "plan in an unexpected format: %{error}"
+pt = "plano em formato inesperado: %{error}"
+es = "plan con formato inesperado: %{error}"
+
+[plan.warn_estimate]
+en = "estimated %{est} rows, got %{act}"
+pt = "estimou %{est} linhas, vieram %{act}"
+es = "estimó %{est} filas, llegaron %{act}"
+
+[plan.warn_seq_filter]
+en = "sequential scan discarded %{n} rows: an index may help"
+pt = "leitura sequencial descartou %{n} linhas: um índice pode ajudar"
+es = "lectura secuencial descartó %{n} filas: un índice puede ayudar"

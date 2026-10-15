@@ -1,0 +1,71 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Hashed",
+      "Partial Mode": "Simple",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 18.49,
+      "Total Cost": 20.15,
+      "Plan Rows": 166,
+      "Plan Width": 12,
+      "Group Key": ["a.x"],
+      "Planned Partitions": 0,
+      "Plans": [
+        {
+          "Node Type": "Hash Join",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Join Type": "Inner",
+          "Startup Cost": 2.25,
+          "Total Cost": 17.66,
+          "Plan Rows": 166,
+          "Plan Width": 4,
+          "Inner Unique": false,
+          "Hash Cond": "(a.x = b.y)",
+          "Plans": [
+            {
+              "Node Type": "Function Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Function Name": "generate_series",
+              "Alias": "a",
+              "Startup Cost": 0.00,
+              "Total Cost": 12.50,
+              "Plan Rows": 333,
+              "Plan Width": 4,
+              "Filter": "(x > 10)"
+            },
+            {
+              "Node Type": "Hash",
+              "Parent Relationship": "Inner",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 1.00,
+              "Total Cost": 1.00,
+              "Plan Rows": 100,
+              "Plan Width": 4,
+              "Plans": [
+                {
+                  "Node Type": "Function Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Function Name": "generate_series",
+                  "Alias": "b",
+                  "Startup Cost": 0.00,
+                  "Total Cost": 1.00,
+                  "Plan Rows": 100,
+                  "Plan Width": 4
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

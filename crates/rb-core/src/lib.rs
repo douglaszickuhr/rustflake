@@ -5,6 +5,7 @@ pub mod config;
 pub mod decode;
 pub mod dialect;
 pub mod error;
+pub mod explain;
 pub mod format;
 pub mod history;
 pub mod lexer;
