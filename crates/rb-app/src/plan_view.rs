@@ -32,6 +32,18 @@ fn fit_zoom(content: (f32, f32), view: (f32, f32)) -> f32 {
     (view.0 / content.0).min(view.1 / content.1).clamp(0.25, 1.0)
 }
 
+/// ⌘ + scroll: zoom contínuo (trackpad manda muitos eventos pequenos); para cima aproxima.
+fn wheel_zoom(z: f32, dy: f32) -> f32 {
+    (z * (dy / 200.0).exp()).clamp(0.25, 2.0)
+}
+
+/// Nova rolagem (≤ 0) de um eixo para que o ponto sob o ponteiro continue sob ele ao trocar o zoom.
+/// `pointer` é relativo à borda da área; o conteúdo começa depois da margem `PAD`, que não escala.
+fn zoom_anchor(offset: f32, pointer: f32, z0: f32, z1: f32) -> f32 {
+    let content = (pointer - offset - PAD) / z0;
+    (pointer - PAD - content * z1).min(0.0)
+}
+
 fn rows_of(n: &PlanNode) -> Option<f64> {
     n.act_rows.or(n.est_rows)
 }
@@ -42,8 +54,9 @@ pub struct PlanView {
     selected: Vec<usize>,
     zoom: f32,
     fitted: bool,
-    /// Tamanho visível da área, medido no último quadro (para o "ajustar à tela").
-    viewport: Rc<Cell<Option<(f32, f32)>>>,
+    /// Área visível, medida no último quadro (ajustar à tela e zoom pelo ponteiro).
+    viewport: Rc<Cell<Option<Bounds<Pixels>>>>,
+    scroll: ScrollHandle,
     focus: FocusHandle,
 }
 
@@ -51,7 +64,7 @@ impl PlanView {
     pub fn new(plan: Plan, cx: &mut Context<Self>) -> Self {
         let placed = layout(&plan.root, BOX_W, BOX_H, GAP_X, GAP_Y);
         let selected = hottest(&plan.root);
-        PlanView { plan, placed, selected, zoom: 1.0, fitted: false, viewport: Rc::default(), focus: cx.focus_handle() }
+        PlanView { plan, placed, selected, zoom: 1.0, fitted: false, viewport: Rc::default(), scroll: ScrollHandle::new(), focus: cx.focus_handle() }
     }
 
     fn content_size(&self) -> (f32, f32) {
@@ -71,10 +84,28 @@ impl PlanView {
     }
 
     fn fit(&mut self) {
-        if let Some(v) = self.viewport.get().filter(|v| v.0 > 2.0 * PAD && v.1 > 2.0 * PAD) {
+        let size = self.viewport.get().map(|b| (f32::from(b.size.width), f32::from(b.size.height)));
+        if let Some(v) = size.filter(|v| v.0 > 2.0 * PAD && v.1 > 2.0 * PAD) {
             self.zoom = fit_zoom(self.content_size(), (v.0 - 2.0 * PAD, v.1 - 2.0 * PAD));
             self.fitted = true;
         }
+    }
+
+    /// ⌘ + scroll: muda o zoom mantendo parado o ponto sob o ponteiro.
+    fn wheel(&mut self, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        let Some(area) = self.viewport.get() else { return };
+        let dy = f32::from(ev.delta.pixel_delta(px(16.0)).y);
+        let z1 = wheel_zoom(self.zoom, dy);
+        if z1 == self.zoom {
+            return;
+        }
+        let pointer = ev.position - area.origin;
+        let off = self.scroll.offset();
+        let x = zoom_anchor(f32::from(off.x), f32::from(pointer.x), self.zoom, z1);
+        let y = zoom_anchor(f32::from(off.y), f32::from(pointer.y), self.zoom, z1);
+        self.zoom = z1;
+        self.scroll.set_offset(point(px(x), px(y)));
+        cx.notify();
     }
 
     fn render_details(&self, cx: &App) -> impl IntoElement {
@@ -226,9 +257,16 @@ impl Render for PlanView {
                             .flex_1()
                             .h_full()
                             .overflow_scroll()
+                            .track_scroll(&self.scroll)
                             .p(px(PAD))
-                            .child(canvas(move |b, _, _| viewport.set(Some((f32::from(b.size.width), f32::from(b.size.height)))), |_, _, _, _| {}).absolute().size_full())
-                            .child(content),
+                            .child(canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
+                            // ⌘ + scroll dá zoom; registrado num filho para rodar antes da rolagem da área.
+                            .child(div().min_w_full().min_h_full().on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
+                                if ev.modifiers.platform {
+                                    cx.stop_propagation();
+                                    v.wheel(ev, cx);
+                                }
+                            })).child(content)),
                     )
                     .child(div().id("plan-details").w(px(280.)).h_full().overflow_y_scroll().border_l_1().border_color(theme.border).p_3().child(self.render_details(cx))),
             )
@@ -238,6 +276,24 @@ impl Render for PlanView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn wheel_zoom_is_smooth_and_clamped() {
+        assert!(wheel_zoom(1.0, 10.0) > 1.0, "rolar para cima aproxima");
+        assert!(wheel_zoom(1.0, -10.0) < 1.0);
+        assert_eq!(wheel_zoom(1.0, 0.0), 1.0);
+        assert_eq!(wheel_zoom(2.0, 1000.0), 2.0);
+        assert_eq!(wheel_zoom(0.25, -1000.0), 0.25);
+    }
+
+    #[::core::prelude::v1::test]
+    fn zoom_keeps_the_point_under_the_pointer() {
+        // Sem rolagem, ponteiro a 116 px (16 de margem + 100 de conteúdo): ponto de conteúdo 100 no zoom 1.
+        let off = zoom_anchor(0.0, 116.0, 1.0, 2.0);
+        assert_eq!(off, -100.0, "no zoom 2 o ponto 100 vira 200; rola 100 para continuar sob o ponteiro");
+        assert_eq!(zoom_anchor(-100.0, 116.0, 2.0, 1.0), 0.0, "volta");
+        assert_eq!(zoom_anchor(0.0, 500.0, 1.0, 0.25), 0.0, "afastando no início: nunca rola para antes do começo");
+    }
 
     #[::core::prelude::v1::test]
     fn heat_and_zoom_are_clamped() {
