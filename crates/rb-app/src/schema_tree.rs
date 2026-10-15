@@ -318,7 +318,15 @@ impl Render for SchemaTree {
                     .when_some(detail, |r, d| {
                         r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(d))
                     });
-                ListItem::new(ix).selected(selected).pl(px(8. + 14. * entry.depth() as f32)).child(row).on_click(
+                let is_rel = node.starts_with(&format!("r{SEP}"));
+                ListItem::new(ix)
+                    .selected(selected)
+                    .pl(px(8. + 14. * entry.depth() as f32))
+                    .child(row)
+                    // A árvore expande/recolhe a cada mouse_down: no duplo clique o segundo recolheria
+                    // a tabela que acabou de expandir. Ele fica só para abrir a aba.
+                    .when(is_rel, |li| li.on_mouse_down(MouseButton::Left, |ev, _, cx| if ev.click_count >= 2 { cx.stop_propagation() }))
+                    .on_click(
                     move |ev, window, cx| {
                         let parts: Vec<&str> = node.split(SEP).collect();
                         if ev.click_count() == 2
