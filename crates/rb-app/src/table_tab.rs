@@ -3,9 +3,10 @@ use rust_i18n::t;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableSelection, TableState};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::batch::ResultSet;
@@ -34,6 +35,8 @@ pub struct TableTab {
     /// Mensagem a mostrar quando a próxima carga terminar (ex.: resultado da gravação).
     after_load: Option<SharedString>,
     loaded_once: bool,
+    /// Carga em andamento (liga o skeleton da grade depois de um instante).
+    _busy: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -85,6 +88,7 @@ impl TableTab {
             status: t!("tree.loading").to_string().into(),
             after_load: None,
             loaded_once: false,
+            _busy: None,
             _subs: subs,
         };
         this.on_meta(cx);
@@ -136,6 +140,7 @@ impl TableTab {
         let existing = self.session.clone();
         let engine = cx.global::<Db>().0.clone();
         self.status = t!("tree.loading").to_string().into();
+        self._busy = Some(grid::busy_later(&self.grid, cx));
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = async {
@@ -148,6 +153,8 @@ impl TableTab {
             }
             .await;
             this.update(cx, |tab, cx| {
+                tab._busy = None;
+                grid::set_idle(&tab.grid, cx);
                 match result {
                     Ok((session, out)) => {
                         tab.session = Some(session.clone());
@@ -298,6 +305,7 @@ impl Render for TableTab {
         let pending = g.edits.as_ref().is_some_and(|e| !e.is_empty());
         let rows = g.loaded_rows();
         let more = g.rs.as_ref().is_some_and(|r| r.more);
+        let spinning = self._busy.is_some() || g.loading_more();
         let read_only = !editable && self.target.is_some();
         let sf = self.meta.read(cx).cache.dialect == Dialect::Snowflake;
         v_flex()
@@ -338,6 +346,7 @@ impl Render for TableTab {
                     .py_1()
                     .gap_3()
                     .text_sm()
+                    .when(spinning, |d| d.child(Spinner::new().small()))
                     .child(t!("grid.rows", n = format!("{rows}{}", if more { "+" } else { "" })).to_string())
                     // Bateu no LIMIT da aba: a tabela pode ter mais; para ver tudo, SQL no editor.
                     .when(rows >= TABLE_LIMIT, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("table.limited", n = TABLE_LIMIT).to_string())))

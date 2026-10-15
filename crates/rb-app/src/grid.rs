@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelection, TableState};
@@ -14,6 +15,8 @@ use rb_core::table::PendingEdits;
 pub const MAX_CELL_CHARS: usize = 200;
 /// Limite do texto no tooltip de detalhe; o valor inteiro continua no ⌘C.
 const MAX_DETAIL_CHARS: usize = 6_000;
+/// Query mais rápida que isso não mostra o skeleton: o resultado antigo fica até o novo chegar.
+const BUSY_DELAY: Duration = Duration::from_millis(150);
 
 type OnSort = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
 
@@ -29,6 +32,8 @@ pub struct ResultGrid {
     exec_id: u64,
     widths: Vec<f32>,
     loading_more: bool,
+    /// Query em andamento: o `DataTable` troca as linhas pelo skeleton animado.
+    busy: bool,
     /// Muda a cada resultado novo; descarta lotes que chegam de um resultado antigo.
     generation: u64,
 }
@@ -46,6 +51,7 @@ impl ResultGrid {
             exec_id: 0,
             widths: Vec::new(),
             loading_more: false,
+            busy: false,
             generation: 0,
         }
     }
@@ -64,6 +70,10 @@ impl ResultGrid {
         self.session = Some(session);
         self.loading_more = false;
         self.error = None;
+    }
+
+    pub fn loading_more(&self) -> bool {
+        self.loading_more
     }
 
     /// Pode buscar mais linhas? Não enquanto houver linhas inseridas (elas são endereçadas
@@ -200,6 +210,10 @@ impl TableDelegate for ResultGrid {
         }
     }
 
+    fn loading(&self, _: &App) -> bool {
+        self.busy
+    }
+
     fn has_more(&self, _: &App) -> bool {
         self.can_page()
     }
@@ -281,4 +295,23 @@ mod tests {
         g.finish_save(true);
         assert!(g.edits.as_ref().unwrap().is_empty());
     }
+}
+
+/// Liga o skeleton da grade depois de `BUSY_DELAY`. Guarde a task: soltá-la cancela o timer.
+pub fn busy_later<T: 'static>(grid: &Entity<TableState<ResultGrid>>, cx: &mut Context<T>) -> Task<()> {
+    let grid = grid.downgrade();
+    cx.spawn(async move |_, cx| {
+        cx.background_executor().timer(BUSY_DELAY).await;
+        let _ = grid.update(cx, |t, cx| {
+            t.delegate_mut().busy = true;
+            cx.notify();
+        });
+    })
+}
+
+pub fn set_idle(grid: &Entity<TableState<ResultGrid>>, cx: &mut App) {
+    grid.update(cx, |t, cx| {
+        t.delegate_mut().busy = false;
+        cx.notify();
+    });
 }

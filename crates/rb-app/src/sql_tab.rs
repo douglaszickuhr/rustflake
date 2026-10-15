@@ -8,8 +8,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{DataTable, TableState};
-use gpui_kit::component::{RopeExt as _, WindowExt as _, h_flex, resizable_panel, v_flex, v_resizable};
+use gpui_kit::component::{RopeExt as _, Sizable as _, WindowExt as _, h_flex, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::DbError;
@@ -36,6 +37,7 @@ pub struct SqlTab {
     ran_use: bool,
     status: SharedString,
     _save: Option<Task<()>>,
+    _busy: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -65,6 +67,7 @@ impl SqlTab {
             ran_use: false,
             status: "".into(),
             _save: None,
+            _busy: None,
             _subs: subs,
         }
     }
@@ -112,6 +115,7 @@ impl SqlTab {
         self.ran_use = ranges.iter().any(|r| src[r.clone()].trim_start().get(..4).is_some_and(|w| w.eq_ignore_ascii_case("use ")));
         self.running = true;
         self.status = t!("sql.running").to_string().into();
+        self._busy = Some(grid::busy_later(&self.table, cx));
         cx.notify();
 
         let conn = self.conn.clone();
@@ -139,7 +143,7 @@ impl SqlTab {
     }
 
     fn finish_ok(&mut self, last: Option<ExecOutcome>, session: Arc<Session>, cx: &mut Context<Self>) {
-        self.running = false;
+        self.stop_running(cx);
         if self.ran_use {
             self.meta.update(cx, |m, cx| m.reload_roots(cx));
         }
@@ -161,7 +165,7 @@ impl SqlTab {
     }
 
     fn finish_error(&mut self, src: &str, range: Option<Range<usize>>, e: DbError, window: &mut Window, cx: &mut Context<Self>) {
-        self.running = false;
+        self.stop_running(cx);
         self.status = t!("sql.error").to_string().into();
         if let (Some(r), DbError::Postgres { position: Some(p), .. }) = (&range, &e) {
             let at = r.start + error_byte_offset(&src[r.clone()], *p);
@@ -181,6 +185,12 @@ impl SqlTab {
         cx.notify();
     }
 
+    fn stop_running(&mut self, cx: &mut Context<Self>) {
+        self.running = false;
+        self._busy = None;
+        grid::set_idle(&self.table, cx);
+    }
+
     fn cancel(&mut self) {
         if let Some(s) = &self.session {
             s.cancel();
@@ -194,6 +204,7 @@ impl Render for SqlTab {
         let rows = grid.loaded_rows();
         let more = grid.rs.as_ref().is_some_and(|r| r.more);
         let grid_error = grid.error.clone();
+        let spinning = self.running || grid.loading_more();
         v_flex()
             .key_context("SqlTab")
             .track_focus(&self.focus)
@@ -218,6 +229,7 @@ impl Render for SqlTab {
                     .py_1()
                     .gap_3()
                     .text_sm()
+                    .when(spinning, |d| d.child(Spinner::new().small()))
                     .child(t!("grid.rows", n = format!("{rows}{}", if more { "+" } else { "" })).to_string())
                     .child(self.status.clone())
                     .when_some(grid_error, |d, e| d.child(e))
