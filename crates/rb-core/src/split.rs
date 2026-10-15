@@ -51,9 +51,24 @@ pub fn is_read_only_query(stmt: &str) -> bool {
     }
 }
 
+/// Statements que o EXPLAIN aceita: consultas e DML.
+pub fn explainable(stmt: &str) -> bool {
+    matches!(words(stmt).next().as_deref(), Some("select" | "with" | "insert" | "update" | "delete" | "merge" | "values" | "table"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explainable_accepts_queries_and_dml_only() {
+        for s in ["select 1", "/* c */ WITH a AS (select 1) select * from a", "insert into t values (1)", "update t set a = 1", "delete from t", "merge into t using s on true when matched then delete", "values (1)", "table t"] {
+            assert!(explainable(s), "{s}");
+        }
+        for s in ["create table t (a int)", "drop table t", "alter table t add b int", "begin", "vacuum", "", "explain select 1"] {
+            assert!(!explainable(s), "{s}");
+        }
+    }
 
     #[test]
     fn classifies_transaction_control_and_reads() {

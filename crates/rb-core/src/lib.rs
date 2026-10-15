@@ -5,6 +5,7 @@ pub mod config;
 pub mod decode;
 pub mod dialect;
 pub mod error;
+pub mod format;
 pub mod lexer;
 pub mod metadata;
 pub mod quick_open;
