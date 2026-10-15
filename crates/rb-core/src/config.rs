@@ -223,10 +223,22 @@ pub enum Language {
     Es,
 }
 
+/// Tema da interface; `Auto` segue o claro/escuro do macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub language: Language,
+    #[serde(default)]
+    pub theme: ThemeChoice,
 }
 
 pub fn settings_path() -> PathBuf {
@@ -246,6 +258,13 @@ pub fn load_settings(path: &Path) -> Settings {
 
 pub fn save_settings(path: &Path, s: &Settings) -> Result<(), DbError> {
     write_atomic(path, &toml::to_string_pretty(s).map_err(|e| DbError::Config(e.to_string()))?)
+}
+
+/// Muda uma preferência sem apagar as outras.
+pub fn update_settings(path: &Path, f: impl FnOnce(&mut Settings)) -> Result<(), DbError> {
+    let mut s = load_settings(path);
+    f(&mut s);
+    save_settings(path, &s)
 }
 
 #[cfg(test)]
@@ -327,12 +346,24 @@ mod tests {
     #[test]
     fn settings_round_trip_and_fall_back_to_auto() {
         let path = tmp("settings").with_file_name("settings.toml");
-        save_settings(&path, &Settings { language: Language::Es }).unwrap();
+        save_settings(&path, &Settings { language: Language::Es, ..Default::default() }).unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().contains("language = \"es\""));
         assert_eq!(load_settings(&path).language, Language::Es);
         std::fs::write(&path, "language = \"klingon\"").unwrap();
         assert_eq!(load_settings(&path).language, Language::Auto);
         assert_eq!(load_settings(&path.with_file_name("nao-existe.toml")).language, Language::Auto);
+    }
+
+    #[test]
+    fn updating_one_setting_keeps_the_others() {
+        let path = tmp("settings-update").with_file_name("settings.toml");
+        update_settings(&path, |s| s.language = Language::Es).unwrap();
+        update_settings(&path, |s| s.theme = ThemeChoice::Dark).unwrap();
+        assert_eq!(load_settings(&path), Settings { language: Language::Es, theme: ThemeChoice::Dark });
+        assert!(std::fs::read_to_string(&path).unwrap().contains("theme = \"dark\""));
+        // Arquivo antigo, só com idioma: tema volta para Auto.
+        std::fs::write(&path, "language = \"pt\"").unwrap();
+        assert_eq!(load_settings(&path).theme, ThemeChoice::Auto);
     }
 
     #[test]

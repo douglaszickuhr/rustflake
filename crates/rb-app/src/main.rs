@@ -1,4 +1,5 @@
 mod admin_tab;
+mod appearance;
 mod completion;
 mod conn_dialog;
 mod db_filter;
@@ -73,6 +74,7 @@ fn main() {
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         lang::init(cx);
+        appearance::init(cx);
         #[cfg(target_os = "macos")]
         set_dock_icon();
         cx.set_global(Db(engine));

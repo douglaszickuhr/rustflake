@@ -1,7 +1,7 @@
 //! Idioma da interface: resolve a escolha (ou o do macOS), aplica no `rust-i18n` e avisa a UI.
 
 use gpui_kit::*;
-use rb_core::config::{self, Language, Settings};
+use rb_core::config::{self, Language};
 
 /// Idioma escolhido; trocar o global avisa quem observa (`cx.observe_global::<Lang>`).
 pub struct Lang(pub Language);
@@ -36,7 +36,7 @@ pub fn set(choice: Language, cx: &mut App) {
     apply(choice, cx);
     let path = config::settings_path();
     cx.background_spawn(async move {
-        if let Err(e) = config::save_settings(&path, &Settings { language: choice }) {
+        if let Err(e) = config::update_settings(&path, |s| s.language = choice) {
             tracing::warn!("settings.toml: {e}");
         }
     })

@@ -508,6 +508,21 @@ es = "solo lectura: la tabla no tiene clave primaria"
 
 # Idioma
 
+[theme.title]
+en = "Theme"
+pt = "Tema"
+es = "Tema"
+
+[theme.light]
+en = "Light"
+pt = "Claro"
+es = "Claro"
+
+[theme.dark]
+en = "Dark"
+pt = "Escuro"
+es = "Oscuro"
+
 [lang.title]
 en = "Language"
 pt = "Idioma"

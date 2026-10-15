@@ -12,7 +12,7 @@ use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use rb_core::config::{self, ConfigFile, ConnectionConfig, Language};
+use rb_core::config::{self, ConfigFile, ConnectionConfig, Language, ThemeChoice};
 use rb_core::dialect::Dialect;
 use rb_core::lexer::quote_always;
 use rb_core::quick_open::{Hit, HitKind};
@@ -22,6 +22,7 @@ use rb_core::ssh::{self, SshEnv};
 
 use crate::admin_tab::AdminTab;
 use crate::indexer::Indexer;
+use crate::appearance::{self, Appearance};
 use crate::lang::{self, Lang};
 use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
@@ -92,6 +93,7 @@ impl Workspace {
                 Vec::new()
             }
         };
+        cx.observe_window_appearance(window, |_, window, cx| appearance::system_changed(window, cx)).detach();
         Workspace { focus: cx.focus_handle(), connections, open: Vec::new(), current: None, collapsed: false, tabs: Vec::new(), active_tab: 0, connecting: false }
     }
 
@@ -536,6 +538,21 @@ impl Workspace {
         });
     }
 
+    fn pick_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = cx.global::<Appearance>().0;
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let options = [ThemeChoice::Auto, ThemeChoice::Light, ThemeChoice::Dark];
+            let list = options.into_iter().enumerate().fold(v_flex().gap_1(), |l, (i, choice)| {
+                let mark = if choice == current { "✓ " } else { "   " };
+                l.child(Button::new(("theme", i)).label(format!("{mark}{}", appearance::label(choice, cx))).ghost().on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    appearance::set(choice, window, cx);
+                }))
+            });
+            dialog.title(t!("theme.title").to_string()).w(px(320.)).child(list)
+        });
+    }
+
     /// Diálogo do filtro de databases (Snowflake): chips, `*` coringa, `!` exclui.
     fn edit_db_filter(&mut self, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.open_conn(conn_id).map(|o| o.meta.read(cx).cache.db_filter.clone()).unwrap_or_default();
@@ -690,6 +707,7 @@ impl Workspace {
             .when(self.connecting, |d| d.child(t!("ws.connecting").to_string()))
             // `list` cresce (flex_1): o seletor fica no pé da barra.
             .child(side_item("lang", None, format!("🌐 {}", lang::label(cx.global::<Lang>().0)), false, cx).on_click(cx.listener(|ws, _, w, cx| ws.pick_language(w, cx))))
+            .child(side_item("theme", None, format!("◐ {}", appearance::label(cx.global::<Appearance>().0, cx)), false, cx).on_click(cx.listener(|ws, _, w, cx| ws.pick_theme(w, cx))))
     }
 }
 
@@ -730,7 +748,7 @@ fn side_item(id: impl Into<ElementId>, icon: Option<Icon>, label: impl Into<Shar
         .text_sm()
         .whitespace_nowrap()
         .overflow_hidden()
-        .map(|d| if active { d.bg(t.primary).text_color(t.primary_foreground) } else { d.hover(|d| d.bg(t.secondary_hover)) })
+        .map(|d| if active { d.bg(t.list_active) } else { d.hover(|d| d.bg(t.secondary_hover)) })
         .when_some(icon, |d, i| d.child(i.small().flex_shrink_0()))
         .child(div().min_w_0().overflow_hidden().text_ellipsis().child(label))
 }
