@@ -2,17 +2,23 @@ use std::cell::Cell;
 use rust_i18n::t;
 use std::rc::Rc;
 
-use gpui_kit::component::WindowExt as _;
+use std::path::Path;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::form::{field, v_form};
-use gpui_kit::component::{Selectable as _, h_flex};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::select::{Select, SelectState};
+use gpui_kit::component::{IconName, IndexPath, Selectable as _, WindowExt as _, h_flex};
+use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::config::{ConnectionConfig, SnowflakeAuth, SnowflakeConfig, SshConfig, SslMode, new_id};
-use rb_core::ssh::SshEnv;
+use rb_core::ssh::{SshEnv, host_aliases};
 
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, kind_logo};
+
+const SSL_MODES: [&str; 3] = ["disable", "prefer", "require"];
 
 struct Fields {
     id: String,
@@ -22,7 +28,7 @@ struct Fields {
     database: Entity<InputState>,
     user: Entity<InputState>,
     password: Entity<InputState>,
-    ssl: Entity<InputState>,
+    ssl: Entity<SelectState<Vec<&'static str>>>,
     ssh_host: Entity<InputState>,
     ssh_user: Entity<InputState>,
     ssh_port: Entity<InputState>,
@@ -87,11 +93,10 @@ impl Fields {
             return Ok((cfg, self.password.read(cx).value().to_string(), self.sf_key_pass.read(cx).value().to_string()));
         }
         let port = v(&self.port).parse::<u16>().map_err(|_| t!("conn.err_port").to_string())?;
-        let ssl = match v(&self.ssl).as_str() {
-            "" | "disable" => SslMode::Disable,
-            "prefer" => SslMode::Prefer,
-            "require" => SslMode::Require,
-            other => return Err(t!("conn.err_ssl", value = other).to_string()),
+        let ssl = match self.ssl.read(cx).selected_value().copied() {
+            Some("prefer") => SslMode::Prefer,
+            Some("require") => SslMode::Require,
+            _ => SslMode::Disable,
         };
         let cfg = ConnectionConfig {
             id: self.id.clone(),
@@ -129,6 +134,32 @@ fn show_resolved(host: &str, user: &WeakEntity<InputState>, port: &WeakEntity<In
     key.update(cx, |s, cx| s.set_placeholder(k, window, cx)).ok();
 }
 
+/// Caminho escolhido no seletor do macOS; dentro do home vira `~/…` (o SSH e o Snowflake expandem).
+fn tilde(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
+    }
+}
+
+/// Campo de caminho de chave com "Escolher…", que abre o seletor de arquivos do macOS.
+fn key_field(id: &'static str, input: &Entity<InputState>) -> impl IntoElement {
+    let target = input.downgrade();
+    h_flex().gap_2().child(div().flex_1().child(Input::new(input))).child(Button::new(id).label(t!("conn.choose_file").to_string()).on_click(move |_, window, cx| {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(t!("conn.choose_file").to_string().into()) });
+        let target = target.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let Ok(Ok(Some(paths))) = rx.await else { return };
+                let Some(path) = paths.first() else { return };
+                let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                let value = tilde(path, &home);
+                cx.update(|window, cx| target.update(cx, |s, cx| s.set_value(value, window, cx))).ok();
+            })
+            .detach();
+    }))
+}
+
 /// Nova conexão (`None`) ou edição de uma existente, mantendo o id.
 pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Context<Workspace>) {
     let editing = existing.is_some();
@@ -149,9 +180,9 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
     let input = |window: &mut Window, cx: &mut Context<Workspace>, value: String| cx.new(|cx| InputState::new(window, cx).default_value(value));
     let masked = |window: &mut Window, cx: &mut Context<Workspace>| cx.new(|cx| InputState::new(window, cx).masked(true));
     let ssl = match c.ssl {
-        SslMode::Disable => "disable",
-        SslMode::Prefer => "prefer",
-        SslMode::Require => "require",
+        SslMode::Disable => 0,
+        SslMode::Prefer => 1,
+        SslMode::Require => 2,
     };
     let f = Rc::new(Fields {
         id: c.id.clone(),
@@ -161,7 +192,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         database: input(window, cx, c.database),
         user: input(window, cx, c.user),
         password: masked(window, cx),
-        ssl: input(window, cx, ssl.into()),
+        ssl: cx.new(|cx| SelectState::new(SSL_MODES.to_vec(), Some(IndexPath::new(ssl)), window, cx)),
         ssh_host: input(window, cx, ssh.as_ref().map(|s| s.host.clone()).unwrap_or_default()),
         ssh_user: input(window, cx, ssh.as_ref().and_then(|s| s.user.clone()).unwrap_or_default()),
         ssh_port: input(window, cx, ssh.as_ref().and_then(|s| s.port).map(|p| p.to_string()).unwrap_or_default()),
@@ -177,7 +208,10 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         sf_schema: input(window, cx, sfv(|s| s.schema.clone())),
     });
 
+    // ponytail: lido uma vez ao abrir o diálogo; um alias novo no arquivo pede reabrir.
+    let aliases = Rc::new(host_aliases(&SshEnv::system()));
     let (u, p, k) = (f.ssh_user.downgrade(), f.ssh_port.downgrade(), f.ssh_key.downgrade());
+    let resolved_targets = (u.clone(), p.clone(), k.clone());
     // ponytail: lê o ~/.ssh/config na thread de UI ao sair do campo; arquivo pequeno.
     let initial = f.ssh_host.read(cx).value().to_string();
     show_resolved(&initial, &u, &p, &k, window, cx);
@@ -192,18 +226,18 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
     let ws = cx.entity().downgrade();
     let (title, keep) = if editing { (t!("conn.edit_title").to_string(), format!(" {}", t!("conn.keep_current"))) } else { (t!("conn.new_title").to_string(), String::new()) };
     window.open_dialog(cx, move |dialog, _window, _cx| {
-        let (f, ws) = (f.clone(), ws.clone());
+        let (f, ws, aliases, targets) = (f.clone(), ws.clone(), aliases.clone(), resolved_targets.clone());
         // O builder roda a cada render: os botões de tipo e de autenticação trocam os campos.
         let snowflake = f.snowflake.get();
         let tipo = {
             let (k1, k2) = (f.snowflake.clone(), f.snowflake.clone());
             h_flex()
                 .gap_2()
-                .child(Button::new("kind-pg").label("Postgres").selected(!snowflake).on_click(move |_, w, _| {
+                .child(Button::new("kind-pg").icon(kind_logo(false)).label("Postgres").selected(!snowflake).on_click(move |_, w, _| {
                     k1.set(false);
                     w.refresh();
                 }))
-                .child(Button::new("kind-sf").label("Snowflake").selected(snowflake).on_click(move |_, w, _| {
+                .child(Button::new("kind-sf").icon(kind_logo(true)).label("Snowflake").selected(snowflake).on_click(move |_, w, _| {
                     k2.set(true);
                     w.refresh();
                 }))
@@ -232,7 +266,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                 );
             if auth == SnowflakeAuth::KeyPair {
                 form = form
-                    .child(field().label(t!("conn.sf_key").to_string()).child(Input::new(&f.sf_key)))
+                    .child(field().label(t!("conn.sf_key").to_string()).child(key_field("sf-key-pick", &f.sf_key)))
                     .child(field().label(format!("{}{keep}", t!("conn.key_passphrase"))).child(Input::new(&f.sf_key_pass).mask_toggle()));
             }
             if auth == SnowflakeAuth::Pat {
@@ -248,11 +282,11 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                     .child(field().label(t!("conn.database").to_string()).child(Input::new(&f.database)))
                     .child(field().label(t!("conn.user").to_string()).child(Input::new(&f.user)))
                     .child(field().label(format!("{}{keep}", t!("conn.password"))).child(Input::new(&f.password).mask_toggle()))
-                    .child(field().label("SSL (disable | prefer | require)").child(Input::new(&f.ssl)))
-                    .child(field().label(t!("conn.ssh_host").to_string()).child(Input::new(&f.ssh_host)))
+                    .child(field().label("SSL").child(Select::new(&f.ssl)))
+                    .child(field().label(t!("conn.ssh_host").to_string()).child(ssh_host_field(&f.ssh_host, aliases, targets)))
                     .child(field().label(t!("conn.ssh_user").to_string()).child(Input::new(&f.ssh_user)))
                     .child(field().label(t!("conn.ssh_port").to_string()).child(Input::new(&f.ssh_port)))
-                    .child(field().label(t!("conn.ssh_key").to_string()).child(Input::new(&f.ssh_key)))
+                    .child(field().label(t!("conn.ssh_key").to_string()).child(key_field("ssh-key-pick", &f.ssh_key)))
                 .child(field().label(format!("{}{keep}", t!("conn.key_passphrase"))).child(Input::new(&f.ssh_passphrase).mask_toggle()))
         };
         dialog
@@ -279,6 +313,24 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
     });
 }
 
+type Resolved = (WeakEntity<InputState>, WeakEntity<InputState>, WeakEntity<InputState>);
+
+/// Host SSH: digitável, com os aliases do `~/.ssh/config` num menu ao lado.
+fn ssh_host_field(input: &Entity<InputState>, aliases: Rc<Vec<String>>, targets: Resolved) -> impl IntoElement {
+    let host = input.downgrade();
+    h_flex().gap_2().child(div().flex_1().child(Input::new(input))).when(!aliases.is_empty(), |d| {
+        d.child(Button::new("ssh-aliases").icon(IconName::ChevronDown).tooltip(t!("conn.ssh_aliases").to_string()).dropdown_menu(move |menu, _, _| {
+            aliases.iter().fold(menu, |m, a| {
+                let (a, host, (u, p, k)) = (a.clone(), host.clone(), targets.clone());
+                m.item(PopupMenuItem::new(a.clone()).on_click(move |_, window, cx| {
+                    host.update(cx, |s, cx| s.set_value(a.clone(), window, cx)).ok();
+                    show_resolved(&a, &u, &p, &k, window, cx);
+                }))
+            })
+        }))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +342,14 @@ mod tests {
         assert_eq!((c.warehouse.as_deref(), c.role, c.schema.as_deref()), (Some("WH"), None, Some("PUBLIC")));
         assert!(parse_snowflake("", SnowflakeAuth::Pat, "", "", "", "").is_err(), "conta obrigatória");
         assert!(parse_snowflake("a", SnowflakeAuth::KeyPair, "", "", "", "").is_err(), "keypair sem chave");
+    }
+
+    #[::core::prelude::v1::test]
+    fn chosen_key_inside_home_is_shortened() {
+        let home = Path::new("/Users/eu");
+        assert_eq!(tilde(Path::new("/Users/eu/.ssh/id_ed25519"), home), "~/.ssh/id_ed25519");
+        assert_eq!(tilde(Path::new("/etc/key.p8"), home), "/etc/key.p8");
+        assert_eq!(tilde(Path::new("/k"), Path::new("")), "/k");
     }
 
     #[::core::prelude::v1::test]

@@ -142,6 +142,22 @@ fn read_config(env: &SshEnv) -> Result<ssh2_config::SshConfig, DbError> {
         .map_err(|e| DbError::Ssh(format!("{}: {e}", env.config_file.display())))
 }
 
+/// Nomes dos blocos `Host` do `~/.ssh/config` (com os `Include`), sem curingas nem negações, na ordem do arquivo.
+pub fn host_aliases(env: &SshEnv) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(&env.config_file) else { return Vec::new() };
+    let mut text = String::new();
+    preprocess(&raw, &env.home, 0, &mut text);
+    let mut out: Vec<String> = Vec::new();
+    for (_, rest) in text.lines().filter_map(keyword).filter(|(k, _)| k == "host") {
+        for name in rest.split_whitespace().filter(|n| !n.contains(['*', '?', '!'])) {
+            if !out.iter().any(|o| o == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
 impl SshConfig {
     pub fn resolve(&self, env: &SshEnv) -> Result<SshTarget, DbError> {
         let p = read_config(env)?.query(&self.host);
@@ -387,6 +403,14 @@ mod tests {
             user: "eu".into(),
             home,
         }
+    }
+
+    #[test]
+    fn host_aliases_skip_patterns_and_follow_includes() {
+        let env = env_with(Some("Host prod bastion-*\n  User x\nHost=staging !nope\nHost *\nInclude extra\nMatch host foo\nHost dentro-do-match\nHost prod\n"));
+        std::fs::write(env.home.join(".ssh/extra"), "Host incluido\n").unwrap();
+        assert_eq!(host_aliases(&env), ["prod", "staging", "incluido", "dentro-do-match"]);
+        assert!(host_aliases(&env_with(None)).is_empty());
     }
 
     fn ssh(host: &str) -> SshConfig {

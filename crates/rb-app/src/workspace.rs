@@ -65,9 +65,14 @@ impl TabView {
 }
 
 fn logo(cfg: &ConnectionConfig) -> Icon {
-    match cfg.snowflake {
-        Some(_) => Icon::default().path("icons/snowflake-logo.svg").text_color(rgb(0x29b5e8)),
-        None => Icon::default().path("icons/postgresql.svg").text_color(rgb(0x4169e1)),
+    kind_logo(cfg.snowflake.is_some())
+}
+
+pub fn kind_logo(snowflake: bool) -> Icon {
+    if snowflake {
+        Icon::default().path("icons/snowflake-logo.svg").text_color(rgb(0x29b5e8))
+    } else {
+        Icon::default().path("icons/postgresql.svg").text_color(rgb(0x4169e1))
     }
 }
 

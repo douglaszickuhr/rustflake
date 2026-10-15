@@ -241,10 +241,15 @@ en = "invalid port"
 pt = "porta inválida"
 es = "puerto no válido"
 
-[conn.err_ssl]
-en = "ssl must be disable, prefer or require (not %{value})"
-pt = "ssl deve ser disable, prefer ou require (não %{value})"
-es = "ssl debe ser disable, prefer o require (no %{value})"
+[conn.choose_file]
+en = "Choose…"
+pt = "Escolher…"
+es = "Elegir…"
+
+[conn.ssh_aliases]
+en = "Hosts from ~/.ssh/config"
+pt = "Hosts do ~/.ssh/config"
+es = "Hosts de ~/.ssh/config"
 
 [conn.err_required]
 en = "fill in name, host, database and user"
