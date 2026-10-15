@@ -98,7 +98,11 @@ fn pg_node(v: &Value, analyzed: bool) -> PlanNode {
     let child_time: f64 = kids.iter().filter_map(pg_incl_time).sum();
     let child_cost: f64 = kids.iter().filter_map(|c| num(c, "Total Cost")).sum();
     PlanNode {
-        op: v.get("Node Type").and_then(Value::as_str).unwrap_or("?").to_string(),
+        // INSERT/UPDATE/DELETE vêm como "ModifyTable"; o texto do Postgres mostra a operação.
+        op: match v.get("Node Type").and_then(Value::as_str) {
+            Some("ModifyTable") => v.get("Operation").and_then(Value::as_str).unwrap_or("ModifyTable").to_string(),
+            other => other.unwrap_or("?").to_string(),
+        },
         object,
         detail,
         est_rows: est,
@@ -375,6 +379,12 @@ mod tests {
         assert_eq!(orders.act_rows, Some(990000.0));
         assert_eq!(orders.warn.len(), 2, "spill remoto e poda ruim: {:?}", orders.warn);
         assert!(parse_sf_stats(&names[..2], &rows).is_err(), "coluna faltando");
+    }
+
+    #[test]
+    fn pg_modify_table_shows_the_operation() {
+        let json = r#"[{"Plan":{"Node Type":"ModifyTable","Operation":"Update","Relation Name":"t","Total Cost":3}}]"#;
+        assert_eq!(parse_pg(json, false).unwrap().root.op, "Update");
     }
 
     #[test]

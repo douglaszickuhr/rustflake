@@ -184,3 +184,13 @@ es = "leyó %{a} de %{t} particiones: poda deficiente"
 en = "spilled to remote storage"
 pt = "transbordou para o armazenamento remoto"
 es = "desbordó al almacenamiento remoto"
+
+[err.explain_only_dml]
+en = "EXPLAIN only works on queries and DML"
+pt = "EXPLAIN só para consultas e DML"
+es = "EXPLAIN solo para consultas y DML"
+
+[err.explain_sf_dml]
+en = "on Snowflake the actual plan only runs queries; use ⌘E (estimated) for DML"
+pt = "no Snowflake o plano real só executa consultas; use ⌘E (estimado) para DML"
+es = "en Snowflake el plan real solo ejecuta consultas; usa ⌘E (estimado) para DML"

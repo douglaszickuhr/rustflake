@@ -13,9 +13,10 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use crate::DbError;
 use crate::batch::{Batch, ColumnInfo};
 use crate::config::{ConnectionConfig, SnowflakeAuth, expand_home};
+use crate::explain::{Plan, parse_sf_explain, parse_sf_stats};
 use crate::metadata::{ColumnMeta, SchemaObjects};
 use crate::session::{Cmd, Credentials, ExecOutcome, FETCH_ROWS, FetchOutcome, Reply};
-use crate::split::is_transaction_control;
+use crate::split::{is_read_only_query, is_transaction_control};
 
 type Rows = Vec<Vec<Option<String>>>;
 
@@ -305,6 +306,10 @@ impl SfActor {
                     let _ = reply.send(Err(DbError::Unsupported(t!("err.sf_read_only").to_string())));
                     rx.recv().await
                 }
+                Cmd::Explain { sql, analyze, reply } => {
+                    let _ = reply.send(self.explain(&sql, analyze).await);
+                    rx.recv().await
+                }
             };
         }
     }
@@ -323,6 +328,27 @@ impl SfActor {
             }
         }
         unreachable!("o laço sempre retorna na segunda tentativa")
+    }
+
+    /// Estimado: `EXPLAIN USING JSON` (só compila). Real: executa e lê GET_QUERY_OPERATOR_STATS —
+    /// só leituras, porque a sessão é compartilhada entre as abas e um BEGIN/ROLLBACK atingiria as outras.
+    async fn explain(&self, sql: &str, analyze: bool) -> Result<Plan, DbError> {
+        if !analyze {
+            let (_, rows) = self.query_named(&format!("EXPLAIN USING JSON {sql}")).await?;
+            return parse_sf_explain(&rows.first().and_then(|r| r.first().cloned().flatten()).unwrap_or_default());
+        }
+        if !is_read_only_query(sql) {
+            return Err(DbError::Unsupported(t!("err.explain_sf_dml").to_string()));
+        }
+        let started = Instant::now();
+        let cursor = self.submit(sql).await?;
+        let id = cursor.query_id().replace('\'', "");
+        drop(cursor);
+        let total = started.elapsed().as_secs_f64() * 1000.0;
+        let (names, rows) = self.query_named(&format!("SELECT * FROM TABLE(GET_QUERY_OPERATOR_STATS('{id}'))")).await?;
+        let mut plan = parse_sf_stats(&names, &rows)?;
+        plan.total_ms = Some(total);
+        Ok(plan)
     }
 
     async fn query_named(&self, sql: &str) -> Result<(Vec<String>, Rows), DbError> {

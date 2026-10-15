@@ -17,8 +17,9 @@ use crate::DbError;
 use crate::batch::{Batch, ColumnInfo};
 use crate::config::{ConnectionConfig, SnowflakeConfig, SshConfig};
 use crate::dialect::Dialect;
+use crate::explain::{Plan, parse_pg};
 use crate::snowflake::{SfActor, SfCanceller, SfShared};
-use crate::split::{is_read_only_query, is_transaction_control};
+use crate::split::{explainable, is_read_only_query, is_transaction_control};
 use crate::ssh::{SshEnv, Tunnel};
 
 pub const FETCH_ROWS: i32 = 1000;
@@ -82,6 +83,7 @@ pub(crate) enum Cmd {
     QueryText { sql: String, params: Vec<String>, reply: Reply<Vec<Vec<Option<String>>>> },
     QueryNamed { sql: String, reply: Reply<(Vec<String>, Vec<Vec<Option<String>>>)> },
     Transaction { stmts: Vec<SqlWithParams>, reply: Reply<u64> },
+    Explain { sql: String, analyze: bool, reply: Reply<Plan> },
 }
 
 impl Cmd {
@@ -92,6 +94,7 @@ impl Cmd {
             Cmd::QueryText { reply, .. } => reply.send(Err(e)).is_ok(),
             Cmd::QueryNamed { reply, .. } => reply.send(Err(e)).is_ok(),
             Cmd::Transaction { reply, .. } => reply.send(Err(e)).is_ok(),
+            Cmd::Explain { reply, .. } => reply.send(Err(e)).is_ok(),
         };
     }
 }
@@ -313,6 +316,14 @@ impl Session {
         self.call(|reply| Cmd::Transaction { stmts, reply }).await
     }
 
+    /// Plano do statement. `analyze` executa de verdade (Postgres: numa transação desfeita no fim).
+    pub async fn explain(&self, sql: String, analyze: bool) -> Result<Plan, DbError> {
+        if !explainable(&sql) {
+            return Err(DbError::Unsupported(t!("err.explain_only_dml").to_string()));
+        }
+        self.call(|reply| Cmd::Explain { sql, analyze, reply }).await
+    }
+
     /// Pede ao servidor para cancelar o comando em andamento desta sessão.
     pub fn cancel(&self) {
         match &self.canceller {
@@ -370,6 +381,10 @@ impl Actor {
                 }
                 Cmd::Transaction { stmts, reply } => {
                     let _ = reply.send(self.transaction(stmts).await);
+                    rx.recv().await
+                }
+                Cmd::Explain { sql, analyze, reply } => {
+                    let _ = reply.send(self.explain(&sql, analyze).await);
                     rx.recv().await
                 }
             };
@@ -525,6 +540,29 @@ impl Actor {
         let stmt = self.client.prepare(sql).await?;
         let names = stmt.columns().iter().map(|c| c.name().to_string()).collect();
         Ok((names, self.query_text(sql, &[]).await?))
+    }
+
+    /// Protocolo simples: a coluna `QUERY PLAN` é `json`, que o protocolo estendido não lê como texto.
+    async fn explain(&mut self, sql: &str, analyze: bool) -> Result<Plan, DbError> {
+        let opts = if analyze { "ANALYZE, BUFFERS, FORMAT JSON" } else { "FORMAT JSON" };
+        let tx = self.client.transaction().await?;
+        let res = tx.simple_query(&format!("EXPLAIN ({opts}) {sql}")).await;
+        // Sempre desfaz: o ANALYZE executou o statement de verdade.
+        if let Err(e) = tx.rollback().await {
+            tracing::warn!("rollback do EXPLAIN falhou, descartando a conexão: {e}");
+            self.client = self.connector.client().await?;
+            *self.cancel.lock().expect("mutex do cancel token") = self.client.cancel_token();
+            return Err(e.into());
+        }
+        let json = res?
+            .iter()
+            .filter_map(|m| match m {
+                tokio_postgres::SimpleQueryMessage::Row(r) => r.get(0).map(str::to_string),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        parse_pg(&json, analyze)
     }
 
     async fn transaction(&mut self, stmts: Vec<SqlWithParams>) -> Result<u64, DbError> {

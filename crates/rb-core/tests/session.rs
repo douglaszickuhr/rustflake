@@ -139,3 +139,23 @@ fn quick_open_pg_search_keeps_exact_match_in_large_catalog() {
         s.execute(format!("drop schema {schema} cascade")).await.unwrap();
     });
 }
+
+#[test]
+fn explain_analyze_of_dml_changes_nothing() {
+    let Some((_e, s)) = common::open() else { return common::skip() };
+    block_on(async {
+        s.execute("drop table if exists rb_explain".into()).await.unwrap();
+        s.execute("create table rb_explain (id int primary key, v int)".into()).await.unwrap();
+        s.execute("insert into rb_explain select g, 0 from generate_series(1, 50) g".into()).await.unwrap();
+        let p = s.explain("update rb_explain set v = 1".into(), true).await.unwrap();
+        assert!(p.analyzed && p.root.op.contains("Update"), "{:?}", p.root.op);
+        let p = s.explain("select * from rb_explain where id = 3".into(), false).await.unwrap();
+        assert!(!p.analyzed && p.total_ms.is_none());
+        let rows = s.query_text("select count(*)::text from rb_explain where v = 1", &[]).await.unwrap();
+        assert_eq!(rows[0][0].as_deref(), Some("0"), "rollback desfez o UPDATE");
+        assert!(matches!(s.explain("drop table rb_explain".into(), false).await, Err(DbError::Unsupported(_))), "DDL recusado");
+        assert!(s.explain("select * from nao_existe".into(), true).await.is_err());
+        // Depois de um EXPLAIN com erro a sessão continua usável e sem transação pendurada.
+        s.execute("drop table rb_explain".into()).await.unwrap();
+    });
+}
