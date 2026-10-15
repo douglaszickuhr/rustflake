@@ -96,6 +96,10 @@ fn main() {
             KeyBinding::new("cmd-+", PlanZoomIn, Some("PlanView")),
             KeyBinding::new("cmd--", PlanZoomOut, Some("PlanView")),
             KeyBinding::new("cmd-0", PlanFit, Some("PlanView")),
+            KeyBinding::new("cmd-=", PlanZoomIn, Some("SqlTab")),
+            KeyBinding::new("cmd-+", PlanZoomIn, Some("SqlTab")),
+            KeyBinding::new("cmd--", PlanZoomOut, Some("SqlTab")),
+            KeyBinding::new("cmd-0", PlanFit, Some("SqlTab")),
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab")),
             // O editor liga cmd-. a ToggleCodeActions; a ligação mais profunda vence.
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab > Input")),

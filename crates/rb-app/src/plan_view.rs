@@ -60,6 +60,16 @@ impl PlanView {
         (w, h)
     }
 
+    pub fn zoom_step(&mut self, up: bool, cx: &mut Context<Self>) {
+        self.zoom = step_zoom(self.zoom, up);
+        cx.notify();
+    }
+
+    pub fn zoom_fit(&mut self, cx: &mut Context<Self>) {
+        self.fit();
+        cx.notify();
+    }
+
     fn fit(&mut self) {
         if let Some(v) = self.viewport.get().filter(|v| v.0 > 2.0 * PAD && v.1 > 2.0 * PAD) {
             self.zoom = fit_zoom(self.content_size(), (v.0 - 2.0 * PAD, v.1 - 2.0 * PAD));
@@ -201,18 +211,9 @@ impl Render for PlanView {
             .key_context("PlanView")
             .track_focus(&self.focus)
             .size_full()
-            .on_action(cx.listener(|v, _: &PlanZoomIn, _, cx| {
-                v.zoom = step_zoom(v.zoom, true);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|v, _: &PlanZoomOut, _, cx| {
-                v.zoom = step_zoom(v.zoom, false);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|v, _: &PlanFit, _, cx| {
-                v.fit();
-                cx.notify();
-            }))
+            .on_action(cx.listener(|v, _: &PlanZoomIn, _, cx| v.zoom_step(true, cx)))
+            .on_action(cx.listener(|v, _: &PlanZoomOut, _, cx| v.zoom_step(false, cx)))
+            .on_action(cx.listener(|v, _: &PlanFit, _, cx| v.zoom_fit(cx)))
             .child(h_flex().px_2().py_1().gap_3().text_sm().child(header).child(div().text_color(theme.muted_foreground).child(t!("plan.zoom_hint").to_string())))
             .child(
                 h_flex()

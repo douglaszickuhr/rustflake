@@ -25,7 +25,7 @@ use crate::completion::SqlCompletion;
 use crate::grid::{self, ResultGrid};
 use crate::meta::{ConnTarget, MetaStore};
 use crate::plan_view::PlanView;
-use crate::{CancelQuery, CopyCells, Db, ExplainAnalyze, ExplainEstimate, FormatSql, RunScript, RunStatement, TabKey};
+use crate::{CancelQuery, CopyCells, Db, ExplainAnalyze, ExplainEstimate, FormatSql, PlanFit, PlanZoomIn, PlanZoomOut, RunScript, RunStatement, TabKey};
 
 /// Aba visível na área de resultados.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,6 +362,12 @@ impl SqlTab {
         .detach();
     }
 
+    fn with_plan(&self, cx: &mut Context<Self>, f: impl FnOnce(&mut PlanView, &mut Context<PlanView>)) {
+        if let (Pane::Plan, Some(p)) = (self.active, &self.plan) {
+            p.update(cx, f);
+        }
+    }
+
     /// Cada statement executado vai para o histórico da conexão, em segundo plano.
     fn record_history(&self, outcomes: &[Outcome], src: &str, cx: &mut Context<Self>) {
         let path = history::history_path(self.conn_id());
@@ -530,6 +536,10 @@ impl Render for SqlTab {
             .on_action(cx.listener(|t, _: &FormatSql, w, cx| t.format(w, cx)))
             .on_action(cx.listener(|t, _: &ExplainEstimate, w, cx| t.explain(false, w, cx)))
             .on_action(cx.listener(|t, _: &ExplainAnalyze, w, cx| t.explain(true, w, cx)))
+            // O foco fica no editor depois do ⌘E: o zoom do diagrama também vale daqui.
+            .on_action(cx.listener(|t, _: &PlanZoomIn, _, cx| t.with_plan(cx, |p, cx| p.zoom_step(true, cx))))
+            .on_action(cx.listener(|t, _: &PlanZoomOut, _, cx| t.with_plan(cx, |p, cx| p.zoom_step(false, cx))))
+            .on_action(cx.listener(|t, _: &PlanFit, _, cx| t.with_plan(cx, |p, cx| p.zoom_fit(cx))))
             .on_action(cx.listener(|t, _: &TabKey, window, cx| {
                 // O editor só consulta o menu no Enter; o Tab dele (IndentInline) indentaria.
                 if t.editor.read(cx).completion_menu_state().open {
