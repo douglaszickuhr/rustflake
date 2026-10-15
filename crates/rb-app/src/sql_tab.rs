@@ -19,7 +19,7 @@ use rb_core::batch::ResultSet;
 use rb_core::error::error_byte_offset;
 use rb_core::history::{self, Entry};
 use rb_core::session::{ExecOutcome, Session};
-use rb_core::split::{split_statements, statement_at};
+use rb_core::split::{explain_prefix, split_statements, statement_at};
 
 use crate::completion::SqlCompletion;
 use crate::grid::{self, ResultGrid};
@@ -210,6 +210,13 @@ impl SqlTab {
         if ranges.is_empty() {
             return;
         }
+        // `EXPLAIN [ANALYZE] …` escrito à mão: mostra o diagrama em vez do texto do banco.
+        if let [r] = ranges.as_slice()
+            && let Some((analyze, inner)) = explain_prefix(&src[r.clone()])
+        {
+            let inner = inner.to_string();
+            return self.explain_sql(src, inner, analyze, window, cx);
+        }
         self.ran_use = ranges.iter().any(|r| src[r.clone()].trim_start().get(..4).is_some_and(|w| w.eq_ignore_ascii_case("use ")));
         self.running = true;
         self.status = t!("sql.running").to_string().into();
@@ -324,6 +331,13 @@ impl SqlTab {
         let src = state.value().to_string();
         let Some(r) = statement_at(&src, state.cursor()) else { return };
         let sql = src[r].to_string();
+        self.explain_sql(src, sql, analyze, window, cx);
+    }
+
+    fn explain_sql(&mut self, src: String, sql: String, analyze: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
         // O EXPLAIN roda na mesma sessão e fecha o cursor da grade aberta: ela passa a mostrar "só as primeiras".
         for p in &mut self.results {
             if p.grid.update(cx, |t, _| t.delegate_mut().close_cursor()) {

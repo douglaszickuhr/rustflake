@@ -51,6 +51,26 @@ pub fn is_read_only_query(stmt: &str) -> bool {
     }
 }
 
+/// `EXPLAIN [ANALYZE] [VERBOSE] <consulta>` escrito à mão → (analyze, consulta), para mostrar o
+/// diagrama. Com opções explícitas (`EXPLAIN (FORMAT …)`, `EXPLAIN USING …`) fica o texto do banco.
+pub fn explain_prefix(stmt: &str) -> Option<(bool, &str)> {
+    let toks: Vec<_> = tokenize(stmt).into_iter().filter(|t| t.kind != TokKind::Comment).collect();
+    let word = |i: usize| toks.get(i).filter(|t| t.kind == TokKind::Word).map(|t| stmt[t.start..t.end].to_ascii_lowercase());
+    if word(0)? != "explain" {
+        return None;
+    }
+    let mut i = 1;
+    let analyze = matches!(word(i).as_deref(), Some("analyze" | "analyse"));
+    if analyze {
+        i += 1;
+    }
+    if word(i).as_deref() == Some("verbose") {
+        i += 1;
+    }
+    let inner = &stmt[toks.get(i)?.start..];
+    explainable(inner).then_some((analyze, inner))
+}
+
 /// Statements que o EXPLAIN aceita: consultas e DML.
 pub fn explainable(stmt: &str) -> bool {
     matches!(words(stmt).next().as_deref(), Some("select" | "with" | "insert" | "update" | "delete" | "merge" | "values" | "table"))
@@ -59,6 +79,18 @@ pub fn explainable(stmt: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handwritten_explain_is_recognised() {
+        let src = "EXPLAIN ANALYZE\nselect task_type, count(*) from t GROUP BY 1";
+        assert_eq!(explain_prefix(src), Some((true, "select task_type, count(*) from t GROUP BY 1")));
+        assert_eq!(explain_prefix("explain select 1"), Some((false, "select 1")));
+        assert_eq!(explain_prefix("/* c */ explain analyse verbose update t set a = 1"), Some((true, "update t set a = 1")));
+        assert_eq!(explain_prefix("explain (format text) select 1"), None, "opções explícitas: texto do banco");
+        assert_eq!(explain_prefix("explain using text select 1"), None, "Snowflake com formato explícito");
+        assert_eq!(explain_prefix("explain create table t (a int)"), None);
+        assert_eq!(explain_prefix("select 1"), None);
+    }
 
     #[test]
     fn explainable_accepts_queries_and_dml_only() {
