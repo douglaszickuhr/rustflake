@@ -381,7 +381,7 @@ impl Workspace {
                 .selected_index(self.active_tab)
                 .on_click(cx.listener(|ws, ix: &usize, _, cx| ws.select_tab(*ix, cx)))
                 // + logo depois da última aba; o TabBar só desenha esse espaço se houver sufixo.
-                .last_empty_space(h_flex().flex_1().child(Button::new("new-tab").label("+").ghost().on_click(cx.listener(|ws, _, window, cx| ws.new_sql_tab(window, cx)))))
+                .last_empty_space(h_flex().flex_1().child(Button::new("new-tab").label("+").ghost().tooltip(t!("ws.new_script").to_string()).on_click(cx.listener(|ws, _, window, cx| ws.new_sql_tab(window, cx)))))
                 .suffix(div()),
             |bar, (i, t)| {
                 let id = t.conn_id(cx);
@@ -391,7 +391,7 @@ impl Workspace {
                     Tab::new()
                         .when_some(cfg, |tab, c| tab.prefix(div().pl_2().child(logo(c).small())))
                         .label(format!("{name} · {}", t.title(cx)))
-                        .suffix(Button::new(("close", i)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| {
+                        .suffix(Button::new(("close", i)).label("×").ghost().tooltip(t!("ws.close_tab").to_string()).on_click(cx.listener(move |ws, _, window, cx| {
                             // Sem isto o clique sobe até a aba, que faria active_tab = i depois da remoção
                             // (índice inexistente ao fechar a última aba → pânico no render).
                             cx.stop_propagation();
@@ -610,11 +610,11 @@ impl Workspace {
                     .when(open.is_some(), |r| {
                         r.child(Button::new(("disc-conn", ix)).label("⏏").ghost().tooltip(t!("ws.disconnect").to_string()).on_click(cx.listener(move |ws, _, window, cx| ws.request_disconnect(&id, window, cx))))
                     })
-                    .child(Button::new(("edit-conn", ix)).label("✎").ghost().on_click(cx.listener(move |ws, _, window, cx| {
+                    .child(Button::new(("edit-conn", ix)).label("✎").ghost().tooltip(t!("conn.edit_title").to_string()).on_click(cx.listener(move |ws, _, window, cx| {
                         let c = ws.connections[ix].clone();
                         conn_dialog::open(Some(c), window, cx)
                     })))
-                    .child(Button::new(("del-conn", ix)).label("×").ghost().on_click(cx.listener(move |ws, _, window, cx| ws.confirm_remove(ix, window, cx)))),
+                    .child(Button::new(("del-conn", ix)).label("×").ghost().tooltip(t!("ws.remove_title").to_string()).on_click(cx.listener(move |ws, _, window, cx| ws.confirm_remove(ix, window, cx)))),
             );
             // Detalhes da conexão atual logo abaixo dela; ocupam o espaço que sobra.
             if let Some(o) = open.filter(|_| current && !self.collapsed) {
@@ -684,7 +684,7 @@ impl Workspace {
                 h_flex()
                     .justify_between()
                     .child(t!("ws.connections").to_string())
-                    .child(Button::new("new-conn").label("+").ghost().on_click(cx.listener(|_, _, window, cx| conn_dialog::open(None, window, cx)))),
+                    .child(Button::new("new-conn").label("+").ghost().tooltip(t!("conn.new_title").to_string()).on_click(cx.listener(|_, _, window, cx| conn_dialog::open(None, window, cx)))),
             )
             .child(list)
             .when(self.connecting, |d| d.child(t!("ws.connecting").to_string()))

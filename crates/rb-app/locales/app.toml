@@ -44,6 +44,16 @@ en = "⌘T opens a script"
 pt = "⌘T abre um script"
 es = "⌘T abre un script"
 
+[ws.new_script]
+en = "New script ⌘T"
+pt = "Novo script ⌘T"
+es = "Nuevo script ⌘T"
+
+[ws.close_tab]
+en = "Close ⌘W"
+pt = "Fechar ⌘W"
+es = "Cerrar ⌘W"
+
 [ws.open_connection_to_search]
 en = "open a connection to search"
 pt = "abra uma conexão para buscar"
