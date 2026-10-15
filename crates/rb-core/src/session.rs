@@ -19,7 +19,7 @@ use crate::config::{ConnectionConfig, SnowflakeConfig, SshConfig};
 use crate::dialect::Dialect;
 use crate::explain::{Plan, parse_pg};
 use crate::snowflake::{SfActor, SfCanceller, SfShared};
-use crate::split::{explainable, is_read_only_query, is_transaction_control};
+use crate::split::{explainable, is_read_only_query, is_transaction_control, split_statements};
 use crate::ssh::{SshEnv, Tunnel};
 
 pub const FETCH_ROWS: i32 = 1000;
@@ -318,7 +318,8 @@ impl Session {
 
     /// Plano do statement. `analyze` executa de verdade (Postgres: numa transação desfeita no fim).
     pub async fn explain(&self, sql: String, analyze: bool) -> Result<Plan, DbError> {
-        if !explainable(&sql) {
+        // Um statement só: o protocolo simples executaria todos, e um COMMIT no meio anularia o ROLLBACK.
+        if !explainable(&sql) || split_statements(&sql).len() != 1 {
             return Err(DbError::Unsupported(t!("err.explain_only_dml").to_string()));
         }
         self.call(|reply| Cmd::Explain { sql, analyze, reply }).await

@@ -155,6 +155,12 @@ fn explain_analyze_of_dml_changes_nothing() {
         assert_eq!(rows[0][0].as_deref(), Some("0"), "rollback desfez o UPDATE");
         assert!(matches!(s.explain("drop table rb_explain".into(), false).await, Err(DbError::Unsupported(_))), "DDL recusado");
         assert!(s.explain("select * from nao_existe".into(), true).await.is_err());
+        // Vários statements: um COMMIT no meio anularia o rollback do ANALYZE.
+        assert!(matches!(s.explain("delete from rb_explain; commit; delete from rb_explain".into(), true).await, Err(DbError::Unsupported(_))));
+        // DELETE que falha no meio da execução: nada é apagado.
+        assert!(s.explain("delete from rb_explain where 1 / (id - 25) is not null".into(), true).await.is_err());
+        let rows = s.query_text("select count(*)::text from rb_explain", &[]).await.unwrap();
+        assert_eq!(rows[0][0].as_deref(), Some("50"));
         // Depois de um EXPLAIN com erro a sessão continua usável e sem transação pendurada.
         s.execute("drop table rb_explain".into()).await.unwrap();
     });
