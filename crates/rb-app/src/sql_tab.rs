@@ -310,6 +310,12 @@ impl SqlTab {
         let src = state.value().to_string();
         let Some(r) = statement_at(&src, state.cursor()) else { return };
         let sql = src[r].to_string();
+        // O EXPLAIN roda na mesma sessão e fecha o cursor da grade aberta: ela passa a mostrar "só as primeiras".
+        for p in &mut self.results {
+            if p.grid.update(cx, |t, _| t.delegate_mut().close_cursor()) {
+                p.truncated = true;
+            }
+        }
         self.running = true;
         self.status = t!("sql.running").to_string().into();
         cx.notify();

@@ -76,6 +76,11 @@ impl ResultGrid {
         self.loading_more
     }
 
+    /// O cursor da sessão vai fechar (outro comando vai rodar): para de paginar. Devolve se havia mais.
+    pub fn close_cursor(&mut self) -> bool {
+        self.rs.as_mut().is_some_and(|rs| std::mem::replace(&mut rs.more, false))
+    }
+
     /// Pode buscar mais linhas? Não enquanto houver linhas inseridas (elas são endereçadas
     /// logo depois das carregadas e mudariam de índice) nem durante uma gravação.
     pub fn can_page(&self) -> bool {
@@ -279,6 +284,14 @@ mod tests {
         assert!(g.can_page());
         g.edits.as_mut().unwrap().add_row();
         assert!(!g.can_page());
+    }
+
+    #[::core::prelude::v1::test]
+    fn closing_the_cursor_stops_paging_and_reports_it() {
+        let mut g = grid_with_more();
+        assert!(g.close_cursor(), "tinha mais linhas");
+        assert!(!g.can_page());
+        assert!(!g.close_cursor(), "já estava fechado");
     }
 
     #[::core::prelude::v1::test]
