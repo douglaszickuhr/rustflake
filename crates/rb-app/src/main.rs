@@ -8,6 +8,7 @@ mod history_popup;
 mod indexer;
 mod lang;
 mod meta;
+mod plan_view;
 mod quick_open;
 mod schema_tree;
 mod sql_tab;
@@ -21,7 +22,7 @@ use gpui_kit::*;
 rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory]);
+gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit]);
 
 /// Runtime de banco compartilhado pela aplicação.
 pub struct Db(pub Engine);
@@ -89,6 +90,12 @@ fn main() {
             // ⌘⇧F formata (como no DBeaver); o localizar e substituir do editor, que usava ⌘⇧F, vai para ⌘⌥F.
             KeyBinding::new("cmd-shift-f", FormatSql, Some("SqlTab > Input")),
             KeyBinding::new("cmd-alt-f", gpui_kit::component::input::Replace, Some("SqlTab > Input")),
+            KeyBinding::new("cmd-e", ExplainEstimate, Some("SqlTab > Input")),
+            KeyBinding::new("cmd-shift-e", ExplainAnalyze, Some("SqlTab > Input")),
+            KeyBinding::new("cmd-=", PlanZoomIn, Some("PlanView")),
+            KeyBinding::new("cmd-+", PlanZoomIn, Some("PlanView")),
+            KeyBinding::new("cmd--", PlanZoomOut, Some("PlanView")),
+            KeyBinding::new("cmd-0", PlanFit, Some("PlanView")),
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab")),
             // O editor liga cmd-. a ToggleCodeActions; a ligação mais profunda vence.
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab > Input")),

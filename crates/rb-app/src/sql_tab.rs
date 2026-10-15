@@ -24,13 +24,15 @@ use rb_core::split::{split_statements, statement_at};
 use crate::completion::SqlCompletion;
 use crate::grid::{self, ResultGrid};
 use crate::meta::{ConnTarget, MetaStore};
-use crate::{CancelQuery, CopyCells, Db, FormatSql, RunScript, RunStatement, TabKey};
+use crate::plan_view::PlanView;
+use crate::{CancelQuery, CopyCells, Db, ExplainAnalyze, ExplainEstimate, FormatSql, RunScript, RunStatement, TabKey};
 
 /// Aba visível na área de resultados.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Result(usize),
     Messages,
+    Plan,
 }
 
 /// Uma linha da aba "Mensagens": um statement executado.
@@ -76,6 +78,7 @@ pub struct SqlTab {
     results: Vec<ResultPane>,
     messages: Vec<Message>,
     show_messages: bool,
+    plan: Option<Entity<PlanView>>,
     active: Pane,
     conn: ConnTarget,
     meta: Entity<MetaStore>,
@@ -107,6 +110,7 @@ impl SqlTab {
             results: Vec::new(),
             messages: Vec::new(),
             show_messages: false,
+            plan: None,
             active: Pane::Result(0),
             conn,
             meta,
@@ -133,7 +137,7 @@ impl SqlTab {
     fn active_grid(&self) -> Option<&Entity<TableState<ResultGrid>>> {
         match self.active {
             Pane::Result(i) => self.results.get(i).map(|p| &p.grid),
-            Pane::Messages => None,
+            Pane::Messages | Pane::Plan => None,
         }
     }
 
@@ -273,6 +277,7 @@ impl SqlTab {
         let n = results.len();
         self.results = results;
         self.show_messages = show_messages;
+        self.plan = None;
         self.active = if failure.is_some() && show_messages || with_rows.is_empty() && show_messages { Pane::Messages } else { Pane::Result(n - 1) };
 
         match failure {
@@ -287,6 +292,47 @@ impl SqlTab {
             }
         }
         cx.notify();
+    }
+
+    /// ⌘E (estimado) / ⌘⇧E (real) do statement sob o cursor; o diagrama vai para a aba "Plano".
+    fn explain(&mut self, analyze: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
+        let state = self.editor.read(cx);
+        let src = state.value().to_string();
+        let Some(r) = statement_at(&src, state.cursor()) else { return };
+        let sql = src[r].to_string();
+        self.running = true;
+        self.status = t!("sql.running").to_string().into();
+        cx.notify();
+        let conn = self.conn.clone();
+        let existing = self.session.clone();
+        let engine = cx.global::<Db>().0.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let session = match existing {
+                Some(s) => s,
+                None => match engine.connect(&conn.cfg, conn.creds.clone()).await {
+                    Ok(s) => Arc::new(s),
+                    Err(e) => return this.update_in(cx, |t, w, cx| t.finish_error(&src, None, e, w, cx)),
+                },
+            };
+            this.update(cx, |t, _| t.session = Some(session.clone()))?;
+            let res = session.explain(sql, analyze).await;
+            this.update_in(cx, |t, window, cx| {
+                t.stop_running(cx);
+                match res {
+                    Ok(plan) => {
+                        t.status = "".into();
+                        t.plan = Some(cx.new(|cx| PlanView::new(plan, cx)));
+                        t.active = Pane::Plan;
+                        cx.notify();
+                    }
+                    Err(e) => t.show_error(&src, None, e, window, cx),
+                }
+            })
+        })
+        .detach();
     }
 
     /// Cada statement executado vai para o histórico da conexão, em segundo plano.
@@ -405,20 +451,28 @@ impl Render for SqlTab {
         let spinning = self.running || grid.is_some_and(|g| g.loading_more());
         let truncated = matches!(self.active, Pane::Result(i) if self.results.get(i).is_some_and(|p| p.truncated));
 
-        let tabs = (self.results.len() > 1 || self.show_messages).then(|| {
+        let tabs = (self.results.len() > 1 || self.show_messages || self.plan.is_some()).then(|| {
+            // Ordem das abas: resultados, Mensagens (se houver), Plano (se houver).
             let n = self.results.len();
+            let msgs = self.show_messages;
             let selected = match self.active {
                 Pane::Result(i) => i,
                 Pane::Messages => n,
+                Pane::Plan => n + msgs as usize,
             };
             let bar = self.results.iter().fold(
                 TabBar::new("result-tabs").selected_index(selected).on_click(cx.listener(move |t, ix: &usize, _, cx| {
-                    t.active = if *ix < n { Pane::Result(*ix) } else { Pane::Messages };
+                    t.active = match *ix {
+                        i if i < n => Pane::Result(i),
+                        i if i == n && msgs => Pane::Messages,
+                        _ => Pane::Plan,
+                    };
                     cx.notify();
                 })),
                 |bar, p| bar.child(Tab::new().label(p.title.clone())),
             );
-            bar.when(self.show_messages, |b| b.child(Tab::new().label(t!("results.messages").to_string())))
+            bar.when(msgs, |b| b.child(Tab::new().label(t!("results.messages").to_string())))
+                .when(self.plan.is_some(), |b| b.child(Tab::new().label(t!("plan.tab").to_string())))
         });
         let content = match self.active {
             Pane::Result(i) => {
@@ -436,6 +490,7 @@ impl Render for SqlTab {
                     .into_any_element()
             }
             Pane::Messages => div().flex_1().min_h_0().child(self.render_messages(cx)).into_any_element(),
+            Pane::Plan => div().flex_1().min_h_0().children(self.plan.clone()).into_any_element(),
         };
 
         v_flex()
@@ -446,6 +501,8 @@ impl Render for SqlTab {
             .on_action(cx.listener(|t, _: &RunScript, w, cx| t.run(true, w, cx)))
             .on_action(cx.listener(|t, _: &CancelQuery, _, _| t.cancel()))
             .on_action(cx.listener(|t, _: &FormatSql, w, cx| t.format(w, cx)))
+            .on_action(cx.listener(|t, _: &ExplainEstimate, w, cx| t.explain(false, w, cx)))
+            .on_action(cx.listener(|t, _: &ExplainAnalyze, w, cx| t.explain(true, w, cx)))
             .on_action(cx.listener(|t, _: &TabKey, window, cx| {
                 // O editor só consulta o menu no Enter; o Tab dele (IndentInline) indentaria.
                 if t.editor.read(cx).completion_menu_state().open {
@@ -466,7 +523,7 @@ impl Render for SqlTab {
                     .gap_3()
                     .text_sm()
                     .when(spinning, |d| d.child(Spinner::new().small()))
-                    .when(self.active != Pane::Messages, |d| d.child(t!("grid.rows", n = format!("{rows}{}", if more || truncated { "+" } else { "" })).to_string()))
+                    .when(matches!(self.active, Pane::Result(_)), |d| d.child(t!("grid.rows", n = format!("{rows}{}", if more || truncated { "+" } else { "" })).to_string()))
                     .when(truncated, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("results.first_rows_only").to_string())))
                     .child(self.status.clone())
                     .when_some(grid_error, |d, e| d.child(e))

@@ -804,3 +804,48 @@ es = "ayer %{time}"
 en = "Enter inserts · ⌘Enter opens in a new tab"
 pt = "Enter insere · ⌘Enter abre em aba nova"
 es = "Enter inserta · ⌘Enter abre en pestaña nueva"
+
+[plan.tab]
+en = "Plan"
+pt = "Plano"
+es = "Plan"
+
+[plan.estimated]
+en = "Estimated plan"
+pt = "Plano estimado"
+es = "Plan estimado"
+
+[plan.real]
+en = "Actual plan · %{time}"
+pt = "Plano real · %{time}"
+es = "Plan real · %{time}"
+
+[plan.rows]
+en = "rows"
+pt = "linhas"
+es = "filas"
+
+[plan.cost]
+en = "cost"
+pt = "custo"
+es = "costo"
+
+[plan.time]
+en = "time (own)"
+pt = "tempo (próprio)"
+es = "tiempo (propio)"
+
+[plan.est_rows]
+en = "estimated rows"
+pt = "linhas estimadas"
+es = "filas estimadas"
+
+[plan.act_rows]
+en = "actual rows"
+pt = "linhas reais"
+es = "filas reales"
+
+[plan.zoom_hint]
+en = "⌘+ ⌘− zoom · ⌘0 fit"
+pt = "⌘+ ⌘− zoom · ⌘0 ajustar"
+es = "⌘+ ⌘− zoom · ⌘0 ajustar"
