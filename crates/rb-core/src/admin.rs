@@ -24,6 +24,8 @@ pub struct UserInfo {
     pub has_mfa: bool,
     pub user_type: Option<String>,
     pub comment: Option<String>,
+    /// Role dona do usuário; `*_PROVISIONER` (SCIM) = provisionado de fora.
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -61,7 +63,7 @@ pub fn sql_str(s: &str) -> String {
 }
 
 /// O SHOW pode devolver nome de role já entre aspas (`"minúscula"`): volta ao nome cru.
-fn unquote(s: String) -> String {
+pub(crate) fn unquote(s: String) -> String {
     match s.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
         Some(inner) if !inner.is_empty() => inner.replace("\"\"", "\""),
         _ => s,
@@ -101,6 +103,7 @@ pub fn parse_users(names: &[String], rows: &Rows) -> Vec<UserInfo> {
                 has_mfa: flag(names, r, "has_mfa"),
                 user_type: opt(names, r, "type"),
                 comment: opt(names, r, "comment"),
+                owner: opt(names, r, "owner"),
             })
         })
         .collect()
@@ -122,6 +125,28 @@ pub fn parse_roles(names: &[String], rows: &Rows) -> Vec<RoleInfo> {
 }
 
 /// `SHOW GRANTS TO USER`: só as roles diretas.
+/// Role concedida direto ao usuário, com quem concedeu e quando.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectGrant {
+    pub role: String,
+    pub granted_by: Option<String>,
+    pub created_on: Option<String>,
+}
+
+impl DirectGrant {
+    /// Veio do provisionamento SCIM (grupo do IdP), não de alguém concedendo à mão.
+    pub fn from_scim(&self) -> bool {
+        crate::user_view::scim_managed(self.granted_by.as_deref())
+    }
+}
+
+/// `SHOW GRANTS TO USER` com a origem de cada role.
+pub fn parse_user_grants(names: &[String], rows: &Rows) -> Vec<DirectGrant> {
+    rows.iter()
+        .filter_map(|r| Some(DirectGrant { role: unquote(opt(names, r, "role")?), granted_by: opt(names, r, "granted_by"), created_on: opt(names, r, "created_on") }))
+        .collect()
+}
+
 pub fn parse_user_roles(names: &[String], rows: &Rows) -> Vec<String> {
     rows.iter().filter_map(|r| opt(names, r, "role").map(unquote)).collect()
 }
@@ -190,6 +215,119 @@ pub async fn effective_roles<E>(direct: &[String], mut inherits: impl AsyncFnMut
     Ok(out)
 }
 
+/// Hierarquia inteira numa consulta só (o SHOW por role leva minutos com ACCOUNTADMIN).
+/// ponytail: ACCOUNT_USAGE atrasa até ~2 h; grant recente pode faltar.
+pub const ROLE_GRAPH_SQL: &str = "select grantee_name, name from snowflake.account_usage.grants_to_roles \
+where granted_on = 'ROLE' and granted_to = 'ROLE' and privilege = 'USAGE' and deleted_on is null";
+
+/// Databases em que cada role tem USAGE: agrupa as roles de acesso por database.
+pub const ROLE_DATABASES_SQL: &str = "select grantee_name, name from snowflake.account_usage.grants_to_roles \
+where granted_on = 'DATABASE' and granted_to = 'ROLE' and privilege = 'USAGE' and deleted_on is null";
+
+/// role → databases (mesmo formato do grafo: grantee_name → name).
+pub async fn role_databases(s: &Session) -> Result<RoleGraph, DbError> {
+    let (n, r) = s.query_named(ROLE_DATABASES_SQL).await?;
+    Ok(parse_role_graph(&n, &r))
+}
+
+/// role → roles que ela herda.
+pub type RoleGraph = std::collections::HashMap<String, Vec<String>>;
+
+pub fn parse_role_graph(names: &[String], rows: &Rows) -> RoleGraph {
+    let mut g = RoleGraph::new();
+    for r in rows {
+        if let (Some(from), Some(to)) = (opt(names, r, "grantee_name"), opt(names, r, "name")) {
+            g.entry(from).or_default().push(to);
+        }
+    }
+    g
+}
+
+pub async fn role_graph(s: &Session) -> Result<RoleGraph, DbError> {
+    let (n, r) = s.query_named(ROLE_GRAPH_SQL).await?;
+    Ok(parse_role_graph(&n, &r))
+}
+
+/// Mesma busca de `effective_roles`, sobre o grafo em memória: o future nunca espera, um poll basta.
+pub fn effective_from_graph(direct: &[String], graph: &RoleGraph) -> Vec<EffectiveRole> {
+    use std::task::{Context, Poll, Waker};
+    let fut = effective_roles(direct, async |r: &str| Ok::<_, std::convert::Infallible>(graph.get(r).cloned().unwrap_or_default()));
+    match std::pin::pin!(fut).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(Ok(v)) => v,
+        Poll::Ready(Err(e)) => match e {},
+        Poll::Pending => unreachable!("sem await real"),
+    }
+}
+
+/// Linha da árvore de roles: direta na raiz (depth 0), herdada sob quem a trouxe.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeRow {
+    pub name: String,
+    pub depth: usize,
+    /// Quantas roles há abaixo (para o "(n)" de um nó fechado).
+    pub descendants: usize,
+}
+
+/// Cada role aparece uma vez, sob o pai do seu caminho mais curto; irmãos em ordem alfabética.
+pub fn role_tree(direct: &[String], eff: &[EffectiveRole]) -> Vec<TreeRow> {
+    let mut children: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for e in eff {
+        if let [.., parent, _] = e.path.as_slice() {
+            children.entry(parent.as_str()).or_default().push(e.name.as_str());
+        }
+    }
+    for v in children.values_mut() {
+        v.sort_unstable();
+    }
+    fn walk<'a>(name: &'a str, depth: usize, children: &std::collections::HashMap<&str, Vec<&'a str>>, out: &mut Vec<TreeRow>) -> usize {
+        let at = out.len();
+        out.push(TreeRow { name: name.to_string(), depth, descendants: 0 });
+        let mut n = 0;
+        for c in children.get(name).into_iter().flatten() {
+            n += 1 + walk(c, depth + 1, children, out);
+        }
+        out[at].descendants = n;
+        n
+    }
+    let mut roots: Vec<&str> = direct.iter().map(String::as_str).collect();
+    roots.sort_unstable();
+    let mut out = Vec::new();
+    for r in roots {
+        walk(r, 0, &children, &mut out);
+    }
+    out
+}
+
+/// Linhas visíveis: um nó fechado esconde toda a sua subárvore.
+pub fn visible_rows(rows: &[TreeRow], open: impl Fn(&str) -> bool) -> Vec<&TreeRow> {
+    let mut hide_below: Option<usize> = None;
+    let mut out = Vec::new();
+    for r in rows {
+        if hide_below.is_some_and(|d| r.depth > d) {
+            continue;
+        }
+        hide_below = (r.descendants > 0 && !open(&r.name)).then_some(r.depth);
+        out.push(r);
+    }
+    out
+}
+
+/// Tipo de role; quem mapeia nome → tipo é a configuração da conexão. A ordem das variantes é a ordem na tela.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RoleKind {
+    /// Acesso a um warehouse.
+    Warehouse,
+    /// Functional role.
+    Functional,
+    /// Role base de um departamento.
+    Base,
+    /// Classificação de segurança `C<n>`.
+    Classification(u8),
+    /// Access role.
+    Access,
+    Other,
+}
+
 pub async fn users(s: &Session) -> Result<Vec<UserInfo>, DbError> {
     let (n, r) = s.query_named("SHOW USERS").await?;
     Ok(parse_users(&n, &r))
@@ -198,6 +336,11 @@ pub async fn users(s: &Session) -> Result<Vec<UserInfo>, DbError> {
 pub async fn roles(s: &Session) -> Result<Vec<RoleInfo>, DbError> {
     let (n, r) = s.query_named("SHOW ROLES").await?;
     Ok(parse_roles(&n, &r))
+}
+
+pub async fn user_grants(s: &Session, user: &str) -> Result<Vec<DirectGrant>, DbError> {
+    let (n, r) = s.query_named(&format!("SHOW GRANTS TO USER {}", quote_ident(user))).await?;
+    Ok(parse_user_grants(&n, &r))
 }
 
 pub async fn user_roles(s: &Session, user: &str) -> Result<Vec<String>, DbError> {
@@ -224,6 +367,8 @@ pub struct QueryActivity {
     pub per_day: Vec<(String, u64)>,
     pub top_warehouses: Vec<(String, u64)>,
     pub top_roles: Vec<(String, u64)>,
+    /// Roles distintas usadas nas queries do período.
+    pub roles_used: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -248,6 +393,40 @@ pub struct LoginActivity {
 pub struct Activity {
     pub logins: LoginActivity,
     pub queries: QueryActivity,
+    pub usage: Usage,
+}
+
+/// Último uso em 90 dias. Só dá para medir warehouse e role primária: o QUERY_HISTORY não
+/// registra as roles herdadas que deram o acesso.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Usage {
+    pub warehouses: std::collections::HashMap<String, String>,
+    pub roles: std::collections::HashMap<String, String>,
+}
+
+pub fn usage_sql(names: &[&str]) -> String {
+    format!(
+        "with q as (
+  select warehouse_name, role_name, start_time from snowflake.account_usage.query_history
+  where user_name in ({u}) and start_time >= dateadd(day, -90, current_timestamp())
+)
+select 'wh' as kind, warehouse_name as k, max(start_time)::string as last from q where warehouse_name is not null group by 2
+union all select 'role', role_name, max(start_time)::string from q where role_name is not null group by 2",
+        u = in_list(names)
+    )
+}
+
+pub fn parse_usage(names: &[String], rows: &Rows) -> Usage {
+    let mut u = Usage::default();
+    for r in rows {
+        let (Some(k), Some(last)) = (opt(names, r, "k"), opt(names, r, "last")) else { continue };
+        match field(names, r, "kind") {
+            Some("wh") => u.warehouses.insert(k, last),
+            Some("role") => u.roles.insert(k, last),
+            _ => None,
+        };
+    }
+    u
 }
 
 fn in_list(names: &[&str]) -> String {
@@ -270,7 +449,8 @@ select 'total' as kind, null as k, count(*)::string as n, max(start_time)::strin
 union all select 'ms', null, coalesce(sum(total_elapsed_time), 0)::string, null from q
 union all select 'day', day::string, n::string, null from per_day
 union all select 'wh', k, n::string, null from wh
-union all select 'role', k, n::string, null from rl",
+union all select 'role', k, n::string, null from rl
+union all select 'roles', null, count(distinct role_name)::string, null from q",
         u = in_list(names)
     )
 }
@@ -310,6 +490,7 @@ pub fn parse_query_activity(names: &[String], rows: &Rows) -> QueryActivity {
             Some("day") => a.per_day.extend(k.map(|k| (k, n))),
             Some("wh") => wh.extend(k.map(|k| (k, n))),
             Some("role") => rl.extend(k.map(|k| (k, n))),
+            Some("roles") => a.roles_used = n,
             _ => {}
         }
     }
@@ -349,7 +530,9 @@ pub async fn activity(s: &Session, u: &UserInfo) -> Result<Activity, DbError> {
     let (n, r) = s.query_named(&login_activity_sql(&names)).await?;
     let logins = parse_login_activity(&n, &r);
     let (n, r) = s.query_named(&query_activity_sql(&names)).await?;
-    Ok(Activity { logins, queries: parse_query_activity(&n, &r) })
+    let queries = parse_query_activity(&n, &r);
+    let (n, r) = s.query_named(&usage_sql(&names)).await?;
+    Ok(Activity { logins, queries, usage: parse_usage(&n, &r) })
 }
 
 #[cfg(test)]
@@ -526,5 +709,75 @@ mod tests {
         let (n, r) = t(&["role", "granted_to", "grantee_name"], &[&[Some("\"low\""), Some("ROLE"), Some("\"a b\"")]]);
         assert_eq!(parse_grantees(&n, &r)[0].name, "a b");
         assert_eq!(parse_user_roles(&n, &r), vec!["low"]);
+    }
+
+    #[test]
+    fn role_graph_from_account_usage() {
+        let (n, r) = t(&["GRANTEE_NAME", "NAME"], &[&[Some("ACCOUNTADMIN"), Some("SYSADMIN")], &[Some("SYSADMIN"), Some("DATA_ENG")], &[Some("ACCOUNTADMIN"), Some("SECURITYADMIN")], &[None, Some("X")]]);
+        let g = parse_role_graph(&n, &r);
+        assert_eq!(g["ACCOUNTADMIN"], vec!["SYSADMIN", "SECURITYADMIN"]);
+        assert!(ROLE_GRAPH_SQL.contains("deleted_on is null"));
+        let eff: Vec<String> = effective_from_graph(&["ACCOUNTADMIN".to_string()], &g).into_iter().map(|e| e.path.join(" → ")).collect();
+        assert_eq!(eff, vec!["ACCOUNTADMIN → SYSADMIN", "ACCOUNTADMIN → SECURITYADMIN", "ACCOUNTADMIN → SYSADMIN → DATA_ENG"]);
+    }
+
+    fn er(path: &[&str]) -> EffectiveRole {
+        EffectiveRole { name: path.last().unwrap().to_string(), path: path.iter().map(|s| s.to_string()).collect() }
+    }
+
+    #[test]
+    fn tree_lists_each_role_once_under_its_parent() {
+        let direct = vec!["IDP".to_string(), "ANALYST".to_string()];
+        let eff = vec![er(&["IDP", "AREA"]), er(&["IDP", "AREA", "BASE"]), er(&["IDP", "AREA", "BASE", "RAW_B"]), er(&["IDP", "AREA", "BASE", "RAW_A"])];
+        let rows: Vec<(String, usize, usize)> = role_tree(&direct, &eff).into_iter().map(|r| (r.name, r.depth, r.descendants)).collect();
+        assert_eq!(rows, vec![
+            ("ANALYST".into(), 0, 0),
+            ("IDP".into(), 0, 4),
+            ("AREA".into(), 1, 3),
+            ("BASE".into(), 2, 2),
+            ("RAW_A".into(), 3, 0),
+            ("RAW_B".into(), 3, 0),
+        ]);
+    }
+
+    #[test]
+    fn collapsed_nodes_hide_their_subtree() {
+        let direct = vec!["A".to_string(), "Z".to_string()];
+        let eff = vec![er(&["A", "B"]), er(&["A", "B", "C"]), er(&["A", "D"])];
+        let rows = role_tree(&direct, &eff);
+        let names = |open: &[&str]| visible_rows(&rows, |n| open.contains(&n)).iter().map(|r| r.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&[]), vec!["A", "Z"]);
+        assert_eq!(names(&["A"]), vec!["A", "B", "D", "Z"]);
+        assert_eq!(names(&["A", "B"]), vec!["A", "B", "C", "D", "Z"]);
+        assert_eq!(names(&["B"]), vec!["A", "Z"], "pai fechado esconde mesmo com filho aberto");
+    }
+
+    #[test]
+    fn owner_and_distinct_roles_are_read() {
+        let (n, r) = t(&["name", "owner"], &[&[Some("U"), Some("OKTA_PROVISIONER")]]);
+        assert_eq!(parse_users(&n, &r)[0].owner.as_deref(), Some("OKTA_PROVISIONER"));
+        let (n, r) = t(&["KIND", "K", "N", "EXTRA"], &[&[Some("roles"), None, Some("3"), None]]);
+        assert_eq!(parse_query_activity(&n, &r).roles_used, 3);
+        assert!(query_activity_sql(&["U"]).contains("count(distinct role_name)"));
+    }
+
+    #[test]
+    fn direct_grants_keep_who_granted_and_when() {
+        let (n, r) = t(&["created_on", "role", "granted_to", "grantee_name", "granted_by"], &[&[Some("2026-03-03 10:00:00"), Some("SANDBOX_ADMIN"), Some("USER"), Some("ANA"), Some("SECURITYADMIN")], &[None, Some("\"idp_fr\""), Some("USER"), Some("ANA"), Some("OKTA_PROVISIONER")]]);
+        let g = parse_user_grants(&n, &r);
+        assert_eq!(g[0], DirectGrant { role: "SANDBOX_ADMIN".into(), granted_by: Some("SECURITYADMIN".into()), created_on: Some("2026-03-03 10:00:00".into()) });
+        assert_eq!(g[1].role, "idp_fr");
+        assert!(g[1].from_scim() && !g[0].from_scim());
+    }
+
+    #[test]
+    fn usage_rows_by_warehouse_and_role() {
+        let (n, r) = t(&["KIND", "K", "LAST"], &[&[Some("wh"), Some("GENERAL_XS_WH"), Some("2026-10-15 10:00:00")], &[Some("role"), Some("FINANCE_FR"), Some("2026-10-01 10:00:00")]]);
+        let u = parse_usage(&n, &r);
+        assert_eq!(u.warehouses["GENERAL_XS_WH"], "2026-10-15 10:00:00");
+        assert_eq!(u.roles["FINANCE_FR"], "2026-10-01 10:00:00");
+        let sql = usage_sql(&["A"]);
+        assert!(sql.contains("-90") && sql.contains("user_name in ('A')"), "{sql}");
+        assert!(ROLE_DATABASES_SQL.contains("granted_on = 'DATABASE'"));
     }
 }

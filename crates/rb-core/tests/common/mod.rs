@@ -12,6 +12,7 @@ pub fn open() -> Option<(Engine, Session)> {
         _ => panic!("use host TCP em RB_TEST_DATABASE_URL"),
     };
     let cfg = ConnectionConfig {
+        environment: None,
         id: "test".into(),
         name: "test".into(),
         host,

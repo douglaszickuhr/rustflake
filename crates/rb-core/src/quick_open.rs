@@ -231,11 +231,11 @@ pub async fn sf_snapshot(s: &Session, dbs: &[String]) -> Result<SfIndex, DbError
         match s.query_named(&format!("show terse objects in database {}", quote_always(db))).await {
             Ok((n, rows)) => {
                 if rows.len() >= SHOW_LIMIT {
-                    tracing::warn!(db, "mais de 10 mil objetos: índice truncado");
+                    tracing::warn!(db, "more than 10k objects: index truncated");
                 }
                 objects.extend(parse_sf_objects(&n, &rows));
             }
-            Err(e) => tracing::warn!(db, "índice da busca rápida: {e}"),
+            Err(e) => tracing::warn!(db, "quick-open index: {e}"),
         }
     }
     Ok(SfIndex { objects, schemas, refreshed: Some(Instant::now()), fallback_dbs: Some(dbs.to_vec()) })

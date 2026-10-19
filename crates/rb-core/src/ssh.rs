@@ -241,7 +241,7 @@ impl Tunnel {
         let h = {
             let mut h = self.handle.lock().await;
             if h.is_closed() {
-                tracing::info!("reconectando túnel SSH");
+                tracing::info!("reconnecting SSH tunnel");
                 *h = Arc::new(open_session(&self.target, self.passphrase.as_deref()).await?);
             }
             h.clone()
@@ -343,7 +343,7 @@ async fn authenticate(h: &mut Handle<Checker>, t: &SshTarget, passphrase: Option
             match h.authenticate_publickey_with(&t.user, key.clone(), hash_for(key), a).await {
                 Ok(r) if r.success() => return Ok(()),
                 Ok(_) => {}
-                Err(e) => tracing::warn!("agente SSH falhou: {e:?}"),
+                Err(e) => tracing::warn!("SSH agent failed: {e:?}"),
             }
         }
     }

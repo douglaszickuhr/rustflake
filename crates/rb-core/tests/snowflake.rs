@@ -25,6 +25,7 @@ fn env() -> Option<Env> {
     };
     let database = v("DATABASE")?;
     let cfg = ConnectionConfig {
+        environment: None,
         id: format!("sf-test-{}", std::process::id()),
         name: "sf".into(),
         host: String::new(),
@@ -34,6 +35,8 @@ fn env() -> Option<Env> {
         ssl: SslMode::Disable,
         ssh: None,
         snowflake: Some(SnowflakeConfig {
+            dbt: None,
+            configuration: None,
             account: v("ACCOUNT")?,
             auth,
             private_key: key,

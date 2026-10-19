@@ -62,7 +62,7 @@ pub fn load(path: &Path) -> Vec<Entry> {
     let lines = text.lines().count();
     let mut all: Vec<Entry> = text
         .lines()
-        .filter_map(|l| serde_json::from_str(l).map_err(|e| tracing::warn!("{}: linha inválida: {e}", path.display())).ok())
+        .filter_map(|l| serde_json::from_str(l).map_err(|e| tracing::warn!("{}: invalid line: {e}", path.display())).ok())
         .collect();
     if all.len() > MAX_ENTRIES || all.len() != lines {
         all.drain(..all.len().saturating_sub(MAX_ENTRIES));

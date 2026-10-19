@@ -11,6 +11,7 @@ use snowflake_connector_rs::{CellValue, VectorValue};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::DbError;
+use crate::secrets;
 use crate::batch::{Batch, ColumnInfo};
 use crate::config::{ConnectionConfig, SnowflakeAuth, expand_home};
 use crate::explain::{Plan, parse_sf_explain, parse_sf_stats};
@@ -159,8 +160,8 @@ async fn create_session(client: &sf::Client) -> Result<sf::Session, DbError> {
 
 pub(crate) fn sf_err(e: sf::Error) -> DbError {
     match e.snowflake_code() {
-        Some(code) => DbError::Snowflake { code: code.to_string(), message: e.snowflake_message().unwrap_or_default().to_string() },
-        None if e.is_cancelled() => DbError::Snowflake { code: t!("err.cancelled_code").to_string(), message: t!("err.cancelled").to_string() },
+        Some(code) => DbError::Snowflake { code: code.to_string(), message: e.snowflake_message().unwrap_or_default().to_string(), query_id: e.query_id().map(String::from) },
+        None if e.is_cancelled() => DbError::Snowflake { code: t!("err.cancelled_code").to_string(), message: t!("err.cancelled").to_string(), query_id: e.query_id().map(String::from) },
         None => DbError::Connection(e.to_string()),
     }
 }
@@ -182,6 +183,75 @@ pub(crate) struct SfShared {
     client: sf::Client,
     session: AsyncMutex<Arc<sf::Session>>,
     uses: Mutex<UseLog>,
+    /// SSO: o que é preciso para logar de novo com o ID token guardado (sem navegador).
+    sso: Option<Sso>,
+}
+
+/// Dados para montar um cliente `ID_TOKEN` e a conta do Keychain onde o token fica.
+struct Sso {
+    user: String,
+    account: String,
+    session: sf::SessionConfig,
+    query: sf::QueryConfig,
+    keychain: String,
+}
+
+impl Sso {
+    /// Tenta o ID token guardado; se ele não existir ou for recusado (vencido), apaga e devolve None.
+    async fn with_cached_token(&self) -> Option<sf::Session> {
+        let token = match secrets::get_password(&self.keychain) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                tracing::info!("no stored ID token; browser login");
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!("could not read the ID token from the Keychain: {e}");
+                return None;
+            }
+        };
+        let client = match sf::Client::new(sf::ClientConfig::new(&self.user, &self.account, sf::AuthConfig::id_token(token)).with_session(self.session.clone()).with_query(self.query.clone())) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("could not build the ID token client: {e}");
+                return None;
+            }
+        };
+        match create_session(&client).await {
+            Ok(s) => {
+                tracing::info!("Snowflake login with the stored ID token (no browser)");
+                Some(s)
+            }
+            Err(e) => {
+                tracing::info!("ID token rejected ({e}); falling back to browser login");
+                let _ = secrets::delete_password(&self.keychain);
+                None
+            }
+        }
+    }
+
+    /// Guarda o ID token que veio no login pelo navegador.
+    fn remember(&self, s: &sf::Session) {
+        let Some(t) = s.id_token() else {
+            // Sem token: a conta sem ALLOW_ID_TOKEN ou o servidor não emite para este cliente.
+            tracing::warn!("SSO login returned no ID token; the next login will open the browser again");
+            return;
+        };
+        match secrets::set_password(&self.keychain, t) {
+            Ok(()) => tracing::info!("ID token stored in the Keychain"),
+            Err(e) => tracing::warn!("could not store the ID token in the Keychain: {e}"),
+        }
+    }
+
+    /// ID token, senão navegador (guardando o token novo).
+    async fn session(&self, browser: &sf::Client) -> Result<sf::Session, DbError> {
+        if let Some(s) = self.with_cached_token().await {
+            return Ok(s);
+        }
+        let s = create_session(browser).await?;
+        self.remember(&s);
+        Ok(s)
+    }
 }
 
 impl SfShared {
@@ -204,7 +274,16 @@ impl SfShared {
             }
         };
         let set = |v: &Option<String>| v.clone().filter(|v| !v.is_empty());
-        let mut session = sf::SessionConfig::new().with_session_parameter("CLIENT_SESSION_KEEP_ALIVE", serde_json::Value::Bool(true));
+        let mut session = sf::SessionConfig::new()
+            .with_session_parameter("CLIENT_SESSION_KEEP_ALIVE", serde_json::Value::Bool(true))
+            // O conector se apresenta como o driver Go (para ganhar o ID token do SSO) e o servidor
+            // então responde em Arrow, que o conector não lê: pede JSON.
+            .with_session_parameter("GO_QUERY_RESULT_FORMAT", serde_json::Value::String("JSON".into()));
+        let is_sso = s.auth == SnowflakeAuth::ExternalBrowser;
+        if is_sso {
+            // Pede o ID token no login SSO (a conta precisa de ALLOW_ID_TOKEN = true).
+            session = session.with_session_parameter("CLIENT_STORE_TEMPORARY_CREDENTIAL", serde_json::Value::Bool(true));
+        }
         if !cfg.database.is_empty() {
             session = session.with_database(&cfg.database);
         }
@@ -218,9 +297,13 @@ impl SfShared {
             session = session.with_role(r);
         }
         let query = sf::QueryConfig::new().with_query_response_timeout(QUERY_TIMEOUT);
+        let sso = is_sso.then(|| Sso { user: cfg.user.clone(), account: s.account.clone(), session: session.clone(), query: query.clone(), keychain: secrets::id_token_account(&cfg.id) });
         let client = sf::Client::new(sf::ClientConfig::new(&cfg.user, &s.account, auth).with_session(session).with_query(query)).map_err(sf_err)?;
-        let first = create_session(&client).await?;
-        Ok(SfShared { client, session: AsyncMutex::new(Arc::new(first)), uses: Mutex::default() })
+        let first = match &sso {
+            Some(sso) => sso.session(&client).await?,
+            None => create_session(&client).await?,
+        };
+        Ok(SfShared { client, session: AsyncMutex::new(Arc::new(first)), uses: Mutex::default(), sso })
     }
 
     pub(crate) async fn current(&self) -> Arc<sf::Session> {
@@ -231,8 +314,11 @@ impl SfShared {
     async fn renew(&self, stale: &Arc<sf::Session>) -> Result<Arc<sf::Session>, DbError> {
         let mut cur = self.session.lock().await;
         if Arc::ptr_eq(&cur, stale) {
-            tracing::info!("sessão Snowflake expirada; novo login");
-            let fresh = create_session(&self.client).await?;
+            tracing::info!("Snowflake session expired; logging in again");
+            let fresh = match &self.sso {
+                Some(sso) => sso.session(&self.client).await?,
+                None => create_session(&self.client).await?,
+            };
             // O login novo volta ao contexto da configuração: refaz os USE da sessão anterior.
             let replay = self.uses.lock().expect("mutex dos USE").replay();
             for sql in replay {
@@ -241,7 +327,7 @@ impl SfShared {
                     Err(e) => Err(e),
                 };
                 if let Err(e) = res {
-                    tracing::warn!("não refez `{sql}` após novo login: {e}");
+                    tracing::warn!("did not retry `{sql}` after re-login: {e}");
                 }
             }
             *cur = Arc::new(fresh);
@@ -342,12 +428,15 @@ impl SfActor {
         }
         let started = Instant::now();
         let cursor = self.submit(sql).await?;
-        let id = cursor.query_id().replace('\'', "");
+        let id = cursor.query_id().to_string();
         drop(cursor);
         let total = started.elapsed().as_secs_f64() * 1000.0;
-        let (names, rows) = self.query_named(&format!("SELECT * FROM TABLE(GET_QUERY_OPERATOR_STATS('{id}'))")).await?;
+        let (names, rows) = self.query_named(&crate::explain::operator_stats_sql(&id)).await?;
         let mut plan = parse_sf_stats(&names, &rows)?;
         plan.total_ms = Some(total);
+        if let (Some(p), Ok((n, r))) = (plan.profile.as_mut(), self.query_named(&crate::explain::query_timing_sql(&id)).await) {
+            p.timing = crate::explain::parse_timing(&n, &r);
+        }
         Ok(plan)
     }
 
@@ -378,6 +467,7 @@ impl SfActor {
             }
         };
         self.shared.uses.lock().expect("mutex dos USE").record(&sql);
+        let query_id = Some(cursor.query_id().to_string());
         let columns: Arc<[ColumnInfo]> =
             cursor.schema().columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: crate::Type::TEXT }).collect();
         let mut pager = Pager::new(cursor, columns.len());
@@ -389,8 +479,8 @@ impl SfActor {
             }
         };
         let elapsed = started.elapsed();
-        tracing::info!(elapsed_ms = elapsed.as_millis() as u64, rows = batch.rows(), "primeiro lote (Snowflake)");
-        let _ = reply.send(Ok(ExecOutcome { exec_id, columns, batch, more, affected: None, elapsed }));
+        tracing::info!(elapsed_ms = elapsed.as_millis() as u64, rows = batch.rows(), "first batch (Snowflake)");
+        let _ = reply.send(Ok(ExecOutcome { exec_id, columns, batch, more, affected: None, elapsed, query_id }));
         while more {
             match rx.recv().await {
                 Some(Cmd::FetchMore { exec_id: id, reply }) if id != exec_id => {

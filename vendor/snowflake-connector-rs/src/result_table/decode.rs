@@ -1,0 +1,2666 @@
+use std::{any::type_name, borrow::Cow, result::Result as StdResult};
+
+use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use serde::de::DeserializeOwned;
+
+use crate::{
+    error::{
+        ColumnCountMismatchError, IncompatibleColumnTypeError, PlanBuildError, PlanBuildResult,
+        RowDecodeResult, SchemaError,
+    },
+    result_table::{
+        CellConversionError, CellDecodeResult,
+        dynamic::{BinaryValue, DecimalValue},
+        plan::{CellPlanContext, RowPlanContext},
+        row::RowRef,
+        schema::{Column, ColumnType},
+    },
+};
+
+const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
+
+/// Decode a single result-set cell into a Rust value.
+///
+/// Implementations exist for primitive Rust types, [`DecimalValue`](crate::DecimalValue), and `Option<T>`.
+/// Implement it yourself when adapting Snowflake values into domain types.
+///
+/// Decoding is split in two so schema-dependent work happens once per result schema rather than once per cell:
+/// [`build_plan`](FromCell::build_plan) validates the column and precomputes any state, and
+/// [`from_cell_with_plan`](FromCell::from_cell_with_plan) converts the raw cell text using that state.
+///
+/// # Example
+///
+/// A newtype over `f64` for type safety. It reuses `f64`'s plan, inheriting its column-type validation and parsing:
+///
+/// ```
+/// use snowflake_connector_rs::{
+///     CellPlanContext, FromCell,
+///     decode::{CellDecodeResult, PlanBuildResult},
+/// };
+///
+/// struct CelsiusTemp(f64);
+///
+/// impl FromCell for CelsiusTemp {
+///     type Plan = <f64 as FromCell>::Plan;
+///
+///     fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+///         f64::build_plan(ctx)
+///     }
+///
+///     fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+///         f64::from_cell_with_plan(raw, plan).map(CelsiusTemp)
+///     }
+/// }
+/// ```
+pub trait FromCell: Sized {
+    /// Per-column state prepared once and reused for every cell in that column.
+    ///
+    /// `Send + Sync` so the plan can be shared across threads when an iterator is moved between tasks.
+    type Plan: Send + Sync;
+
+    /// Validate the column and precompute schema-dependent state.
+    ///
+    /// This runs before any row is read, so a failure fails the whole [`rows`](crate::ResultTable::rows) call rather
+    /// than surfacing per cell.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PlanBuildError`](crate::error::PlanBuildError):
+    ///
+    /// - [`PlanBuildError::Schema`](crate::error::PlanBuildError::Schema), typically
+    ///   [`SchemaError::IncompatibleColumnType`](crate::error::SchemaError::IncompatibleColumnType), when the column
+    ///   cannot be decoded into `Self`.
+    /// - [`PlanBuildError::Custom`](crate::error::PlanBuildError::Custom) for custom validation with no
+    ///   matching [`SchemaError`](crate::error::SchemaError) variant, built from a
+    ///   [`CustomPlanError`](crate::error::CustomPlanError). The connector fills in the column context, so the
+    ///   implementation writes only the reason (and an optional source).
+    ///
+    /// [`SchemaError`](crate::error::SchemaError) and [`CustomPlanError`](crate::error::CustomPlanError) both convert
+    /// into `PlanBuildError` through `?`.
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan>;
+
+    /// Decode a single cell's raw text into `Self`.
+    ///
+    /// `raw` is `None` for SQL `NULL`. Implementations should reject `NULL` for non-`Option` targets and describe
+    /// conversion failures with [`CellConversionError`].
+    ///
+    /// # Errors
+    ///
+    /// Implementations should return only cell-local issues here.
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self>;
+}
+
+/// A resolved column paired with a prepared [`FromCell::Plan`].
+///
+/// Built by [`FromRow::build_plan`], then handed to [`RowRef::get_with_plan`] for each row, avoiding
+/// per-row schema lookups and per-cell type matching.
+pub struct CellPlan<T: FromCell> {
+    pub(crate) column: Column,
+    pub(crate) offset: usize,
+    pub(crate) decode_plan: T::Plan,
+}
+
+impl<T: FromCell> CellPlan<T> {
+    /// Build a cell plan for an already-resolved column context.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`FromCell::build_plan`] failures for `T`.
+    pub fn new(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self> {
+        let column = ctx.column();
+        // Add column context to custom plan failures. Schema failures already carry their own context.
+        let decode_plan = T::build_plan(ctx).map_err(|mut error| {
+            if let PlanBuildError::Custom(custom) = &mut error {
+                custom.set_column_context(column.index(), column.name());
+            }
+            error
+        })?;
+        Ok(Self {
+            column: column.clone(),
+            offset: column.index(),
+            decode_plan,
+        })
+    }
+
+    /// Resolve a column by raw label and build its cell plan.
+    ///
+    /// # Errors
+    ///
+    /// - [`SchemaError::MissingColumn`](crate::error::SchemaError::MissingColumn) / [`SchemaError::AmbiguousColumn`](crate::error::SchemaError::AmbiguousColumn)
+    ///   from the label lookup.
+    /// - Any [`FromCell::build_plan`] failure for `T`.
+    pub fn by_name(ctx: RowPlanContext<'_>, name: &str) -> PlanBuildResult<Self> {
+        let schema = ctx.schema();
+        let index = schema.column_index(name)?;
+        let column = schema
+            .column_at(index)
+            .expect("column_index returns a valid index");
+        Self::new(CellPlanContext::new(ctx, column))
+    }
+
+    /// Resolve a column by position and build its cell plan.
+    ///
+    /// # Errors
+    ///
+    /// - [`SchemaError::ColumnCountMismatch`](crate::error::SchemaError::ColumnCountMismatch) when `position` is out of range.
+    /// - Any [`FromCell::build_plan`] failure for `T`.
+    pub fn by_position(ctx: RowPlanContext<'_>, position: usize) -> PlanBuildResult<Self> {
+        let schema = ctx.schema();
+        let column = schema.column_at(position).ok_or_else(|| {
+            SchemaError::ColumnCountMismatch(ColumnCountMismatchError::new(
+                position + 1,
+                schema.len(),
+            ))
+        })?;
+        Self::new(CellPlanContext::new(ctx, column))
+    }
+}
+
+/// Decode an entire row into a Rust type.
+///
+/// Implementations may use an associated plan to cache schema-dependent state before decoding individual rows.
+///
+/// # Example
+///
+/// Hand-written equivalent of `#[derive(FromRow)]` for a two-column row:
+///
+/// ```
+/// use snowflake_connector_rs::{
+///     CellPlan, FromRow, RowPlanContext, RowRef,
+///     decode::{PlanBuildResult, RowDecodeResult},
+/// };
+///
+/// struct UserRow {
+///     id: i64,
+///     name: String,
+/// }
+///
+/// struct UserRowPlan {
+///     id: CellPlan<i64>,
+///     name: CellPlan<String>,
+/// }
+///
+/// impl FromRow for UserRow {
+///     type Plan = UserRowPlan;
+///
+///     fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+///         Ok(UserRowPlan {
+///             id: CellPlan::by_name(ctx, "ID")?,
+///             name: CellPlan::by_name(ctx, "NAME")?,
+///         })
+///     }
+///
+///     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
+///         Ok(UserRow {
+///             id: row.get_with_plan(&plan.id)?,
+///             name: row.get_with_plan(&plan.name)?,
+///         })
+///     }
+/// }
+/// ```
+pub trait FromRow: Sized {
+    /// Per-result-schema state reused while decoding rows.
+    ///
+    /// `Send + Sync` so the plan can be shared across threads when an iterator is moved between tasks.
+    type Plan: Send + Sync;
+
+    /// Build the per-result-schema decode plan from the result-set metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PlanBuildError`](crate::error::PlanBuildError):
+    ///
+    /// - [`PlanBuildError::Schema`](crate::error::PlanBuildError::Schema) for schema validation, conventionally
+    ///   [`SchemaError::MissingColumn`](crate::error::SchemaError::MissingColumn) or
+    ///   [`SchemaError::ColumnCountMismatch`](crate::error::SchemaError::ColumnCountMismatch). Delegating to
+    ///   [`CellPlan::by_name`] / [`CellPlan::by_position`] propagates these through `?`.
+    /// - [`PlanBuildError::Custom`](crate::error::PlanBuildError::Custom) for a custom row-shape check with no
+    ///   matching [`SchemaError`](crate::error::SchemaError) variant, built from a
+    ///   [`CustomPlanError`](crate::error::CustomPlanError). No single column is in scope here, so its column context
+    ///   stays `None`.
+    fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan>;
+
+    /// Decode a single row using the associated plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RowDecodeError`](crate::error::RowDecodeError):
+    ///
+    /// - [`RowDecodeError::Cell`](crate::error::RowDecodeError::Cell) for a cell-local failure, surfaced through
+    ///   [`RowRef::get_with_plan`] and propagated with `?`.
+    /// - [`RowDecodeError::Schema`](crate::error::RowDecodeError::Schema) for a dynamic
+    ///   [`RowRef::cell_at`](crate::RowRef::cell_at) lookup that fails, propagated with `?`.
+    /// - [`RowDecodeError::Conversion`](crate::error::RowDecodeError::Conversion) for a row-level domain rule failure,
+    ///   built from a
+    ///   [`RowConversionError`](crate::error::RowConversionError); the connector fills in the failing row's index.
+    fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self>;
+}
+
+impl FromRow for () {
+    type Plan = ();
+
+    fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let schema = ctx.schema();
+        if !schema.is_empty() {
+            return Err(
+                SchemaError::ColumnCountMismatch(ColumnCountMismatchError::new(0, schema.len()))
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> RowDecodeResult<Self> {
+        Ok(())
+    }
+}
+
+impl<T: FromCell> FromCell for Option<T> {
+    type Plan = T::Plan;
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        T::build_plan(ctx)
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        match raw {
+            None => Ok(None),
+            Some(_) => T::from_cell_with_plan(raw, plan).map(Some),
+        }
+    }
+}
+
+/// Borrow the raw text, reporting SQL `NULL` as a cell error for non-`Option` targets.
+fn required_raw(raw: Option<&str>) -> CellDecodeResult<&str> {
+    raw.ok_or_else(|| CellConversionError::builder("value is NULL").build())
+}
+
+/// Build the plan-time error for a column that cannot be decoded as `T`.
+fn incompatible_column<T>(column: &Column, detail: Option<String>) -> PlanBuildError {
+    SchemaError::IncompatibleColumnType(IncompatibleColumnTypeError::new(
+        column.index(),
+        column.name(),
+        type_name::<T>(),
+        column.ty().clone(),
+        detail.map(String::into_boxed_str),
+    ))
+    .into()
+}
+
+macro_rules! impl_int_from_cell {
+    ($t:ty) => {
+        impl FromCell for $t {
+            type Plan = ();
+
+            fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+                let column = ctx.column();
+                // Integers are only valid for `FIXED` with `scale = 0`.
+                match column.ty() {
+                    ColumnType::Fixed { scale, .. } if scale.unwrap_or(0) == 0 => Ok(()),
+                    ColumnType::Fixed { scale, .. } => Err(incompatible_column::<$t>(
+                        column,
+                        Some(format!(
+                            "integer cannot decode FIXED with scale {}",
+                            scale.unwrap_or(0)
+                        )),
+                    )),
+                    _ => Err(incompatible_column::<$t>(column, None)),
+                }
+            }
+
+            fn from_cell_with_plan(
+                raw: Option<&str>,
+                _plan: &Self::Plan,
+            ) -> CellDecodeResult<Self> {
+                let raw = required_raw(raw)?;
+                raw.parse::<$t>().map_err(|e| {
+                    CellConversionError::builder(format!("parse error: {e}"))
+                        .source(e)
+                        .build()
+                })
+            }
+        }
+    };
+}
+
+impl_int_from_cell!(i8);
+impl_int_from_cell!(i16);
+impl_int_from_cell!(i32);
+impl_int_from_cell!(i64);
+impl_int_from_cell!(i128);
+impl_int_from_cell!(u8);
+impl_int_from_cell!(u16);
+impl_int_from_cell!(u32);
+impl_int_from_cell!(u64);
+impl_int_from_cell!(u128);
+
+macro_rules! impl_float_from_cell {
+    ($t:ty) => {
+        impl FromCell for $t {
+            type Plan = ();
+
+            fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+                let column = ctx.column();
+                match column.ty() {
+                    ColumnType::Real | ColumnType::Fixed { .. } => Ok(()),
+                    _ => Err(incompatible_column::<$t>(column, None)),
+                }
+            }
+
+            fn from_cell_with_plan(
+                raw: Option<&str>,
+                _plan: &Self::Plan,
+            ) -> CellDecodeResult<Self> {
+                let raw = required_raw(raw)?;
+                raw.parse::<$t>().map_err(|e| {
+                    CellConversionError::builder(format!("parse error: {e}"))
+                        .source(e)
+                        .build()
+                })
+            }
+        }
+    };
+}
+
+impl_float_from_cell!(f32);
+impl_float_from_cell!(f64);
+
+impl FromCell for String {
+    type Plan = ();
+
+    fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        Ok(())
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        required_raw(raw).map(|s| s.to_owned())
+    }
+}
+
+impl FromCell for DecimalValue {
+    type Plan = ();
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Fixed { .. } => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        required_raw(raw).map(DecimalValue::new)
+    }
+}
+
+impl FromCell for bool {
+    type Plan = ();
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Boolean => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        if raw == "1" || raw.eq_ignore_ascii_case("true") {
+            Ok(true)
+        } else if raw == "0" || raw.eq_ignore_ascii_case("false") {
+            Ok(false)
+        } else {
+            Err(CellConversionError::builder(format!("'{raw}' is not bool")).build())
+        }
+    }
+}
+
+impl FromCell for NaiveDate {
+    type Plan = ();
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Date => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        let days = raw.parse::<i64>().map_err(|e| {
+            CellConversionError::builder(format!("'{raw}' is not Date"))
+                .source(e)
+                .build()
+        })?;
+        let unix_epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
+
+        if days >= 0 {
+            unix_epoch
+                .checked_add_days(Days::new(days as u64))
+                .ok_or_else(|| {
+                    CellConversionError::builder(format!("'{raw}' is not a valid date")).build()
+                })
+        } else {
+            unix_epoch
+                .checked_sub_days(Days::new(days.unsigned_abs()))
+                .ok_or_else(|| {
+                    CellConversionError::builder(format!("'{raw}' is not a valid date")).build()
+                })
+        }
+    }
+}
+
+impl FromCell for NaiveTime {
+    type Plan = TimePlan;
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Time { scale } => {
+                let scale = match scale {
+                    None => 0usize,
+                    Some(s) if (0..=9).contains(s) => *s as usize,
+                    Some(s) => {
+                        return Err(incompatible_column::<Self>(
+                            column,
+                            Some(format!("invalid time scale: {s}")),
+                        ));
+                    }
+                };
+                Ok(TimePlan::new(scale))
+            }
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        let (secs, nsec) =
+            parse_time_seconds_and_nanos_with(raw, plan.scale, plan.nanos_multiplier)
+                .map_err(|m| CellConversionError::builder(m).build())?;
+
+        NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
+            .ok_or_else(|| CellConversionError::builder(format!("invalid time: {raw}")).build())
+    }
+}
+
+impl FromCell for NaiveDateTime {
+    type Plan = TimestampPlan;
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::TimestampNtz { scale } => TimestampPlan::from_metadata_scale(*scale)
+                .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        parse_timestamp_epoch_with(raw, plan)
+            .map(|dt| dt.naive_utc())
+            .map_err(|m| CellConversionError::builder(m).build())
+    }
+}
+
+/// Which UTC-anchored decode path a [`DateTime<Utc>`] column uses.
+pub enum UtcTimestampPlan {
+    /// `TIMESTAMP_LTZ` — stored as a UTC epoch.
+    Ltz(TimestampPlan),
+    /// `TIMESTAMP_TZ` — wire value carries an offset that is normalized to UTC.
+    Tz(TimestampPlan),
+}
+
+impl FromCell for DateTime<Utc> {
+    type Plan = UtcTimestampPlan;
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::TimestampLtz { scale } => TimestampPlan::from_metadata_scale(*scale)
+                .map(UtcTimestampPlan::Ltz)
+                .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
+            ColumnType::TimestampTz { scale } => TimestampPlan::from_metadata_scale(*scale)
+                .map(UtcTimestampPlan::Tz)
+                .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        match plan {
+            UtcTimestampPlan::Ltz(plan) => parse_timestamp_epoch_with(raw, plan),
+            UtcTimestampPlan::Tz(plan) => parse_timestamp_tz_as_utc_with(raw, plan),
+        }
+        .map_err(|m| CellConversionError::builder(m).build())
+    }
+}
+
+impl FromCell for DateTime<FixedOffset> {
+    type Plan = TimestampPlan;
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::TimestampTz { scale } => TimestampPlan::from_metadata_scale(*scale)
+                .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        parse_timestamp_tz_with_offset_with(raw, plan)
+            .map_err(|m| CellConversionError::builder(m).build())
+    }
+}
+
+impl FromCell for serde_json::Value {
+    type Plan = ();
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Variant | ColumnType::Object | ColumnType::Array => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        decode_json_payload(raw)
+    }
+}
+
+/// Decode wrapper for Snowflake `VARIANT`, `OBJECT`, and `ARRAY` cells.
+///
+/// Snowflake result metadata identifies only the root kind; structured element types, object fields, and map key/value
+/// types are not available for plan-time checking. Decoding succeeds when the cell payload can be interpreted as `T`
+/// after normalizing Snowflake's array-element `undefined` values to JSON `null`.
+///
+/// Snowflake non-finite float tokens (`Infinity`, `-Infinity`, `NaN`) are rejected because JSON has no representation for them.
+///
+/// Use `Option<_>` for array element positions that may contain SQL `NULL`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Json<T>(T);
+
+impl<T> Json<T> {
+    /// Consume the wrapper, returning the decoded value.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> AsRef<T> for Json<T> {
+    fn as_ref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> FromCell for Json<T>
+where
+    T: DeserializeOwned,
+{
+    type Plan = ();
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Variant | ColumnType::Object | ColumnType::Array => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        let normalized = prepare_snowflake_json_payload(raw)?;
+        serde_json::from_str::<T>(&normalized)
+            .map(Json)
+            .map_err(|e| {
+                CellConversionError::builder(format!("invalid json payload: {e}"))
+                    .source(e)
+                    .build()
+            })
+    }
+}
+
+impl FromCell for BinaryValue {
+    type Plan = ();
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Binary { .. } => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        decode_hex(raw)
+            .map(BinaryValue::new)
+            .map_err(|m| CellConversionError::builder(m).build())
+    }
+}
+
+/// Decoded value of a Snowflake `VECTOR` cell.
+///
+/// [`ColumnType::Vector`](crate::ColumnType::Vector) is the only column this wrapper accepts. Snowflake result metadata
+/// reports neither the element type nor the dimension, so the element type is verified from the cell payload at decode
+/// time and the dimension is left to the caller to check via [`len`](Vector::len).
+///
+/// Two element types are supported, matching Snowflake's `VECTOR(INT, n)` / `VECTOR(FLOAT, n)`:
+///
+/// - `Vector<i32>` decodes a `VECTOR(INT)` cell. Elements are 32-bit signed integers.
+/// - `Vector<f32>` decodes a `VECTOR(FLOAT)` cell. Elements are 32-bit IEEE 754 floats.
+///
+/// `Vector<f32>` restores Snowflake's lowercase `inf` / `-inf` / `nan` tokens to the corresponding `f32` non-finite
+/// values, and rejects integer-only tokens (`[1,2,3]`) because a `VECTOR(FLOAT)` cell always renders finite elements
+/// with a decimal point. Snowflake renders `VECTOR(FLOAT)` elements as fixed 6-digit decimals over an already
+/// single-precision value, so a decoded `Vector<f32>` reconstructs the wire value rather than round-tripping the
+/// original SQL literal exactly.
+///
+/// Only `Vector<i32>` and `Vector<f32>` implement [`FromCell`]; wider element types such as `Vector<i64>` /
+/// `Vector<f64>`, and bare `Vec<T>`, are intentionally left out. Use `Option<Vector<_>>` for a nullable `VECTOR` column.
+///
+/// The wrapper does not implement `Deref<Target = [T]>`; borrow the elements through [`as_slice`](Vector::as_slice),
+/// [`AsRef<[T]>`](AsRef), or by iterating.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Vector<T>(Vec<T>);
+
+impl<T> Vector<T> {
+    pub(crate) fn from_vec(values: Vec<T>) -> Self {
+        Self(values)
+    }
+
+    /// Borrow the decoded elements as a slice.
+    pub fn as_slice(&self) -> &[T] {
+        &self.0
+    }
+
+    /// Consume the wrapper, returning the decoded elements.
+    pub fn into_vec(self) -> Vec<T> {
+        self.0
+    }
+
+    /// Number of elements (the vector's dimension).
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the vector has no elements.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<T> AsRef<[T]> for Vector<T> {
+    fn as_ref(&self) -> &[T] {
+        &self.0
+    }
+}
+
+impl<T> IntoIterator for Vector<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Vector<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl FromCell for Vector<i32> {
+    type Plan = ();
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Vector => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        parse_vector_i32_payload(raw)
+            .map(Vector::from_vec)
+            .map_err(|m| CellConversionError::builder(m).build())
+    }
+}
+
+impl FromCell for Vector<f32> {
+    type Plan = ();
+
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+        let column = ctx.column();
+        match column.ty() {
+            ColumnType::Vector => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        parse_vector_f32_payload(raw)
+            .map(Vector::from_vec)
+            .map_err(|m| CellConversionError::builder(m).build())
+    }
+}
+
+/// Parse a Snowflake `VECTOR(INT)` payload into a `Vec<i32>`.
+pub(crate) fn parse_vector_i32_payload(raw: &str) -> StdResult<Vec<i32>, String> {
+    parse_vector_payload(raw, |token| {
+        token
+            .parse::<i32>()
+            .map_err(|_| format!("invalid VECTOR(INT) element: {token}"))
+    })
+}
+
+/// Parse a Snowflake `VECTOR(FLOAT)` payload into a `Vec<f32>`.
+///
+/// Restores the lowercase non-finite tokens `inf` / `-inf` / `nan`, and rejects integer-only tokens so a
+/// `VECTOR(INT)` payload is not silently accepted as float.
+pub(crate) fn parse_vector_f32_payload(raw: &str) -> StdResult<Vec<f32>, String> {
+    parse_vector_payload(raw, parse_vector_f32_element)
+}
+
+fn parse_vector_f32_element(token: &str) -> StdResult<f32, String> {
+    match token {
+        "inf" => Ok(f32::INFINITY),
+        "-inf" => Ok(f32::NEG_INFINITY),
+        "nan" => Ok(f32::NAN),
+        // A finite `VECTOR(FLOAT)` element always carries a decimal point on the wire. Requiring one keeps
+        // integer-only tokens (a `VECTOR(INT)` payload) and alternate non-finite spellings out.
+        _ if token.contains('.') => token
+            .parse::<f32>()
+            .map_err(|_| format!("invalid VECTOR(FLOAT) element: {token}")),
+        _ => Err(format!("invalid VECTOR(FLOAT) element: {token}")),
+    }
+}
+
+/// Parse a Snowflake `VECTOR` payload (`[e0,e1,...]`) into elements via `parse_element`.
+///
+/// The wire form is a compact, comma-separated bracketed list. This deliberately avoids `serde_json`: `VECTOR(FLOAT)`
+/// emits bare `inf` / `-inf` / `nan` tokens that are not valid JSON, and the element rules differ from the
+/// `VARIANT` / `OBJECT` / `ARRAY` JSON path. Snowflake never produces an empty `VECTOR`, so an empty body is rejected.
+fn parse_vector_payload<T>(
+    raw: &str,
+    mut parse_element: impl FnMut(&str) -> StdResult<T, String>,
+) -> StdResult<Vec<T>, String> {
+    let trimmed = raw.trim();
+    let body = trimmed
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .ok_or_else(|| format!("invalid vector payload: {raw}"))?
+        .trim();
+    if body.is_empty() {
+        return Err(format!("invalid vector payload: {raw}"));
+    }
+
+    // Element count equals comma count + 1; preallocate to avoid reallocating a high-dimension vector.
+    let mut out = Vec::with_capacity(body.bytes().filter(|&b| b == b',').count() + 1);
+    for token in body.split(',') {
+        let token = token.trim();
+        if token.is_empty()
+            || token
+                .bytes()
+                .any(|b| matches!(b, b'"' | b'\'' | b'[' | b']' | b'{' | b'}'))
+        {
+            return Err(format!("invalid vector payload: {raw}"));
+        }
+        out.push(parse_element(token)?);
+    }
+    Ok(out)
+}
+
+/// Decode a `VARIANT`, `OBJECT`, or `ARRAY` payload into a [`serde_json::Value`] after handling Snowflake-specific tokens.
+pub(crate) fn decode_json_payload(raw: &str) -> CellDecodeResult<serde_json::Value> {
+    let normalized = prepare_snowflake_json_payload(raw)?;
+    serde_json::from_str(&normalized).map_err(|e| {
+        CellConversionError::builder(format!("invalid json payload: {e}"))
+            .source(e)
+            .build()
+    })
+}
+
+/// Prepare a Snowflake `VARIANT` / `OBJECT` / `ARRAY` payload for JSON parsing.
+///
+/// Snowflake can emit token kinds that are not valid JSON outside of string literals:
+///
+/// - `undefined` marks a NULL array element and is rewritten to JSON `null`.
+/// - `Infinity`, `-Infinity`, and `NaN` are non-finite floats that JSON cannot represent; they are rejected
+///   with a [`CellConversionError`] rather than lowered to `null`, which would erase the distinction from null values.
+///
+/// Returns [`Cow::Borrowed`] and allocates nothing when no rewrite is needed. Tokens inside string literals are left untouched.
+/// VECTOR(FLOAT)'s lowercase `inf` / `-inf` / `nan` are a separate convention that this JSON path does not handle.
+pub(crate) fn prepare_snowflake_json_payload(raw: &str) -> CellDecodeResult<Cow<'_, str>> {
+    const UNDEFINED: &[u8] = b"undefined";
+    const INFINITY: &[u8] = b"Infinity";
+    const NAN: &[u8] = b"NaN";
+
+    let bytes = raw.as_bytes();
+
+    // Single pass over the payload; clean input returns `Cow::Borrowed`.
+    let mut out: Option<String> = None;
+    let mut copied = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' => {
+                in_string = true;
+            }
+            b'u' if is_bare_token_at(bytes, i, UNDEFINED) => {
+                let after = i + UNDEFINED.len();
+                let buf = out.get_or_insert_with(|| String::with_capacity(raw.len()));
+                buf.push_str(&raw[copied..i]);
+                buf.push_str("null");
+                copied = after;
+                i = after;
+                continue;
+            }
+            b'I' if is_bare_token_at(bytes, i, INFINITY) => {
+                // Snowflake emits `-Infinity` as a single token; report it with the sign. `+Infinity` is not a Snowflake token,
+                // so leave it for `serde_json` to reject.
+                if i > 0 && bytes[i - 1] == b'+' {
+                    i += 1;
+                    continue;
+                }
+                let token = if i > 0 && bytes[i - 1] == b'-' {
+                    "-Infinity"
+                } else {
+                    "Infinity"
+                };
+                return Err(non_finite_float_error(token));
+            }
+            b'N' if is_bare_token_at(bytes, i, NAN) => {
+                return Err(non_finite_float_error("NaN"));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    Ok(match out {
+        Some(mut buf) => {
+            buf.push_str(&raw[copied..]);
+            Cow::Owned(buf)
+        }
+        None => Cow::Borrowed(raw),
+    })
+}
+
+/// Whether `token` starts at `bytes[i]` and is delimited by non-word bytes on both sides.
+///
+/// The boundary check guards against an unquoted word that merely contains the token (`undefinedX`, `_NaN`).
+fn is_bare_token_at(bytes: &[u8], i: usize, token: &[u8]) -> bool {
+    if !bytes[i..].starts_with(token) {
+        return false;
+    }
+    let after = i + token.len();
+    let prev_ok = i == 0 || !is_bare_word_byte(bytes[i - 1]);
+    let next_ok = after >= bytes.len() || !is_bare_word_byte(bytes[after]);
+    prev_ok && next_ok
+}
+
+fn non_finite_float_error(token: &str) -> CellConversionError {
+    CellConversionError::builder(format!(
+        "Snowflake non-finite float token `{token}` is not representable as JSON"
+    ))
+    .build()
+}
+
+fn is_bare_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Precomputed fractional-seconds state for a `TIME` column.
+pub struct TimePlan {
+    scale: usize,
+    /// `10^(9 - scale)`, scaling truncated fractional digits up to nanoseconds.
+    nanos_multiplier: u32,
+}
+
+impl TimePlan {
+    /// `scale` must already be validated to `0..=9`.
+    fn new(scale: usize) -> Self {
+        Self {
+            scale,
+            nanos_multiplier: 10u32.pow((9 - scale) as u32),
+        }
+    }
+}
+
+/// Precomputed scale factors for a timestamp column, shared by the `NTZ` / `LTZ` / `TZ` decoders.
+#[derive(Clone, Copy)]
+pub struct TimestampPlan {
+    scale: usize,
+    /// `10^scale`, converting between the scaled integer wire value and whole seconds.
+    scale_factor: i128,
+    /// `10^(9 - scale)`, scaling the fractional remainder up to nanoseconds.
+    nanos_multiplier: u64,
+}
+
+impl TimestampPlan {
+    const SCALE_ZERO: TimestampPlan = TimestampPlan {
+        scale: 0,
+        scale_factor: 1,
+        nanos_multiplier: 1_000_000_000,
+    };
+
+    fn from_metadata_scale(scale: Option<u8>) -> StdResult<Self, String> {
+        Self::new(scale.unwrap_or(9))
+    }
+
+    fn new(scale: u8) -> StdResult<Self, String> {
+        let scale = validate_ts_scale(scale)?;
+        // `scale` is `0..=9`, so neither power can overflow.
+        Ok(Self {
+            scale,
+            scale_factor: 10i128.pow(scale as u32),
+            nanos_multiplier: 10u64.pow((9 - scale) as u32),
+        })
+    }
+}
+
+fn validate_ts_scale(scale: u8) -> StdResult<usize, String> {
+    if scale > 9 {
+        return Err(format!("invalid timestamp scale: {scale} (expected 0..=9)"));
+    }
+    Ok(usize::from(scale))
+}
+
+fn parse_scaled_decimal_i128(
+    s: &str,
+    plan: &TimestampPlan,
+    kind: &'static str,
+) -> StdResult<i128, String> {
+    let scale = plan.scale;
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(format!("Could not decode {kind}: {s}"));
+    }
+
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    let negative = match bytes[0] {
+        b'-' => {
+            i = 1;
+            true
+        }
+        b'+' => {
+            i = 1;
+            false
+        }
+        _ => false,
+    };
+    if i == bytes.len() {
+        return Err(format!("Could not decode {kind}: {s}"));
+    }
+
+    let mut whole = 0i128;
+    let whole_start = i;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !b.is_ascii_digit() {
+            break;
+        }
+        whole = whole
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(i128::from(b - b'0')))
+            .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+        i += 1;
+    }
+    if i == whole_start {
+        return Err(format!("Could not decode {kind}: {s}"));
+    }
+
+    let mut scaled = whole
+        .checked_mul(plan.scale_factor)
+        .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+
+    if i < bytes.len() {
+        if bytes[i] != b'.' {
+            return Err(format!("Could not decode {kind}: {s}"));
+        }
+        i += 1;
+        if i == bytes.len() {
+            return Err(format!("Could not decode {kind}: {s}"));
+        }
+        if scale == 0 {
+            return Err(format!("Could not decode {kind}: {s}"));
+        }
+
+        let mut frac = 0i128;
+        let mut frac_len = 0usize;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if !b.is_ascii_digit() || frac_len >= scale {
+                return Err(format!("Could not decode {kind}: {s}"));
+            }
+            frac = frac
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(i128::from(b - b'0')))
+                .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+            frac_len += 1;
+            i += 1;
+        }
+        for _ in frac_len..scale {
+            frac = frac
+                .checked_mul(10)
+                .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+        }
+        scaled = scaled
+            .checked_add(frac)
+            .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+    }
+
+    if negative {
+        scaled = scaled
+            .checked_neg()
+            .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+    }
+    Ok(scaled)
+}
+
+fn parse_timestamp_epoch_scaled(
+    scaled: i128,
+    plan: &TimestampPlan,
+    original: &str,
+    kind: &'static str,
+) -> StdResult<DateTime<Utc>, String> {
+    let secs = scaled.div_euclid(plan.scale_factor);
+    let frac = scaled.rem_euclid(plan.scale_factor);
+
+    let secs = i64::try_from(secs).map_err(|_| format!("Could not decode {kind}: {original}"))?;
+    let frac = u64::try_from(frac).map_err(|_| format!("Could not decode {kind}: {original}"))?;
+
+    let nsec = if plan.scale == 0 {
+        0u32
+    } else {
+        frac.checked_mul(plan.nanos_multiplier)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| format!("Could not decode {kind}: {original}"))?
+    };
+
+    DateTime::from_timestamp(secs, nsec)
+        .ok_or_else(|| format!("Could not decode {kind}: {original}"))
+}
+
+fn parse_unsigned_timestamp_epoch_fast(
+    s: &str,
+    plan: &TimestampPlan,
+    original: &str,
+    kind: &'static str,
+) -> Option<StdResult<DateTime<Utc>, String>> {
+    let s = s.trim();
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || matches!(bytes[0], b'-' | b'+') {
+        return None;
+    }
+
+    let mut i = 0usize;
+    let mut secs = 0i64;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !b.is_ascii_digit() {
+            break;
+        }
+        secs = match secs
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(i64::from(b - b'0')))
+        {
+            Some(value) => value,
+            None => return Some(Err(format!("Could not decode {kind}: {s}"))),
+        };
+        i += 1;
+    }
+    if i == 0 {
+        return Some(Err(format!("Could not decode {kind}: {s}")));
+    }
+
+    let nsec = if i == bytes.len() {
+        0u32
+    } else {
+        if bytes[i] != b'.' {
+            return Some(Err(format!("Could not decode {kind}: {s}")));
+        }
+        i += 1;
+        if i == bytes.len() || plan.scale == 0 {
+            return Some(Err(format!("Could not decode {kind}: {s}")));
+        }
+
+        let mut frac = 0u64;
+        let mut frac_len = 0usize;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if !b.is_ascii_digit() || frac_len >= plan.scale {
+                return Some(Err(format!("Could not decode {kind}: {s}")));
+            }
+            frac = frac * 10 + u64::from(b - b'0');
+            frac_len += 1;
+            i += 1;
+        }
+        for _ in frac_len..plan.scale {
+            frac *= 10;
+        }
+        match frac
+            .checked_mul(plan.nanos_multiplier)
+            .and_then(|value| u32::try_from(value).ok())
+        {
+            Some(value) => value,
+            None => return Some(Err(format!("Could not decode {kind}: {s}"))),
+        }
+    };
+
+    Some(
+        DateTime::from_timestamp(secs, nsec)
+            .ok_or_else(|| format!("Could not decode {kind}: {original}")),
+    )
+}
+
+pub(crate) fn parse_timestamp_epoch_with(
+    s: &str,
+    plan: &TimestampPlan,
+) -> StdResult<DateTime<Utc>, String> {
+    if let Some(result) = parse_unsigned_timestamp_epoch_fast(s, plan, s, "timestamp") {
+        return result;
+    }
+    let scaled = parse_scaled_decimal_i128(s, plan, "timestamp")?;
+    parse_timestamp_epoch_scaled(scaled, plan, s, "timestamp")
+}
+
+pub(crate) fn parse_timestamp_epoch(s: &str, scale: u8) -> StdResult<DateTime<Utc>, String> {
+    parse_timestamp_epoch_with(s, &TimestampPlan::new(scale)?)
+}
+
+struct TimestampTzWire {
+    utc: DateTime<Utc>,
+    tz_index: i32,
+}
+
+fn parse_timestamp_tz_index(tz_str: &str, original: &str) -> StdResult<i32, String> {
+    let tz_index = tz_str
+        .parse::<i32>()
+        .map_err(|_| format!("invalid timestamp_tz: {original}"))?;
+    if !(0..=2880).contains(&tz_index) {
+        return Err(format!("invalid timezone for timestamp_tz: {original}"));
+    }
+    Ok(tz_index)
+}
+
+fn fixed_offset_from_tz_index(tz_index: i32, original: &str) -> StdResult<FixedOffset, String> {
+    let offset_minutes = tz_index
+        .checked_sub(1440)
+        .ok_or_else(|| format!("invalid timezone for timestamp_tz: {original}"))?;
+
+    let offset_seconds = offset_minutes
+        .checked_mul(60)
+        .ok_or_else(|| format!("invalid timezone for timestamp_tz: {original}"))?;
+
+    FixedOffset::east_opt(offset_seconds).ok_or_else(|| {
+        format!("timezone offset out of range for DateTime<FixedOffset>: {original}")
+    })
+}
+
+fn parse_legacy_timestamp_tz_wire(
+    s: &str,
+    plan: &TimestampPlan,
+) -> StdResult<TimestampTzWire, String> {
+    let packed = parse_scaled_decimal_i128(s, &TimestampPlan::SCALE_ZERO, "timestamp_tz")?;
+    let epoch_scaled = packed.div_euclid(LEGACY_TIMESTAMP_TZ_SHIFT);
+    let tz_index = packed.rem_euclid(LEGACY_TIMESTAMP_TZ_SHIFT);
+    let utc = parse_timestamp_epoch_scaled(epoch_scaled, plan, s, "timestamp_tz")?;
+
+    let tz_index =
+        i32::try_from(tz_index).map_err(|_| format!("invalid timezone for timestamp_tz: {s}"))?;
+    if !(0..=2880).contains(&tz_index) {
+        return Err(format!("invalid timezone for timestamp_tz: {s}"));
+    }
+
+    Ok(TimestampTzWire { utc, tz_index })
+}
+
+fn parse_timestamp_tz_wire(s: &str, plan: &TimestampPlan) -> StdResult<TimestampTzWire, String> {
+    let s = s.trim();
+    let mut parts = s.split_whitespace();
+    let first = parts
+        .next()
+        .ok_or_else(|| format!("invalid timestamp_tz: {s}"))?;
+
+    if let Some(tz_str) = parts.next() {
+        if parts.next().is_some() {
+            return Err(format!("invalid timestamp_tz: {s}"));
+        }
+        let utc = parse_timestamp_epoch_with(first, plan)?;
+        let tz_index = parse_timestamp_tz_index(tz_str, s)?;
+        Ok(TimestampTzWire { utc, tz_index })
+    } else {
+        parse_legacy_timestamp_tz_wire(s, plan)
+    }
+}
+
+pub(crate) fn parse_timestamp_tz_as_utc_with(
+    s: &str,
+    plan: &TimestampPlan,
+) -> StdResult<DateTime<Utc>, String> {
+    parse_timestamp_tz_wire(s, plan).map(|wire| wire.utc)
+}
+
+pub(crate) fn parse_timestamp_tz_with_offset_with(
+    s: &str,
+    plan: &TimestampPlan,
+) -> StdResult<DateTime<FixedOffset>, String> {
+    let wire = parse_timestamp_tz_wire(s, plan)?;
+    let offset = fixed_offset_from_tz_index(wire.tz_index, s)?;
+    Ok(wire.utc.with_timezone(&offset))
+}
+
+pub(crate) fn parse_timestamp_tz_with_offset(
+    s: &str,
+    scale: u8,
+) -> StdResult<DateTime<FixedOffset>, String> {
+    parse_timestamp_tz_with_offset_with(s, &TimestampPlan::new(scale)?)
+}
+
+fn parse_time_seconds_and_nanos_with(
+    value: &str,
+    scale: usize,
+    nanos_multiplier: u32,
+) -> StdResult<(u32, u32), String> {
+    let value = value.trim();
+    let (secs_str, frac_str) = match value.split_once('.') {
+        Some((secs, frac)) if !frac.is_empty() => (secs, Some(frac)),
+        Some(_) => return Err(format!("invalid time: {value}")),
+        None => (value, None),
+    };
+    let secs = secs_str
+        .parse::<u32>()
+        .map_err(|_| format!("'{value}' is not Time type"))?;
+
+    let frac_str = frac_str.unwrap_or("");
+    if !frac_str.as_bytes().iter().all(|b| b.is_ascii_digit()) {
+        return Err(format!("invalid time: {value}"));
+    }
+    if scale == 0 {
+        return Ok((secs, 0));
+    }
+
+    let mut frac_scaled = 0u32;
+    let used_digits = frac_str.len().min(scale);
+    for b in frac_str.bytes().take(used_digits) {
+        frac_scaled = frac_scaled
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(u32::from(b - b'0')))
+            .ok_or_else(|| format!("invalid time: {value}"))?;
+    }
+    for _ in used_digits..scale {
+        frac_scaled = frac_scaled
+            .checked_mul(10)
+            .ok_or_else(|| format!("invalid time: {value}"))?;
+    }
+    let nsec = frac_scaled
+        .checked_mul(nanos_multiplier)
+        .ok_or_else(|| format!("invalid time: {value}"))?;
+
+    Ok((secs, nsec))
+}
+
+pub(crate) fn parse_time_seconds_and_nanos(
+    value: &str,
+    scale: usize,
+) -> StdResult<(u32, u32), String> {
+    if scale > 9 {
+        return Err(format!("invalid time scale: {scale}"));
+    }
+    parse_time_seconds_and_nanos_with(value, scale, 10u32.pow((9 - scale) as u32))
+}
+
+pub(crate) fn decode_hex(s: &str) -> StdResult<Vec<u8>, String> {
+    if s.len() % 2 != 0 {
+        return Err(format!("invalid hex length: {}", s.len()));
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = hex_nibble(bytes[i])?;
+        let lo = hex_nibble(bytes[i + 1])?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> StdResult<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(format!("invalid hex digit: {}", b as char)),
+    }
+}
+
+macro_rules! impl_tuple_from_row {
+    ($len:expr; $($t:ident => $idx:tt),*) => {
+        impl<$($t: FromCell),*> FromRow for ($($t,)*) {
+            type Plan = ($(CellPlan<$t>,)*);
+
+            fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+                let schema = ctx.schema();
+                if schema.len() != $len {
+                    return Err(SchemaError::ColumnCountMismatch(
+                        ColumnCountMismatchError::new($len, schema.len()),
+                    )
+                    .into());
+                }
+                Ok(($(CellPlan::<$t>::by_position(ctx, $idx)?,)*))
+            }
+
+            fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
+                Ok(($(row.get_with_plan(&plan.$idx)?,)*))
+            }
+        }
+    };
+}
+
+impl_tuple_from_row!(1; T0 => 0);
+impl_tuple_from_row!(2; T0 => 0, T1 => 1);
+impl_tuple_from_row!(3; T0 => 0, T1 => 1, T2 => 2);
+impl_tuple_from_row!(4; T0 => 0, T1 => 1, T2 => 2, T3 => 3);
+impl_tuple_from_row!(5; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4);
+impl_tuple_from_row!(6; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5);
+impl_tuple_from_row!(7; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6);
+impl_tuple_from_row!(8; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7);
+impl_tuple_from_row!(9; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7, T8 => 8);
+impl_tuple_from_row!(10; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7, T8 => 8, T9 => 9);
+impl_tuple_from_row!(11; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7, T8 => 8, T9 => 9, T10 => 10);
+impl_tuple_from_row!(12; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7, T8 => 8, T9 => 9, T10 => 10, T11 => 11);
+impl_tuple_from_row!(13; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7, T8 => 8, T9 => 9, T10 => 10, T11 => 11, T12 => 12);
+impl_tuple_from_row!(14; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7, T8 => 8, T9 => 9, T10 => 10, T11 => 11, T12 => 12, T13 => 13);
+impl_tuple_from_row!(15; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7, T8 => 8, T9 => 9, T10 => 10, T11 => 11, T12 => 12, T13 => 13, T14 => 14);
+impl_tuple_from_row!(16; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T6 => 6, T7 => 7, T8 => 8, T9 => 9, T10 => 10, T11 => 11, T12 => 12, T13 => 13, T14 => 14, T15 => 15);
+
+#[cfg(test)]
+mod tests {
+    use std::{error::Error as StdError, sync::Arc};
+
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::{
+        ErrorKind, Result, ResultTable,
+        error::{CustomPlanError, RowConversionError},
+        result_table::test_data::{make_result_table_from_rows, make_schema},
+        rowset::parser::parse_inline_result_table,
+    };
+
+    fn timestamp_scale(ty: &ColumnType) -> Option<u8> {
+        match ty {
+            ColumnType::TimestampNtz { scale }
+            | ColumnType::TimestampLtz { scale }
+            | ColumnType::TimestampTz { scale } => *scale,
+            _ => None,
+        }
+    }
+
+    fn parse_timestamp_tz_as_utc(s: &str, scale: u8) -> StdResult<DateTime<Utc>, String> {
+        parse_timestamp_tz_as_utc_with(s, &TimestampPlan::new(scale)?)
+    }
+
+    /// Pre-1970 timestamps with a fractional part: `-1.1` is 1969-12-31T23:59:58.900Z (= secs -2, nsec 900_000_000), not `.100`.
+    #[test]
+    fn parse_timestamp_epoch_negative_with_fraction() {
+        let dt = parse_timestamp_epoch("-1.1", 9).unwrap();
+        assert_eq!(dt.timestamp(), -2);
+        assert_eq!(dt.timestamp_subsec_nanos(), 900_000_000);
+    }
+
+    /// `-1.5` happens to be symmetric and was already correct, but keep the
+    /// explicit case so future regressions show up next to the asymmetric one.
+    #[test]
+    fn parse_timestamp_epoch_negative_half() {
+        let dt = parse_timestamp_epoch("-1.5", 9).unwrap();
+        assert_eq!(dt.timestamp(), -2);
+        assert_eq!(dt.timestamp_subsec_nanos(), 500_000_000);
+    }
+
+    /// `-0.1` straddles the negative-zero boundary: secs_str = "-0" parses to
+    /// 0 but the value is still negative. Result must be 1969-12-31T23:59:59.900Z.
+    #[test]
+    fn parse_timestamp_epoch_negative_zero_subsecond() {
+        let dt = parse_timestamp_epoch("-0.1", 9).unwrap();
+        assert_eq!(dt.timestamp(), -1);
+        assert_eq!(dt.timestamp_subsec_nanos(), 900_000_000);
+    }
+
+    /// Positive subsecond must NOT be complemented.
+    #[test]
+    fn parse_timestamp_epoch_positive_fraction() {
+        let dt = parse_timestamp_epoch("0.1", 9).unwrap();
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.timestamp_subsec_nanos(), 100_000_000);
+    }
+
+    /// scale=3 (millis) negative.
+    #[test]
+    fn parse_timestamp_epoch_negative_fraction_scale_3() {
+        let dt = parse_timestamp_epoch("-1.250", 3).unwrap();
+        assert_eq!(dt.timestamp(), -2);
+        assert_eq!(dt.timestamp_subsec_millis(), 750);
+    }
+
+    #[test]
+    fn parse_timestamp_epoch_rejects_fraction_when_scale_zero() {
+        let err = parse_timestamp_epoch("0.1", 0).unwrap_err();
+        assert!(err.contains("Could not decode timestamp"), "actual: {err}");
+    }
+
+    #[test]
+    fn parse_timestamp_epoch_rejects_too_many_fraction_digits_for_scale() {
+        let err = parse_timestamp_epoch("1.2345", 3).unwrap_err();
+        assert!(err.contains("Could not decode timestamp"), "actual: {err}");
+    }
+
+    #[test]
+    fn parse_timestamp_epoch_rejects_trailing_garbage() {
+        let err = parse_timestamp_epoch("0.1xyz", 1).unwrap_err();
+        assert!(err.contains("Could not decode timestamp"), "actual: {err}");
+    }
+
+    #[test]
+    fn parse_timestamp_epoch_rejects_extreme_negative_subsecond_without_overflow() {
+        let err = parse_timestamp_epoch("-9223372036854775808.1", 9).unwrap_err();
+        assert!(err.contains("Could not decode timestamp"), "actual: {err}");
+    }
+
+    /// Snowflake documents timestamp scales in the `0..=9` range.
+    #[test]
+    fn parse_timestamp_epoch_rejects_out_of_range_scale() {
+        for scale in [10, u8::MAX] {
+            let err = parse_timestamp_epoch("0.1", scale).unwrap_err();
+            assert!(err.contains("invalid timestamp scale"), "actual: {err}");
+        }
+    }
+
+    #[test]
+    fn timestamp_scale_ignores_fixed_scale() {
+        assert_eq!(
+            timestamp_scale(&ColumnType::Fixed {
+                precision: Some(10),
+                scale: Some(2),
+            }),
+            None
+        );
+        assert_eq!(
+            timestamp_scale(&ColumnType::TimestampTz { scale: Some(4) }),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn parse_timestamp_tz_as_utc_accepts_legacy_numeric_only_format() {
+        let dt = parse_timestamp_tz_as_utc("1440", 0).unwrap();
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.timestamp_subsec_nanos(), 0);
+    }
+
+    #[test]
+    fn parse_timestamp_tz_with_offset_accepts_legacy_numeric_only_format() {
+        let dt = parse_timestamp_tz_with_offset("1440", 0).unwrap();
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.offset().local_minus_utc(), 0);
+    }
+
+    #[test]
+    fn parse_timestamp_tz_as_utc_accepts_legacy_numeric_only_format_with_subseconds() {
+        let epoch_scaled = 1_718_429_445_123_456_789i128;
+        let packed = epoch_scaled * LEGACY_TIMESTAMP_TZ_SHIFT + 1980;
+        let dt = parse_timestamp_tz_as_utc(&packed.to_string(), 9).unwrap();
+        assert_eq!(dt.timestamp(), 1_718_429_445);
+        assert_eq!(dt.timestamp_subsec_nanos(), 123_456_789);
+    }
+
+    #[test]
+    fn parse_timestamp_tz_with_offset_accepts_legacy_numeric_only_format_with_subseconds() {
+        let epoch_scaled = 1_718_429_445_123_456_789i128;
+        let packed = epoch_scaled * LEGACY_TIMESTAMP_TZ_SHIFT + 1980;
+        let dt = parse_timestamp_tz_with_offset(&packed.to_string(), 9).unwrap();
+        assert_eq!(dt.timestamp(), 1_718_429_445);
+        assert_eq!(dt.timestamp_subsec_nanos(), 123_456_789);
+        assert_eq!(dt.offset().local_minus_utc(), 9 * 60 * 60);
+    }
+
+    #[test]
+    fn parse_timestamp_tz_as_utc_accepts_boundary_timezone_indices() {
+        let far_west = parse_timestamp_tz_as_utc("0 0", 9).unwrap();
+        assert_eq!(far_west.timestamp(), 0);
+
+        let far_east = parse_timestamp_tz_as_utc("0 2880", 9).unwrap();
+        assert_eq!(far_east.timestamp(), 0);
+    }
+
+    #[test]
+    fn parse_timestamp_tz_with_offset_rejects_trailing_tokens() {
+        let err = parse_timestamp_tz_with_offset("0 1440 trailing", 9).unwrap_err();
+        assert!(err.contains("invalid timestamp_tz"), "actual: {err}");
+    }
+
+    #[test]
+    fn parse_timestamp_tz_with_offset_accepts_full_fixed_offset_minute_range() {
+        let far_west = parse_timestamp_tz_with_offset("0 1", 9).unwrap();
+        assert_eq!(
+            far_west.offset().local_minus_utc(),
+            -(23 * 60 * 60 + 59 * 60)
+        );
+
+        let plus_14_01 = parse_timestamp_tz_with_offset("0 2281", 9).unwrap();
+        assert_eq!(plus_14_01.offset().local_minus_utc(), 14 * 60 * 60 + 60);
+
+        let far_east = parse_timestamp_tz_with_offset("0 2879", 9).unwrap();
+        assert_eq!(far_east.offset().local_minus_utc(), 23 * 60 * 60 + 59 * 60);
+    }
+
+    #[test]
+    fn parse_timestamp_tz_with_offset_rejects_unrepresentable_boundary_offsets() {
+        for raw in ["0 0", "0 2880"] {
+            let err = parse_timestamp_tz_with_offset(raw, 9).unwrap_err();
+            assert!(
+                err.contains("out of range for DateTime<FixedOffset>"),
+                "actual: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_time_seconds_and_nanos_truncates_numeric_fraction_when_scale_zero() {
+        let (secs, nsec) = parse_time_seconds_and_nanos("45296.123", 0).unwrap();
+        assert_eq!(secs, 45_296);
+        assert_eq!(nsec, 0);
+    }
+
+    #[test]
+    fn parse_time_seconds_and_nanos_rejects_fraction_when_scale_zero() {
+        let err = parse_time_seconds_and_nanos("1.xyz", 0).unwrap_err();
+        assert!(err.contains("invalid time"), "actual: {err}");
+    }
+
+    #[test]
+    fn parse_time_seconds_and_nanos_truncates_too_many_fraction_digits_for_scale() {
+        let (secs, nsec) = parse_time_seconds_and_nanos("1.999", 2).unwrap();
+        assert_eq!(secs, 1);
+        assert_eq!(nsec, 990_000_000);
+    }
+
+    fn one_cell_table(ty: ColumnType, value: &str) -> ResultTable {
+        let schema = make_schema(vec![("X".to_string(), ty, true)]);
+        make_result_table_from_rows(schema, vec![vec![Some(value.to_string())]]).unwrap()
+    }
+
+    fn one_nullable_cell_table(ty: ColumnType, value: Option<&str>) -> ResultTable {
+        let schema = make_schema(vec![("X".to_string(), ty, true)]);
+        make_result_table_from_rows(
+            schema,
+            vec![vec![value.map(std::string::ToString::to_string)]],
+        )
+        .unwrap()
+    }
+
+    fn zero_cell_table(row_count: usize) -> ResultTable {
+        let schema = make_schema(vec![]);
+        make_result_table_from_rows(schema, (0..row_count).map(|_| Vec::new()).collect()).unwrap()
+    }
+
+    #[derive(Debug)]
+    struct CelsiusTemp;
+
+    impl FromCell for CelsiusTemp {
+        type Plan = ();
+
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            Ok(())
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let raw = required_raw(raw)?;
+            raw.parse::<f64>().map(|_| CelsiusTemp).map_err(|e| {
+                CellConversionError::builder("not a valid temperature")
+                    .source(e)
+                    .build()
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct AlwaysFails;
+
+    impl FromCell for AlwaysFails {
+        type Plan = ();
+
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            Ok(())
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let _ = required_raw(raw)?;
+            Err(CellConversionError::builder("always fails").build())
+        }
+    }
+
+    #[test]
+    fn unit_tuple_decodes_zero_column_rows() {
+        let table = zero_cell_table(2);
+        let rows = table
+            .rows::<()>()
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows, vec![(), ()]);
+    }
+
+    #[test]
+    fn unit_tuple_rejects_non_empty_schema() {
+        let table = one_cell_table(ColumnType::Text { length: None }, "x");
+        let err = match table.rows::<()>() {
+            Ok(_) => panic!("expected unit tuple plan build to reject non-empty schema"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::ColumnCountMismatch(error))
+                if error.expected() == 0 && error.actual() == 1
+        ));
+    }
+
+    #[test]
+    fn option_preserves_null_as_ok_none() {
+        let table = one_nullable_cell_table(ColumnType::Text { length: None }, None);
+        let value = table
+            .rows::<(Option<String>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn custom_from_cell_parse_failure_is_contextualized_and_preserves_source() {
+        let err = one_cell_table(ColumnType::Text { length: None }, "abc")
+            .rows::<(CelsiusTemp,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+
+        let decode = err
+            .as_cell_decode_error()
+            .expect("custom decode failure should be contextualized");
+
+        assert_eq!(decode.row_index(), 0);
+        assert_eq!(decode.column_index(), 0);
+        assert_eq!(decode.column_name(), "X");
+        assert_eq!(
+            decode.conversion_error().reason(),
+            "not a valid temperature"
+        );
+        assert_eq!(
+            decode.actual_column_type(),
+            &ColumnType::Text { length: None }
+        );
+        assert_eq!(decode.raw_value_preview(), Some("abc"));
+        assert!(decode.target_type_name().ends_with("CelsiusTemp"));
+        assert!(StdError::source(decode).is_some());
+        assert!(decode.conversion_error().source().is_some());
+        assert!(StdError::source(&err).is_some());
+    }
+
+    #[test]
+    fn built_in_parse_failure_preserves_source() {
+        let err = one_cell_table(ColumnType::Real, "abc")
+            .rows::<(f64,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+
+        let decode = err
+            .as_cell_decode_error()
+            .expect("built-in parse failure should be contextualized");
+
+        assert!(decode.conversion_error().reason().contains("parse error"));
+        assert!(StdError::source(decode).is_some());
+        assert!(decode.conversion_error().source().is_some());
+        assert!(StdError::source(&err).is_some());
+    }
+
+    #[test]
+    fn long_raw_value_preview_is_truncated() {
+        let raw = "x".repeat(256);
+        let err = one_cell_table(ColumnType::Text { length: None }, &raw)
+            .rows::<(AlwaysFails,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+
+        let decode = err.as_cell_decode_error().expect("decode failure expected");
+        let preview = decode
+            .raw_value_preview()
+            .expect("preview should be present for non-null values");
+
+        assert!(preview.ends_with("..."), "preview: {preview}");
+        assert!(preview.len() <= 131, "preview length: {}", preview.len());
+    }
+
+    #[test]
+    fn decimal_value_decodes_fixed_column() {
+        let t = one_cell_table(
+            ColumnType::Fixed {
+                precision: Some(10),
+                scale: Some(2),
+            },
+            "12.34",
+        );
+        let value = t
+            .rows::<(DecimalValue,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, DecimalValue::new("12.34"));
+    }
+
+    #[test]
+    fn decimal_value_rejects_text_column() {
+        let t = one_cell_table(ColumnType::Text { length: None }, "12.34");
+        let err = match t.rows::<(DecimalValue,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for DecimalValue"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    /// Integers only accept `FIXED(scale=0)` columns; nearby shapes must fail during plan build.
+    #[test]
+    fn integer_rejects_non_integer_column_shapes() {
+        for (label, ty) in [
+            ("text", ColumnType::Text { length: None }),
+            ("boolean", ColumnType::Boolean),
+            (
+                "scaled fixed",
+                ColumnType::Fixed {
+                    precision: Some(10),
+                    scale: Some(2),
+                },
+            ),
+        ] {
+            let table = one_cell_table(ty, "42");
+            let err = match table.rows::<(i64,)>() {
+                Ok(_) => panic!("{label} unexpectedly planned as i64"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(
+                    err.as_schema_error(),
+                    Some(SchemaError::IncompatibleColumnType(_))
+                ),
+                "{label} unexpectedly decoded as i64: {err:?}"
+            );
+        }
+    }
+
+    /// `TEXT "true"` must NOT decode as `bool`.
+    #[test]
+    fn bool_rejects_text_column() {
+        let t = one_cell_table(ColumnType::Text { length: None }, "true");
+        let err = match t.rows::<(bool,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for bool"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    #[test]
+    fn real_f64_accepts_documented_special_values_case_insensitively() {
+        let nan = one_cell_table(ColumnType::Real, "nAn")
+            .rows::<(f64,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(nan.is_nan());
+
+        let inf = one_cell_table(ColumnType::Real, "InFiNiTy")
+            .rows::<(f64,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(inf.is_infinite() && inf.is_sign_positive());
+
+        let neg_inf = one_cell_table(ColumnType::Real, "-iNf")
+            .rows::<(f64,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(neg_inf.is_infinite() && neg_inf.is_sign_negative());
+    }
+
+    #[test]
+    fn real_f32_accepts_documented_special_values_case_insensitively() {
+        let nan = one_cell_table(ColumnType::Real, "nAn")
+            .rows::<(f32,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(nan.is_nan());
+
+        let inf = one_cell_table(ColumnType::Real, "iNf")
+            .rows::<(f32,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(inf.is_infinite() && inf.is_sign_positive());
+
+        let neg_inf = one_cell_table(ColumnType::Real, "-InFiNiTy")
+            .rows::<(f32,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(neg_inf.is_infinite() && neg_inf.is_sign_negative());
+    }
+
+    /// `TEXT` cells are plain strings; semi-structured JSON must come from `VARIANT` / `OBJECT` / `ARRAY`.
+    #[test]
+    fn json_rejects_text_column() {
+        let t = one_cell_table(ColumnType::Text { length: None }, r#"{"a":1}"#);
+        let err = match t.rows::<(serde_json::Value,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for json"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    /// The outer rowset parser should unescape once, leaving the inner JSON document escapes intact for `serde_json::from_str`.
+    #[test]
+    fn json_variant_decode_preserves_inner_escapes_after_parser_unescape() {
+        let body = Bytes::from_static(br#"[[ "{\"message\":\"line\\n\\\\path\"}" ]]"#);
+        let schema = make_schema(vec![("X".to_string(), ColumnType::Variant, true)]);
+        let table = parse_inline_result_table(schema, Arc::from("test"), body).unwrap();
+
+        let value = table
+            .rows::<(serde_json::Value,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+
+        assert_eq!(value["message"], "line\n\\path");
+    }
+
+    /// `TEXT` hex must NOT decode as `BinaryValue`.
+    #[test]
+    fn binary_rejects_text_column() {
+        let t = one_cell_table(ColumnType::Text { length: None }, "48656C6C6F");
+        let err = match t.rows::<(BinaryValue,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for BinaryValue"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    #[test]
+    fn binary_value_decodes_binary_column() {
+        let t = one_cell_table(ColumnType::Binary { length: None }, "48656C6C6F");
+        let value = t
+            .rows::<(BinaryValue,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value.as_bytes(), b"Hello");
+    }
+
+    #[test]
+    fn json_typed_array_decodes_null_elements_via_undefined_normalization() {
+        let t = one_cell_table(ColumnType::Array, "[\n  1,\n  undefined,\n  3\n]");
+        let value = t
+            .rows::<(Json<Vec<Option<i64>>>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value.into_inner(), vec![Some(1), None, Some(3)]);
+    }
+
+    #[test]
+    fn json_typed_object_decodes_integer_keyed_map() {
+        let t = one_cell_table(ColumnType::Object, r#"{"1":"a","2":"b"}"#);
+        let value = t
+            .rows::<(Json<std::collections::BTreeMap<i64, String>>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        let map = value.into_inner();
+        assert_eq!(map.get(&1).map(String::as_str), Some("a"));
+        assert_eq!(map.get(&2).map(String::as_str), Some("b"));
+    }
+
+    #[test]
+    fn json_typed_nested_struct_decodes() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Inner {
+            x: i64,
+        }
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Outer {
+            nested: Inner,
+        }
+
+        let t = one_cell_table(ColumnType::Object, r#"{"nested":{"x":7}}"#);
+        let value = t
+            .rows::<(Json<Outer>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(
+            value.into_inner(),
+            Outer {
+                nested: Inner { x: 7 }
+            }
+        );
+    }
+
+    /// A NULL array element (`undefined`) cannot land in a non-`Option` slot: `serde` rejects the `null`.
+    #[test]
+    fn json_typed_non_option_vec_rejects_null_element() {
+        let t = one_cell_table(ColumnType::Array, "[\n  1,\n  undefined,\n  3\n]");
+        let err = t
+            .rows::<(Json<Vec<i64>>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+        let decode = err
+            .as_cell_decode_error()
+            .expect("null element should fail cell decode");
+        assert!(
+            decode
+                .conversion_error()
+                .reason()
+                .contains("invalid json payload"),
+            "actual: {}",
+            decode.conversion_error().reason()
+        );
+    }
+
+    #[test]
+    fn json_typed_rejects_text_column() {
+        let t = one_cell_table(ColumnType::Text { length: None }, "[1,2,3]");
+        let err = match t.rows::<(Json<Vec<i64>>,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for Json"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    #[test]
+    fn serde_json_value_normalizes_undefined_array_elements() {
+        let t = one_cell_table(ColumnType::Array, "[\n  1,\n  undefined,\n  3\n]");
+        let value = t
+            .rows::<(serde_json::Value,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, serde_json::json!([1, null, 3]));
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_leaves_clean_json_borrowed() {
+        let raw = r#"{"a":1,"b":[1,2,3]}"#;
+        assert!(matches!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_preserves_string_literals() {
+        // `undefined` inside a quoted value, plus escaped quotes and backslashes, must not be rewritten.
+        let raw = r#"["undefined","a \" undefined","c\\undefined"]"#;
+        assert!(matches!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rewrites_bare_undefined_outside_strings() {
+        let raw = r#"[undefined,"undefined",undefined]"#;
+        assert_eq!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            r#"[null,"undefined",null]"#
+        );
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_keeps_object_null_values() {
+        let raw = "{\n  \"k1\": null,\n  \"k2\": undefined\n}";
+        assert_eq!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            "{\n  \"k1\": null,\n  \"k2\": null\n}"
+        );
+    }
+
+    fn assert_non_finite_rejected(raw: &str, token: &str) {
+        let err = prepare_snowflake_json_payload(raw)
+            .expect_err("non-finite float token must be rejected");
+        let expected =
+            format!("Snowflake non-finite float token `{token}` is not representable as JSON");
+        assert_eq!(err.reason(), expected);
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_preserves_non_finite_inside_strings() {
+        for raw in [r#""Infinity""#, r#""-Infinity""#, r#""NaN""#] {
+            assert!(matches!(
+                prepare_snowflake_json_payload(raw).unwrap(),
+                Cow::Borrowed(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_scalar_infinity() {
+        assert_non_finite_rejected("Infinity", "Infinity");
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_scalar_nan() {
+        assert_non_finite_rejected("NaN", "NaN");
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_signed_infinity_in_array() {
+        assert_non_finite_rejected("[\n  Infinity,\n  -Infinity,\n  NaN\n]", "Infinity");
+        assert_non_finite_rejected("[\n  -Infinity\n]", "-Infinity");
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_non_finite_in_object() {
+        assert_non_finite_rejected("{\n  \"a\": Infinity\n}", "Infinity");
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_nested_non_finite() {
+        assert_non_finite_rejected("{\n  \"arr\": [\n    NaN\n  ]\n}", "NaN");
+    }
+
+    /// `+Infinity` is not a Snowflake token: it is left untouched for `serde_json` to reject as invalid JSON.
+    #[test]
+    fn prepare_snowflake_json_payload_leaves_plus_infinity_for_serde() {
+        let raw = "[+Infinity]";
+        assert!(matches!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(serde_json::from_str::<serde_json::Value>(raw).is_err());
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_accepts_finite_float() {
+        let raw = "[\n  1.500000000000000e+00\n]";
+        assert!(matches!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    /// A non-finite token must win even when a rewritable `undefined` precedes it: the payload must never silently succeed.
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_non_finite_alongside_undefined() {
+        assert_non_finite_rejected("[undefined, NaN]", "NaN");
+    }
+
+    #[test]
+    fn serde_json_value_rejects_scalar_infinity() {
+        let t = one_cell_table(ColumnType::Variant, "Infinity");
+        let err = t
+            .rows::<(serde_json::Value,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+        let decode = err
+            .as_cell_decode_error()
+            .expect("non-finite token should fail cell decode");
+        assert!(
+            decode
+                .conversion_error()
+                .reason()
+                .contains("non-finite float token `Infinity`"),
+            "actual: {}",
+            decode.conversion_error().reason()
+        );
+    }
+
+    /// `TIMESTAMP_LTZ` must NOT decode as `NaiveDateTime` — semantics differ.
+    #[test]
+    fn naive_datetime_rejects_timestamp_ltz() {
+        let t = one_cell_table(ColumnType::TimestampLtz { scale: Some(9) }, "0");
+        let err = match t.rows::<(NaiveDateTime,)>() {
+            Ok(_) => panic!("expected plan build to reject TIMESTAMP_LTZ for NaiveDateTime"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    #[test]
+    fn datetime_utc_accepts_legacy_timestamp_tz_wire() {
+        let t = one_cell_table(ColumnType::TimestampTz { scale: Some(0) }, "1440");
+        let dt = t
+            .rows::<(DateTime<Utc>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(dt.timestamp(), 0);
+    }
+
+    #[test]
+    fn datetime_utc_accepts_legacy_timestamp_tz_wire_with_subseconds() {
+        let epoch_scaled = 1_718_429_445_123_456_789i128;
+        let packed = (epoch_scaled * LEGACY_TIMESTAMP_TZ_SHIFT + 1980).to_string();
+        let t = one_cell_table(ColumnType::TimestampTz { scale: Some(9) }, &packed);
+        let dt = t
+            .rows::<(DateTime<Utc>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(dt.timestamp(), 1_718_429_445);
+        assert_eq!(dt.timestamp_subsec_nanos(), 123_456_789);
+    }
+
+    fn decode_vector<T: FromCell>(raw: &str) -> CellDecodeResult<T> {
+        let schema = make_schema(vec![("X".to_string(), ColumnType::Vector, true)]);
+        let column = schema.column_at(0).expect("single-column schema");
+        let ctx = CellPlanContext::new(RowPlanContext::new(&schema), column);
+        let plan = T::build_plan(ctx).unwrap();
+        T::from_cell_with_plan(Some(raw), &plan)
+    }
+
+    #[test]
+    fn vector_i32_decodes_integer_payload() {
+        let value = decode_vector::<Vector<i32>>("[1,2,3]").unwrap();
+        assert_eq!(value.as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn vector_i32_decodes_i32_bounds() {
+        let value = decode_vector::<Vector<i32>>("[-2147483648,2147483647]").unwrap();
+        assert_eq!(value.as_slice(), &[i32::MIN, i32::MAX]);
+    }
+
+    #[test]
+    fn vector_i32_rejects_out_of_range_element() {
+        let err = decode_vector::<Vector<i32>>("[2147483648]").unwrap_err();
+        assert!(
+            err.reason().contains("invalid VECTOR(INT) element"),
+            "actual: {}",
+            err.reason()
+        );
+    }
+
+    #[test]
+    fn vector_i32_rejects_decimal_token() {
+        let err = decode_vector::<Vector<i32>>("[1.000000]").unwrap_err();
+        assert!(
+            err.reason().contains("invalid VECTOR(INT) element"),
+            "actual: {}",
+            err.reason()
+        );
+    }
+
+    #[test]
+    fn vector_i32_rejects_non_finite_token() {
+        for raw in ["[inf]", "[nan]"] {
+            let err = decode_vector::<Vector<i32>>(raw).unwrap_err();
+            assert!(
+                err.reason().contains("invalid VECTOR(INT) element"),
+                "raw {raw} actual: {}",
+                err.reason()
+            );
+        }
+    }
+
+    #[test]
+    fn vector_f32_decodes_finite_payload() {
+        let value = decode_vector::<Vector<f32>>("[1.500000,-2.250000,0.000000]").unwrap();
+        assert_eq!(value.as_slice(), &[1.5f32, -2.25, 0.0]);
+    }
+
+    #[test]
+    fn vector_f32_decodes_non_finite_tokens() {
+        let value = decode_vector::<Vector<f32>>("[inf,-inf,nan]").unwrap();
+        let slice = value.as_slice();
+        assert!(slice[0].is_infinite() && slice[0].is_sign_positive());
+        assert!(slice[1].is_infinite() && slice[1].is_sign_negative());
+        assert!(slice[2].is_nan());
+    }
+
+    #[test]
+    fn vector_f32_rejects_integer_only_token() {
+        let err = decode_vector::<Vector<f32>>("[1,2,3]").unwrap_err();
+        assert!(
+            err.reason().contains("invalid VECTOR(FLOAT) element"),
+            "actual: {}",
+            err.reason()
+        );
+    }
+
+    #[test]
+    fn vector_f32_rejects_uppercase_semistructured_tokens() {
+        for raw in ["[Infinity]", "[NaN]", "[-Infinity]"] {
+            let err = decode_vector::<Vector<f32>>(raw).unwrap_err();
+            assert!(
+                err.reason().contains("invalid VECTOR(FLOAT) element"),
+                "raw {raw} actual: {}",
+                err.reason()
+            );
+        }
+    }
+
+    #[test]
+    fn vector_rejects_empty_payload() {
+        let int_err = decode_vector::<Vector<i32>>("[]").unwrap_err();
+        assert!(
+            int_err.reason().contains("invalid vector payload"),
+            "actual: {}",
+            int_err.reason()
+        );
+        let float_err = decode_vector::<Vector<f32>>("[]").unwrap_err();
+        assert!(
+            float_err.reason().contains("invalid vector payload"),
+            "actual: {}",
+            float_err.reason()
+        );
+    }
+
+    #[test]
+    fn vector_rejects_quoted_and_structural_tokens() {
+        for raw in [r#"["1"]"#, "[[1]]", "[{}]"] {
+            assert!(
+                decode_vector::<Vector<i32>>(raw).is_err(),
+                "expected {raw} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn option_vector_handles_sql_null() {
+        let value = one_nullable_cell_table(ColumnType::Vector, None)
+            .rows::<(Option<Vector<i32>>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn vector_rejects_non_vector_column() {
+        let err = match one_cell_table(ColumnType::Array, "[1,2,3]").rows::<(Vector<i32>,)>() {
+            Ok(_) => panic!("expected plan build to reject ARRAY column for Vector"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    /// A caller can still read the raw `VECTOR` payload as text; `String` accepts any column type.
+    #[test]
+    fn string_reads_raw_vector_payload() {
+        let value = one_cell_table(ColumnType::Vector, "[1,2,3]")
+            .rows::<(String,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, "[1,2,3]");
+    }
+
+    #[test]
+    fn vector_supports_into_iterator() {
+        let value = decode_vector::<Vector<i32>>("[1,2,3]").unwrap();
+        let owned: Vec<i32> = value.into_iter().collect();
+        assert_eq!(owned, vec![1, 2, 3]);
+
+        let value = decode_vector::<Vector<i32>>("[4,5]").unwrap();
+        let borrowed: Vec<i32> = (&value).into_iter().copied().collect();
+        assert_eq!(borrowed, vec![4, 5]);
+    }
+
+    /// Captures the schema-wide state a [`CellPlanContext`] exposes at plan build time.
+    #[derive(Debug)]
+    struct SchemaAwareCell {
+        schema_len: usize,
+        column_index: usize,
+    }
+
+    struct SchemaAwarePlan {
+        schema_len: usize,
+        column_index: usize,
+    }
+
+    impl FromCell for SchemaAwareCell {
+        type Plan = SchemaAwarePlan;
+
+        fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            let column = ctx.column();
+            // The column handed to the cell plan must be the one the schema resolves at that index.
+            let resolved = ctx
+                .schema()
+                .column_at(column.index())
+                .expect("cell column belongs to the schema");
+            assert_eq!(resolved.name(), column.name());
+            Ok(SchemaAwarePlan {
+                schema_len: ctx.schema().len(),
+                column_index: column.index(),
+            })
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let _ = required_raw(raw)?;
+            Ok(SchemaAwareCell {
+                schema_len: plan.schema_len,
+                column_index: plan.column_index,
+            })
+        }
+    }
+
+    #[test]
+    fn from_cell_build_plan_reads_schema_context() {
+        let schema = make_schema(vec![
+            ("A".to_string(), ColumnType::Text { length: None }, true),
+            ("B".to_string(), ColumnType::Text { length: None }, true),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("a".to_string()), Some("b".to_string())]],
+        )
+        .unwrap();
+        let row = table
+            .rows::<(SchemaAwareCell, SchemaAwareCell)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.0.schema_len, 2);
+        assert_eq!(row.0.column_index, 0);
+        assert_eq!(row.1.schema_len, 2);
+        assert_eq!(row.1.column_index, 1);
+    }
+
+    /// A cell decoder whose `build_plan` always fails with a custom plan-time error.
+    #[derive(Debug)]
+    struct RejectingCell;
+
+    impl FromCell for RejectingCell {
+        type Plan = ();
+
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            Err(CustomPlanError::new("cell plan rejected").into())
+        }
+
+        fn from_cell_with_plan(_raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            Ok(RejectingCell)
+        }
+    }
+
+    /// Resolves the rejecting cell by name to exercise that enrichment path.
+    struct ByNameRejectingRow;
+
+    impl FromRow for ByNameRejectingRow {
+        type Plan = CellPlan<RejectingCell>;
+
+        fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            CellPlan::by_name(ctx, "X")
+        }
+
+        fn from_row_with_plan(_row: RowRef<'_>, _plan: &Self::Plan) -> RowDecodeResult<Self> {
+            Ok(ByNameRejectingRow)
+        }
+    }
+
+    #[test]
+    fn from_cell_build_plan_decode_plan_error_gets_column_context_by_position() {
+        // Tuple plans resolve columns by position through `CellPlan::new`.
+        let err = match one_cell_table(ColumnType::Text { length: None }, "x")
+            .rows::<(RejectingCell,)>()
+        {
+            Ok(_) => panic!("expected build_plan to reject the column"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        let plan = err
+            .as_custom_plan_error()
+            .expect("build_plan failure should surface as a CustomPlanError");
+        assert_eq!(plan.reason(), "cell plan rejected");
+        assert_eq!(plan.column_index(), Some(0));
+        assert_eq!(plan.column_name(), Some("X"));
+    }
+
+    #[test]
+    fn from_cell_build_plan_decode_plan_error_gets_column_context_by_name() {
+        let err = match one_cell_table(ColumnType::Text { length: None }, "x")
+            .rows::<ByNameRejectingRow>()
+        {
+            Ok(_) => panic!("expected build_plan to reject the column"),
+            Err(err) => err,
+        };
+
+        let plan = err
+            .as_custom_plan_error()
+            .expect("build_plan failure should surface as a CustomPlanError");
+        assert_eq!(plan.column_index(), Some(0));
+        assert_eq!(plan.column_name(), Some("X"));
+    }
+
+    /// A row decoder whose `build_plan` fails before any column is in scope.
+    struct RejectingRow;
+
+    impl FromRow for RejectingRow {
+        type Plan = ();
+
+        fn build_plan(_ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            Err(CustomPlanError::new("row plan rejected").into())
+        }
+
+        fn from_row_with_plan(_row: RowRef<'_>, _plan: &Self::Plan) -> RowDecodeResult<Self> {
+            Ok(RejectingRow)
+        }
+    }
+
+    #[test]
+    fn from_row_build_plan_decode_plan_error_has_no_column_context() {
+        let err =
+            match one_cell_table(ColumnType::Text { length: None }, "x").rows::<RejectingRow>() {
+                Ok(_) => panic!("expected build_plan to reject the row shape"),
+                Err(err) => err,
+            };
+
+        let plan = err
+            .as_custom_plan_error()
+            .expect("build_plan failure should surface as a CustomPlanError");
+        assert_eq!(plan.reason(), "row plan rejected");
+        assert_eq!(plan.column_index(), None);
+        assert_eq!(plan.column_name(), None);
+    }
+
+    /// A row decoder that rejects a specific decoded value with a row-level conversion error.
+    #[derive(Debug)]
+    struct DomainRow;
+
+    impl FromRow for DomainRow {
+        type Plan = CellPlan<String>;
+
+        fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            CellPlan::by_position(ctx, 0)
+        }
+
+        fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
+            let value: String = row.get_with_plan(plan)?;
+            if value == "bad" {
+                return Err(RowConversionError::new("value is not allowed").into());
+            }
+            Ok(DomainRow)
+        }
+    }
+
+    #[test]
+    fn from_row_conversion_error_gets_failing_row_index() {
+        let schema = make_schema(vec![(
+            "X".to_string(),
+            ColumnType::Text { length: None },
+            true,
+        )]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("ok".to_string())], vec![Some("bad".to_string())]],
+        )
+        .unwrap();
+
+        let mut rows = table.rows::<DomainRow>().unwrap();
+        rows.next().unwrap().expect("row 0 is allowed");
+        let err = rows.next().unwrap().expect_err("row 1 should be rejected");
+
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        let conv = err
+            .as_row_conversion_error()
+            .expect("from_row_with_plan failure should surface as a RowConversionError");
+        assert_eq!(conv.reason(), "value is not allowed");
+        assert_eq!(conv.row_index(), Some(1));
+    }
+
+    /// A row decoder that propagates a cell-local failure out of `from_row_with_plan`.
+    #[derive(Debug)]
+    struct CellFailingRow;
+
+    impl FromRow for CellFailingRow {
+        type Plan = CellPlan<i64>;
+
+        fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            CellPlan::by_position(ctx, 0)
+        }
+
+        fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
+            let _value: i64 = row.get_with_plan(plan)?;
+            Ok(CellFailingRow)
+        }
+    }
+
+    #[test]
+    fn propagated_cell_decode_error_keeps_own_context_and_stays_distinct() {
+        let schema = make_schema(vec![(
+            "X".to_string(),
+            ColumnType::Fixed {
+                precision: None,
+                scale: Some(0),
+            },
+            true,
+        )]);
+        let table =
+            make_result_table_from_rows(schema, vec![vec![Some("not-a-number".to_string())]])
+                .unwrap();
+
+        let err = table
+            .rows::<CellFailingRow>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .expect_err("cell decode should fail");
+
+        // A propagated cell failure is a CellDecodeError, distinct from a RowConversionError.
+        assert!(err.as_row_conversion_error().is_none());
+        let cell = err
+            .as_cell_decode_error()
+            .expect("cell failure should surface as a CellDecodeError");
+        // The row-index enrichment is a no-op here, so the cell error keeps its own context.
+        assert_eq!(cell.row_index(), 0);
+        assert_eq!(cell.column_name(), "X");
+    }
+}

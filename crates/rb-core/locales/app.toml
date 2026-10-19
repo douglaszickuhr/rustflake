@@ -194,3 +194,78 @@ es = "EXPLAIN solo para consultas y DML"
 en = "on Snowflake the actual plan only runs queries; use ⌘E (estimated) for DML"
 pt = "no Snowflake o plano real só executa consultas; use ⌘E (estimado) para DML"
 es = "en Snowflake el plan real solo ejecuta consultas; usa ⌘E (estimado) para DML"
+
+[err.dbt_manifest]
+en = "Could not read manifest.json: %{error}"
+pt = "Não deu para ler o manifest.json: %{error}"
+es = "No se pudo leer manifest.json: %{error}"
+
+[err.dbt_no_manifest]
+en = "No manifest.json at %{path}. Run Refresh dbt (dbt parse) once."
+pt = "Sem manifest.json em %{path}. Rode Refresh dbt (dbt parse) uma vez."
+es = "No hay manifest.json en %{path}. Ejecuta Refresh dbt (dbt parse) una vez."
+
+[err.dbt_not_found]
+en = "dbt not found in PATH"
+pt = "dbt não encontrado no PATH"
+es = "dbt no encontrado en el PATH"
+
+[err.dbt_parse_failed]
+en = "dbt failed:\n%{output}"
+pt = "dbt falhou:\n%{output}"
+es = "dbt falló:\n%{output}"
+
+[err.dbt_timeout]
+en = "dbt parse took longer than 120 s and was stopped"
+pt = "dbt parse passou de 120 s e foi interrompido"
+es = "dbt parse tardó más de 120 s y se detuvo"
+
+[err.aws_not_found]
+en = "aws CLI not found in PATH"
+pt = "aws CLI não encontrado no PATH"
+es = "aws CLI no encontrado en el PATH"
+
+[err.config_name]
+en = "configuration: `name` is empty"
+pt = "configuração: `name` vazio"
+es = "configuración: `name` vacío"
+
+[err.config_kind]
+en = "configuration: unknown role kind `%{kind}`"
+pt = "configuração: tipo de role desconhecido `%{kind}`"
+es = "configuración: tipo de rol desconocido `%{kind}`"
+
+[err.config_regex]
+en = "configuration: invalid regex in `%{kind}`: %{error}"
+pt = "configuração: regex inválida em `%{kind}`: %{error}"
+es = "configuración: regex inválida en `%{kind}`: %{error}"
+
+[err.config_group]
+en = "configuration: the `%{kind}` rule needs the named group `%{group}`"
+pt = "configuração: a regra `%{kind}` precisa do grupo `%{group}`"
+es = "configuración: la regla `%{kind}` necesita el grupo `%{group}`"
+
+[err.config_tag]
+en = "configuration: `classification.tag` must be DB.SCHEMA.NAME"
+pt = "configuração: `classification.tag` precisa ser DB.SCHEMA.NOME"
+es = "configuración: `classification.tag` debe ser DB.SCHEMA.NOMBRE"
+
+[err.config_duplicate]
+en = "another configuration is already called `%{name}`"
+pt = "outra configuração já se chama `%{name}`"
+es = "otra configuración ya se llama `%{name}`"
+
+[err.config_not_found]
+en = "configuration `%{name}` not found"
+pt = "configuração `%{name}` não encontrada"
+es = "configuración `%{name}` no encontrada"
+
+[err.script_name]
+en = "Script name can't be empty or start with a dot"
+pt = "O nome do script não pode ser vazio nem começar com ponto"
+es = "El nombre del script no puede estar vacío ni empezar con punto"
+
+[err.script_exists]
+en = "A script called %{name} already exists"
+pt = "Já existe um script chamado %{name}"
+es = "Ya existe un script llamado %{name}"

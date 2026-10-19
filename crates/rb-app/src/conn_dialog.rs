@@ -10,12 +10,14 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{Select, SelectState};
-use gpui_kit::component::{IconName, IndexPath, Selectable as _, WindowExt as _, h_flex};
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::{IconName, IndexPath, Selectable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use rb_core::config::{ConnectionConfig, SnowflakeAuth, SnowflakeConfig, SshConfig, SslMode, new_id};
+use rb_core::config::{ConnectionConfig, DbtConfig, Environment, SnowflakeAuth, SnowflakeConfig, SshConfig, SslMode, new_id};
 use rb_core::ssh::{SshEnv, host_aliases};
 
+use crate::dbt_store::DbtStore;
 use crate::workspace::{Workspace, kind_logo};
 
 const SSL_MODES: [&str; 3] = ["disable", "prefer", "require"];
@@ -43,6 +45,19 @@ struct Fields {
     sf_warehouse: Entity<InputState>,
     sf_role: Entity<InputState>,
     sf_schema: Entity<InputState>,
+    env: Rc<Cell<Option<Environment>>>,
+    /// Aba aberta: 0 General, 1 Authentication, 2 dbt (só Snowflake).
+    tab: Rc<Cell<usize>>,
+    dbt_dir: Entity<InputState>,
+    dbt_target: Entity<InputState>,
+    /// `AWS_PROFILE` do dbt parse (dbt-loom no S3); vazio = o do shell.
+    dbt_aws: Entity<InputState>,
+    /// Estado do manifest da pasta escolhida (o mesmo cartão da seção dbt da tabela).
+    dbt_card: Entity<DbtStore>,
+    /// "Nenhum" + configurações instaladas (o primeiro item é sempre "Nenhum").
+    org: Entity<SelectState<Vec<String>>>,
+    /// Arquivos de configuração que não carregaram.
+    org_errs: String,
 }
 
 /// Bloco Snowflake a partir dos campos do diálogo.
@@ -54,7 +69,7 @@ fn parse_snowflake(account: &str, auth: SnowflakeAuth, key: &str, warehouse: &st
         return Err(t!("conn.err_key_path").to_string());
     }
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
-    Ok(SnowflakeConfig { account: account.into(), auth, private_key: opt(key), warehouse: opt(warehouse), role: opt(role), schema: opt(schema), db_filter: Vec::new() })
+    Ok(SnowflakeConfig { dbt: None, configuration: None, account: account.into(), auth, private_key: opt(key), warehouse: opt(warehouse), role: opt(role), schema: opt(schema), db_filter: Vec::new() })
 }
 
 /// Bloco SSH a partir dos campos do diálogo; host vazio = sem túnel.
@@ -71,6 +86,14 @@ fn parse_ssh(host: &str, user: &str, port: &str, key: &str) -> Result<Option<Ssh
 }
 
 impl Fields {
+    /// Pasta vazia = sem dbt; target vazio = "prod".
+    fn dbt_cfg(&self, cx: &App) -> Option<DbtConfig> {
+        let dir = self.dbt_dir.read(cx).value().trim().to_string();
+        let target = self.dbt_target.read(cx).value().trim().to_string();
+        let aws = self.dbt_aws.read(cx).value().trim().to_string();
+        (!dir.is_empty()).then(|| DbtConfig { project_dir: dir, target: if target.is_empty() { "prod".into() } else { target }, aws_profile: (!aws.is_empty()).then_some(aws) })
+    }
+
     /// (config, senha ou PAT, passphrase da chave SSH ou Snowflake); vazios mantêm o Keychain.
     fn read(&self, cx: &App) -> Result<(ConnectionConfig, String, String), String> {
         let v = |e: &Entity<InputState>| e.read(cx).value().trim().to_string();
@@ -79,7 +102,12 @@ impl Fields {
             if v(&self.name).is_empty() || v(&self.user).is_empty() {
                 return Err(t!("conn.err_name_user").to_string());
             }
+            let mut snowflake = snowflake;
+            snowflake.dbt = self.dbt_cfg(cx);
+            // Item 0 é sempre "Nenhum".
+            snowflake.configuration = self.org.read(cx).selected_value().filter(|v| **v != t!("conn.config_none")).cloned();
             let cfg = ConnectionConfig {
+                environment: self.env.get(),
                 id: self.id.clone(),
                 name: v(&self.name),
                 host: String::new(),
@@ -99,6 +127,7 @@ impl Fields {
             _ => SslMode::Disable,
         };
         let cfg = ConnectionConfig {
+            environment: self.env.get(),
             id: self.id.clone(),
             name: v(&self.name),
             host: v(&self.host),
@@ -160,10 +189,34 @@ fn key_field(id: &'static str, input: &Entity<InputState>) -> impl IntoElement {
     }))
 }
 
+/// Pasta (seletor do macOS); `changed` roda depois de escolher.
+fn folder_field(id: &'static str, input: &Entity<InputState>, changed: impl Fn(&mut App) + 'static) -> impl IntoElement {
+    let target = input.downgrade();
+    let changed = Rc::new(changed);
+    h_flex().gap_2().child(div().flex_1().child(Input::new(input))).child(Button::new(id).label(t!("conn.choose_folder").to_string()).on_click(move |_, window, cx| {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(t!("conn.choose_folder").to_string().into()) });
+        let (target, changed) = (target.clone(), changed.clone());
+        window
+            .spawn(cx, async move |cx| {
+                let Ok(Ok(Some(paths))) = rx.await else { return };
+                let Some(path) = paths.first() else { return };
+                let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                let value = tilde(path, &home);
+                cx.update(|window, cx| {
+                    target.update(cx, |s, cx| s.set_value(value, window, cx)).ok();
+                    changed(cx);
+                })
+                .ok();
+            })
+            .detach();
+    }))
+}
+
 /// Nova conexão (`None`) ou edição de uma existente, mantendo o id.
 pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Context<Workspace>) {
     let editing = existing.is_some();
     let c = existing.unwrap_or_else(|| ConnectionConfig {
+        environment: None,
         id: new_id(),
         name: "local".into(),
         host: "localhost".into(),
@@ -184,6 +237,15 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         SslMode::Prefer => 1,
         SslMode::Require => 2,
     };
+    // Pasta lida a cada abertura do diálogo; uma configuração nova aparece ao reabrir.
+    let (installed, errs) = rb_core::org_config::load_all(&rb_core::org_config::org_configs_dir());
+    let mut orgs: Vec<String> = std::iter::once(t!("conn.config_none").to_string()).chain(installed.iter().map(|a| a.name().to_string())).collect();
+    let current = sf.as_ref().and_then(|s| s.configuration.clone());
+    // Configurado mas não instalado: continua na lista para salvar não apagar a escolha.
+    if let Some(c) = current.as_ref().filter(|c| !orgs[1..].iter().any(|a| a.eq_ignore_ascii_case(c))) {
+        orgs.push(c.clone());
+    }
+    let org_ix = current.as_ref().and_then(|c| orgs[1..].iter().position(|a| a.eq_ignore_ascii_case(c))).map_or(0, |i| i + 1);
     let f = Rc::new(Fields {
         id: c.id.clone(),
         name: input(window, cx, c.name),
@@ -206,7 +268,30 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         sf_warehouse: input(window, cx, sfv(|s| s.warehouse.clone())),
         sf_role: input(window, cx, sfv(|s| s.role.clone())),
         sf_schema: input(window, cx, sfv(|s| s.schema.clone())),
+        env: Rc::new(Cell::new(c.environment)),
+        tab: Rc::new(Cell::new(0)),
+        dbt_dir: input(window, cx, sf.as_ref().and_then(|s| s.dbt.as_ref()).map(|d| d.project_dir.clone()).unwrap_or_default()),
+        dbt_target: input(window, cx, sf.as_ref().and_then(|s| s.dbt.as_ref()).map(|d| d.target.clone()).unwrap_or_else(|| "prod".into())),
+        dbt_aws: input(window, cx, sf.as_ref().and_then(|s| s.dbt.as_ref()).and_then(|d| d.aws_profile.clone()).unwrap_or_default()),
+        dbt_card: cx.new(|cx| DbtStore::new(sf.as_ref().and_then(|s| s.dbt.clone()), cx)),
+        org: cx.new(|cx| SelectState::new(orgs, Some(IndexPath::new(org_ix)), window, cx)),
+        org_errs: errs.join("\n"),
     });
+    // Pasta/target mudou: o cartão recarrega o manifest dela.
+    for input in [f.dbt_dir.clone(), f.dbt_target.clone(), f.dbt_aws.clone()] {
+        let f2 = f.clone();
+        cx.subscribe_in(&input, window, move |_, _, ev: &InputEvent, _, cx| {
+            let cfg = f2.dbt_cfg(cx);
+            match ev {
+                // Sair do campo/Enter: recarrega o manifest da pasta nova.
+                InputEvent::Blur | InputEvent::PressEnter { .. } => f2.dbt_card.update(cx, |c, cx| c.set_cfg(cfg, cx)),
+                // Digitando: só guarda, para o Refresh logo em seguida usar o valor novo.
+                InputEvent::Change => f2.dbt_card.update(cx, |c, _| c.set_cfg_quiet(cfg)),
+                _ => {}
+            }
+        })
+        .detach();
+    }
 
     // ponytail: lido uma vez ao abrir o diálogo; um alias novo no arquivo pede reabrir.
     let aliases = Rc::new(host_aliases(&SshEnv::system()));
@@ -242,20 +327,67 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                     w.refresh();
                 }))
         };
-        let form = v_form().child(field().label(t!("conn.kind").to_string()).child(tipo)).child(field().label(t!("conn.name").to_string()).child(Input::new(&f.name)));
-        let form = if snowflake {
-            let auth = f.sf_auth.get();
-            let pick = |id: &'static str, label: String, a: SnowflakeAuth| {
-                let cell = f.sf_auth.clone();
-                Button::new(id).label(label).selected(auth == a).on_click(move |_, w, _| {
-                    cell.set(a);
-                    w.refresh();
-                })
-            };
-            let mut form = form
+        let env = f.env.get();
+        let env_pick = |id: &'static str, label: String, e: Option<Environment>| {
+            let cell = f.env.clone();
+            Button::new(id).label(label).selected(env == e).on_click(move |_, w, _| {
+                cell.set(e);
+                w.refresh();
+            })
+        };
+        let environment = field().label(t!("conn.environment").to_string()).child(
+            h_flex()
+                .gap_2()
+                .child(env_pick("env-none", t!("conn.env_none").to_string(), None))
+                .child(env_pick("env-prod", t!("conn.env_production").to_string(), Some(Environment::Production)))
+                .child(env_pick("env-stg", t!("conn.env_staging").to_string(), Some(Environment::Staging)))
+                .child(env_pick("env-dev", t!("conn.env_development").to_string(), Some(Environment::Development))),
+        );
+        // Abas: General / Authentication / dbt (dbt só no Snowflake).
+        let tab = if snowflake { f.tab.get().min(2) } else { f.tab.get().min(1) };
+        let tab_cell = f.tab.clone();
+        let mut bar = TabBar::new("conn-tabs").selected_index(tab).on_click(move |ix: &usize, w, _| {
+            tab_cell.set(*ix);
+            w.refresh();
+        });
+        bar = bar.child(Tab::new().label(t!("conn.tab_general").to_string())).child(Tab::new().label(t!("conn.tab_auth").to_string()));
+        if snowflake {
+            bar = bar.child(Tab::new().label("dbt"));
+        }
+        let form = match (tab, snowflake) {
+            (0, true) => v_form()
+                .child(field().label(t!("conn.kind").to_string()).child(tipo))
+                .child(field().label(t!("conn.name").to_string()).child(Input::new(&f.name)))
+                .child(environment)
                 .child(field().label(t!("conn.account").to_string()).child(Input::new(&f.sf_account)))
-                .child(field().label(t!("conn.user").to_string()).child(Input::new(&f.user)))
+                .child(field().label("Database").child(Input::new(&f.database)))
+                .child(field().label("Schema").child(Input::new(&f.sf_schema)))
+                .child(field().label("Warehouse").child(Input::new(&f.sf_warehouse)))
+                .child(field().label("Role").child(Input::new(&f.sf_role)))
                 .child(
+                    field()
+                        .label(t!("conn.config").to_string())
+                        .description(if f.org_errs.is_empty() { t!("conn.config_hint", dir = rb_core::org_config::org_configs_dir().display()).to_string() } else { f.org_errs.clone() })
+                        .child(Select::new(&f.org)),
+                ),
+            (0, false) => v_form()
+                .child(field().label(t!("conn.kind").to_string()).child(tipo))
+                .child(field().label(t!("conn.name").to_string()).child(Input::new(&f.name)))
+                .child(environment)
+                .child(field().label("Host").child(Input::new(&f.host)))
+                .child(field().label(t!("conn.port").to_string()).child(Input::new(&f.port)))
+                .child(field().label(t!("conn.database").to_string()).child(Input::new(&f.database)))
+                .child(field().label("SSL").child(Select::new(&f.ssl))),
+            (1, true) => {
+                let auth = f.sf_auth.get();
+                let pick = |id: &'static str, label: String, a: SnowflakeAuth| {
+                    let cell = f.sf_auth.clone();
+                    Button::new(id).label(label).selected(auth == a).on_click(move |_, w, _| {
+                        cell.set(a);
+                        w.refresh();
+                    })
+                };
+                let mut form = v_form().child(field().label(t!("conn.user").to_string()).child(Input::new(&f.user))).child(
                     field().label(t!("conn.auth").to_string()).child(
                         h_flex()
                             .gap_2()
@@ -264,34 +396,41 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                             .child(pick("auth-pat", "PAT".into(), SnowflakeAuth::Pat)),
                     ),
                 );
-            if auth == SnowflakeAuth::KeyPair {
-                form = form
-                    .child(field().label(t!("conn.sf_key").to_string()).child(key_field("sf-key-pick", &f.sf_key)))
-                    .child(field().label(format!("{}{keep}", t!("conn.key_passphrase"))).child(Input::new(&f.sf_key_pass).mask_toggle()));
+                if auth == SnowflakeAuth::KeyPair {
+                    form = form
+                        .child(field().label(t!("conn.sf_key").to_string()).child(key_field("sf-key-pick", &f.sf_key)))
+                        .child(field().label(format!("{}{keep}", t!("conn.key_passphrase"))).child(Input::new(&f.sf_key_pass).mask_toggle()));
+                }
+                if auth == SnowflakeAuth::Pat {
+                    form = form.child(field().label(format!("{}{keep}", t!("conn.pat"))).child(Input::new(&f.password).mask_toggle()));
+                }
+                form
             }
-            if auth == SnowflakeAuth::Pat {
-                form = form.child(field().label(format!("{}{keep}", t!("conn.pat"))).child(Input::new(&f.password).mask_toggle()));
+            (1, false) => v_form()
+                .child(field().label(t!("conn.user").to_string()).child(Input::new(&f.user)))
+                .child(field().label(format!("{}{keep}", t!("conn.password"))).child(Input::new(&f.password).mask_toggle()))
+                .child(field().label(t!("conn.ssh_host").to_string()).child(ssh_host_field(&f.ssh_host, aliases, targets)))
+                .child(field().label(t!("conn.ssh_user").to_string()).child(Input::new(&f.ssh_user)))
+                .child(field().label(t!("conn.ssh_port").to_string()).child(Input::new(&f.ssh_port)))
+                .child(field().label(t!("conn.ssh_key").to_string()).child(key_field("ssh-key-pick", &f.ssh_key)))
+                .child(field().label(format!("{}{keep}", t!("conn.key_passphrase"))).child(Input::new(&f.ssh_passphrase).mask_toggle())),
+            _ => {
+                let f3 = f.clone();
+                v_form()
+                    .child(field().child(div().text_sm().child(t!("conn.dbt_intro").to_string())))
+                    .child(field().label(t!("conn.dbt_folder").to_string()).child(folder_field("dbt-dir-pick", &f.dbt_dir, move |cx| {
+                        let cfg = f3.dbt_cfg(cx);
+                        f3.dbt_card.update(cx, |c, cx| c.set_cfg(cfg, cx));
+                    })))
+                    .child(field().label(t!("conn.dbt_target").to_string()).description(t!("conn.dbt_target_hint").to_string()).child(Input::new(&f.dbt_target)))
+                    .child(field().label(t!("conn.dbt_aws").to_string()).description(t!("conn.dbt_aws_hint", profiles = rb_core::dbt::read_aws_profiles().join(", ")).to_string()).child(Input::new(&f.dbt_aws)))
+                    .child(field().child(f.dbt_card.clone()))
             }
-            form.child(field().label("Warehouse").child(Input::new(&f.sf_warehouse)))
-                .child(field().label("Role").child(Input::new(&f.sf_role)))
-                .child(field().label("Database").child(Input::new(&f.database)))
-                .child(field().label("Schema").child(Input::new(&f.sf_schema)))
-        } else {
-            form.child(field().label("Host").child(Input::new(&f.host)))
-                    .child(field().label(t!("conn.port").to_string()).child(Input::new(&f.port)))
-                    .child(field().label(t!("conn.database").to_string()).child(Input::new(&f.database)))
-                    .child(field().label(t!("conn.user").to_string()).child(Input::new(&f.user)))
-                    .child(field().label(format!("{}{keep}", t!("conn.password"))).child(Input::new(&f.password).mask_toggle()))
-                    .child(field().label("SSL").child(Select::new(&f.ssl)))
-                    .child(field().label(t!("conn.ssh_host").to_string()).child(ssh_host_field(&f.ssh_host, aliases, targets)))
-                    .child(field().label(t!("conn.ssh_user").to_string()).child(Input::new(&f.ssh_user)))
-                    .child(field().label(t!("conn.ssh_port").to_string()).child(Input::new(&f.ssh_port)))
-                    .child(field().label(t!("conn.ssh_key").to_string()).child(key_field("ssh-key-pick", &f.ssh_key)))
-                .child(field().label(format!("{}{keep}", t!("conn.key_passphrase"))).child(Input::new(&f.ssh_passphrase).mask_toggle()))
         };
+        let form = v_flex().gap_3().child(bar).child(form);
         dialog
             .title(title.clone())
-            .w(px(480.))
+            .w(px(560.))
             .child(form)
             .footer(
                 h_flex()

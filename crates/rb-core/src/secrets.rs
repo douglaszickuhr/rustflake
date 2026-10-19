@@ -15,6 +15,11 @@ pub fn key_account(id: &str) -> String {
     format!("key:{id}")
 }
 
+/// Conta do Keychain com o ID token do SSO (reabrir sem navegador enquanto valer, ~4 h).
+pub fn id_token_account(id: &str) -> String {
+    format!("idtoken:{id}")
+}
+
 fn err(e: security_framework::base::Error) -> DbError {
     DbError::Keychain(e.to_string())
 }

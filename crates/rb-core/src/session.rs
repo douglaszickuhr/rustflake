@@ -44,6 +44,8 @@ pub struct ExecOutcome {
     pub affected: Option<u64>,
     /// Até o primeiro lote.
     pub elapsed: Duration,
+    /// Só Snowflake: id para achar a query no Snowsight / QUERY_HISTORY.
+    pub query_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -116,7 +118,7 @@ async fn connect_client(pg: &tokio_postgres::Config) -> Result<Client, DbError> 
     let (client, conn) = pg.connect(tls()).await?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {
-            tracing::warn!("conexão encerrada: {e}");
+            tracing::warn!("connection closed: {e}");
         }
     });
     Ok(client)
@@ -224,7 +226,7 @@ impl Connector {
         let (client, conn) = self.pg.connect_raw(stream, channel_tls(host)?).await?;
         tokio::spawn(async move {
             if let Err(e) = conn.await {
-                tracing::warn!("conexão encerrada: {e}");
+                tracing::warn!("connection closed: {e}");
             }
         });
         Ok(client)
@@ -262,7 +264,7 @@ impl Session {
     async fn open(connector: Connector, rt: Handle) -> Result<Session, DbError> {
         let started = Instant::now();
         let client = connector.client().await?;
-        tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "conectado");
+        tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "connected");
         let cancel = Arc::new(Mutex::new(client.cancel_token()));
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(Actor { client, connector: connector.clone(), cancel: cancel.clone(), last_exec: 0 }.run(rx));
@@ -325,6 +327,21 @@ impl Session {
         self.call(|reply| Cmd::Explain { sql, analyze, reply }).await
     }
 
+    /// Plano real de uma query que já rodou (Snowflake, pelo query id): não executa de novo.
+    pub async fn actual_plan(&self, query_id: &str, total_ms: Option<f64>) -> Result<Plan, DbError> {
+        let (names, rows) = self.query_named(&crate::explain::operator_stats_sql(query_id)).await?;
+        let mut plan = crate::explain::parse_sf_stats(&names, &rows)?;
+        plan.total_ms = total_ms;
+        // Tempos de compilação/fila/execução: complemento, falha não derruba o plano.
+        if let (Some(p), Ok((n, r))) = (plan.profile.as_mut(), self.query_named(&crate::explain::query_timing_sql(query_id)).await) {
+            p.timing = crate::explain::parse_timing(&n, &r);
+            if let Some(t) = p.timing {
+                plan.total_ms = Some(t.total_ms);
+            }
+        }
+        Ok(plan)
+    }
+
     /// Pede ao servidor para cancelar o comando em andamento desta sessão.
     pub fn cancel(&self) {
         match &self.canceller {
@@ -332,7 +349,7 @@ impl Session {
                 let (token, connector) = (token.lock().expect("mutex do cancel token").clone(), connector.clone());
                 self.rt.spawn(async move {
                     if let Err(e) = connector.cancel(token).await {
-                        tracing::warn!("cancelamento falhou: {e}");
+                        tracing::warn!("cancel failed: {e}");
                     }
                 });
             }
@@ -340,7 +357,7 @@ impl Session {
                 if let Some(c) = c.lock().expect("mutex do cancelador").clone() {
                     self.rt.spawn(async move {
                         if let Err(e) = c.cancel().await {
-                            tracing::warn!("cancelamento Snowflake falhou: {e}");
+                            tracing::warn!("Snowflake cancel failed: {e}");
                         }
                     });
                 }
@@ -397,7 +414,7 @@ impl Actor {
         if !self.client.is_closed() {
             return Ok(());
         }
-        tracing::info!("reconectando");
+        tracing::info!("reconnecting");
         self.client = self.connector.client().await?;
         *self.cancel.lock().expect("mutex do cancel token") = self.client.cancel_token();
         Ok(())
@@ -429,6 +446,7 @@ impl Actor {
 
         if columns.is_empty() {
             let res = self.client.execute(&stmt, &[]).await.map_err(DbError::from).map(|n| ExecOutcome {
+                query_id: None,
                 exec_id,
                 columns,
                 batch: Batch::empty(0),
@@ -481,6 +499,7 @@ impl Actor {
             }
             let batch = Batch::from_rows(&first, ncols);
             let res = tx.commit().await.map_err(DbError::from).map(|_| ExecOutcome {
+                query_id: None,
                 exec_id,
                 columns,
                 batch,
@@ -492,8 +511,8 @@ impl Actor {
             return rx.recv().await;
         }
         let elapsed = started.elapsed();
-        tracing::info!(elapsed_ms = elapsed.as_millis() as u64, rows = first.len(), "primeiro lote");
-        let _ = reply.send(Ok(ExecOutcome { exec_id, columns, batch: Batch::from_rows(&first, ncols), more, affected: None, elapsed }));
+        tracing::info!(elapsed_ms = elapsed.as_millis() as u64, rows = first.len(), "first batch");
+        let _ = reply.send(Ok(ExecOutcome { exec_id, columns, batch: Batch::from_rows(&first, ncols), more, affected: None, elapsed, query_id: None }));
 
         let mut pending: Option<Option<Cmd>> = None;
         while more {
@@ -520,7 +539,7 @@ impl Actor {
         }
         // Autocommit: o que o statement fez (ex.: nextval, função com escrita) fica valendo.
         if let Err(e) = tx.commit().await {
-            tracing::warn!("commit após leitura falhou: {e}");
+            tracing::warn!("commit after read failed: {e}");
         }
         match pending {
             Some(next) => next,
@@ -550,7 +569,7 @@ impl Actor {
         let res = tx.simple_query(&format!("EXPLAIN ({opts}) {sql}")).await;
         // Sempre desfaz: o ANALYZE executou o statement de verdade.
         if let Err(e) = tx.rollback().await {
-            tracing::warn!("rollback do EXPLAIN falhou, descartando a conexão: {e}");
+            tracing::warn!("EXPLAIN rollback failed, dropping the connection: {e}");
             self.client = self.connector.client().await?;
             *self.cancel.lock().expect("mutex do cancel token") = self.client.cancel_token();
             return Err(e.into());

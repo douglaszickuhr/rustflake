@@ -24,7 +24,8 @@ pub enum DbError {
     /// Host SSH fora do known_hosts. `key` é a chave pública em formato OpenSSH, para `ssh::trust_host`.
     HostKeyUnknown { host: String, port: u16, fingerprint: String, key: String },
     /// Erro devolvido pelo Snowflake (código numérico do Snowflake, ex. 001003).
-    Snowflake { code: String, message: String },
+    /// `query_id` para achar a query no Snowsight / QUERY_HISTORY.
+    Snowflake { code: String, message: String, query_id: Option<String> },
 }
 
 impl fmt::Display for DbError {
@@ -47,10 +48,20 @@ impl fmt::Display for DbError {
             DbError::Edit(m) => write!(f, "{}: {m}", t!("err.prefix.edit")),
             DbError::Unsupported(m) => write!(f, "{}: {m}", t!("err.prefix.unsupported")),
             DbError::Ssh(m) => write!(f, "SSH: {m}"),
-            DbError::Snowflake { code, message } => write!(f, "[{code}] {message}"),
+            DbError::Snowflake { code, message, .. } => write!(f, "[{code}] {message}"),
             DbError::HostKeyUnknown { host, port, fingerprint, .. } => {
                 write!(f, "SSH: {}", t!("err.host_unknown", host = host, port = port, fingerprint = fingerprint))
             }
+        }
+    }
+}
+
+impl DbError {
+    /// Id da query no Snowflake, quando o erro veio de uma.
+    pub fn query_id(&self) -> Option<&str> {
+        match self {
+            DbError::Snowflake { query_id, .. } => query_id.as_deref(),
+            _ => None,
         }
     }
 }
@@ -83,6 +94,14 @@ pub fn error_byte_offset(stmt: &str, position: u32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snowflake_errors_carry_the_query_id() {
+        let e = DbError::Snowflake { code: "001003".into(), message: "syntax".into(), query_id: Some("01b2-abc".into()) };
+        assert_eq!(e.query_id(), Some("01b2-abc"));
+        assert_eq!(e.to_string(), "[001003] syntax", "o id não polui a mensagem");
+        assert_eq!(DbError::Connection("x".into()).query_id(), None);
+    }
+
     use super::*;
 
     #[test]

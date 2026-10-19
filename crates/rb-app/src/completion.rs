@@ -1,10 +1,13 @@
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::input::CompletionProvider;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use gpui_kit::component::input::{CompletionProvider, DefinitionProvider};
 use gpui_kit::component::{Rope, RopeExt as _};
 use gpui_kit::*;
 use lsp_types::{CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit, TextEdit};
-use rb_core::complete::{CandidateKind, complete};
+use rb_core::complete::{CandidateKind, complete, relation_at};
 
 use crate::meta::MetaStore;
 
@@ -93,5 +96,45 @@ impl CompletionProvider for SqlCompletion {
 
     fn is_completion_trigger(&self, _offset: usize, new_text: &str, _: &mut App) -> bool {
         !new_text.is_empty() && new_text.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    }
+}
+
+/// Tabela que o ⌘-hover achou por último: (schema como no cache, nome). O clique abre essa.
+pub type DefinitionTarget = Rc<RefCell<Option<(String, String)>>>;
+
+/// ⌘ + hover sublinha a tabela/view do script; ⌘-clique abre a aba dela (via `show_document`).
+pub struct SqlDefinition {
+    meta: Entity<MetaStore>,
+    target: DefinitionTarget,
+}
+
+impl SqlDefinition {
+    pub fn new(meta: Entity<MetaStore>, target: DefinitionTarget) -> Self {
+        SqlDefinition { meta, target }
+    }
+}
+
+impl DefinitionProvider for SqlDefinition {
+    fn definitions(&self, text: &Rope, offset: usize, _: &mut Window, cx: &mut App) -> Task<anyhow::Result<Vec<lsp_types::LocationLink>>> {
+        let Some((range, schema, table)) = relation_at(&text.to_string(), offset, &self.meta.read(cx).cache) else { return Task::ready(Ok(Vec::new())) };
+        *self.target.borrow_mut() = Some((schema, table));
+        let origin = lsp_types::Range { start: text.offset_to_position(range.start), end: text.offset_to_position(range.end) };
+        // A URI só identifica "abrir tabela"; qual tabela fica em `target`.
+        let Ok(target_uri) = "rustbeaver:table".parse() else { return Task::ready(Ok(Vec::new())) };
+        let link = lsp_types::LocationLink {
+            origin_selection_range: Some(origin),
+            target_uri,
+            target_range: Default::default(),
+            target_selection_range: Default::default(),
+        };
+        Task::ready(Ok(vec![link]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn table_uri_parses() {
+        assert!("rustbeaver:table".parse::<lsp_types::Uri>().is_ok());
     }
 }

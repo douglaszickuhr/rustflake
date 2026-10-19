@@ -1,7 +1,9 @@
+pub mod org_config;
 pub mod admin;
 pub mod batch;
 pub mod complete;
 pub mod config;
+pub mod dbt;
 pub mod decode;
 pub mod dialect;
 pub mod error;
@@ -9,7 +11,9 @@ pub mod explain;
 pub mod format;
 pub mod history;
 pub mod lexer;
+pub mod masking;
 pub mod metadata;
+pub mod picker;
 pub mod quick_open;
 pub mod secrets;
 pub mod session;
@@ -17,6 +21,10 @@ pub mod snowflake;
 pub mod split;
 pub mod ssh;
 pub mod table;
+pub mod table_info;
+pub mod unlocks;
+pub mod user_view;
+pub mod warehouse;
 
 pub use error::DbError;
 

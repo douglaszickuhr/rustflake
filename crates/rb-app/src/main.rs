@@ -1,13 +1,17 @@
 mod admin_tab;
+mod warehouse_tab;
 mod appearance;
 mod completion;
 mod conn_dialog;
 mod db_filter;
+mod dbt_store;
+mod frame;
 mod grid;
 mod history_popup;
 mod indexer;
 mod lang;
 mod meta;
+mod picker;
 mod plan_view;
 mod quick_open;
 mod schema_tree;
@@ -22,7 +26,7 @@ use gpui_kit::*;
 rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit]);
+gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment]);
 
 /// Runtime de banco compartilhado pela aplicação.
 pub struct Db(pub Engine);
@@ -30,7 +34,7 @@ pub struct Db(pub Engine);
 impl Global for Db {}
 
 // Ícones fora do conjunto padrão do gpui-kit; só estes entram no binário.
-gpui_kit::assets::icon_assets!(ExtraIcons, [Database, Layers, Table, Sheet, SquareFunction, Columns3, Hash, KeyRound, ListTree, Cpu, CircleUser, Funnel, Users]);
+gpui_kit::assets::icon_assets!(ExtraIcons, [Database, Layers, Table, Sheet, SquareFunction, Columns3, Hash, KeyRound, ListTree, CircleUser, Funnel, Users, RotateCcwClock, Warehouse, SunMoon, Lock]);
 
 struct AppAssets;
 
@@ -75,6 +79,19 @@ fn main() {
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
+        // Geist (OFL) no binário: o visual do canvas não depende do que está instalado.
+        let fonts: Vec<std::borrow::Cow<'static, [u8]>> = vec![
+            include_bytes!("../assets/fonts/Geist-Regular.ttf").as_slice().into(),
+            include_bytes!("../assets/fonts/Geist-Medium.ttf").as_slice().into(),
+            include_bytes!("../assets/fonts/Geist-SemiBold.ttf").as_slice().into(),
+            include_bytes!("../assets/fonts/Geist-Bold.ttf").as_slice().into(),
+            include_bytes!("../assets/fonts/GeistMono-Regular.ttf").as_slice().into(),
+            include_bytes!("../assets/fonts/GeistMono-Medium.ttf").as_slice().into(),
+            include_bytes!("../assets/fonts/GeistMono-Bold.ttf").as_slice().into(),
+        ];
+        if let Err(e) = cx.text_system().add_fonts(fonts) {
+            tracing::warn!("Geist fonts: {e}");
+        }
         lang::init(cx);
         appearance::init(cx);
         #[cfg(target_os = "macos")]
@@ -89,6 +106,7 @@ fn main() {
             KeyBinding::new("tab", TabKey, Some("SqlTab > Input")),
             // ⌘⇧F formata (como no DBeaver); o localizar e substituir do editor, que usava ⌘⇧F, vai para ⌘⌥F.
             KeyBinding::new("cmd-shift-f", FormatSql, Some("SqlTab > Input")),
+            KeyBinding::new("cmd-/", ToggleComment, Some("SqlTab > Input")),
             KeyBinding::new("cmd-alt-f", gpui_kit::component::input::Replace, Some("SqlTab > Input")),
             KeyBinding::new("cmd-e", ExplainEstimate, Some("SqlTab > Input")),
             KeyBinding::new("cmd-shift-e", ExplainAnalyze, Some("SqlTab > Input")),
@@ -120,10 +138,17 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
 
         let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
-        let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
+        let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), titlebar: Some(TitlebarOptions {
+                title: None,
+                appears_transparent: true,
+                // Centro vertical da linha do título (44px + faixa de 2px).
+                traffic_light_position: Some(point(px(16.), px(17.))),
+            }),
+            ..gpui_kit::component::TitleBar::window_options()
+        };
         gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| workspace::Workspace::new(window, cx)))
             .expect("abrir janela");
         cx.activate(true);
-        tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "janela aberta");
+        tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "window opened");
     });
 }

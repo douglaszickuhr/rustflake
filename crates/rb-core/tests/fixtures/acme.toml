@@ -1,0 +1,31 @@
+# Configuração de exemplo: convenções de uma empresa fictícia. Copie para
+# ~/Library/Application Support/rustbeaver/configurations/ e ajuste.
+name = "ACME"
+
+[[roles]]
+kind = "classification"
+match = '(^|_)C(?P<level>\d+)(_|$)'
+[[roles]]
+kind = "warehouse"
+match = '^(?P<warehouse>.+?_WH)_(?:(?P<op>OP)|MONITOR)'
+[[roles]]
+kind = "base"
+match = '^(?P<department>.+)_DEPARTMENT_BASE_ROLE$|BASE_ROLE'
+[[roles]]
+kind = "functional"
+match = '_FR$'
+[[roles]]
+kind = "access"
+match = '_AR$'
+write = "_RW"
+
+[classification]
+tag = "GOVERNANCE.TAGS.DATA_CLASSIFICATION"
+labels = ["Public", "Internal", "Confidential", "Restricted"]
+values = { "C-1 Public" = 1, "C-2 Internal" = 2, "C-3 Confidential" = 3, "C-4 Restricted" = 4, "CONFLICT" = 4, "UNCLASSIFIED" = 4 }
+
+[masking]
+global = "CLASSIFICATION_C{level}_MASKING_AR"
+group = { role = "SHARED_C{level}_MASKING_AR", databases = "*_SHARED" }
+scoped_suffix = "_C{level}_MASKING_AR"
+forced_by = ["AI_AGENT_FR"]

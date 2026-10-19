@@ -1,0 +1,459 @@
+use std::{
+    env, fmt, io, mem,
+    process::{Command, Stdio},
+};
+
+use indexmap::IndexSet;
+
+/// Result of attempting to launch a browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LaunchOutcome {
+    /// A browser command was successfully started.
+    Opened,
+    /// No browser command succeeded; caller should ask user to open the URL manually.
+    ManualOpen { url: String },
+}
+
+#[derive(Debug)]
+pub(crate) enum BrowserError {
+    EmptyUrl,
+}
+
+impl fmt::Display for BrowserError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyUrl => f.write_str("URL must not be empty"),
+        }
+    }
+}
+
+impl std::error::Error for BrowserError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Platform {
+    Windows,
+    Mac,
+    Unix,
+}
+
+impl Platform {
+    fn current() -> Self {
+        if cfg!(target_os = "windows") {
+            Platform::Windows
+        } else if cfg!(target_os = "macos") {
+            Platform::Mac
+        } else {
+            Platform::Unix
+        }
+    }
+}
+
+/// Abstraction over spawning a process. Primarily used for testing.
+pub(crate) trait CommandRunner: Send {
+    fn spawn(&self, program: &str, args: &[String]) -> io::Result<()>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SystemCommandRunner;
+
+impl CommandRunner for SystemCommandRunner {
+    fn spawn(&self, program: &str, args: &[String]) -> io::Result<()> {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BrowserLauncher<R: CommandRunner = SystemCommandRunner> {
+    runner: R,
+    platform: Platform,
+}
+
+impl BrowserLauncher<SystemCommandRunner> {
+    pub(crate) fn new() -> Self {
+        Self {
+            runner: SystemCommandRunner,
+            platform: Platform::current(),
+        }
+    }
+}
+
+impl<R: CommandRunner> BrowserLauncher<R> {
+    pub(crate) fn open(&self, url: &str) -> Result<LaunchOutcome, BrowserError> {
+        if url.trim().is_empty() {
+            return Err(BrowserError::EmptyUrl);
+        }
+
+        let env_browser = env::var("BROWSER").ok();
+        let candidates = resolve_candidates(url, self.platform, env_browser.as_deref());
+
+        for candidate in candidates {
+            if self
+                .runner
+                .spawn(&candidate.program, &candidate.args)
+                .is_ok()
+            {
+                return Ok(LaunchOutcome::Opened);
+            }
+        }
+
+        Ok(LaunchOutcome::ManualOpen {
+            url: url.to_string(),
+        })
+    }
+
+    /// Message that can be shown to the user when manual opening is required.
+    pub(crate) fn manual_open_message(url: &str) -> String {
+        format!("Could not open a browser automatically. Please open this URL manually:\n{url}")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CommandSpec {
+    program: String,
+    args: Vec<String>,
+}
+
+fn resolve_candidates(
+    url: &str,
+    platform: Platform,
+    env_browser: Option<&str>,
+) -> IndexSet<CommandSpec> {
+    let mut candidates = IndexSet::new();
+
+    if let Some(browser) = env_browser {
+        let env_candidates = parse_browser_env(browser, url, platform);
+        candidates.extend(env_candidates);
+    }
+
+    candidates.extend(default_commands(url, platform));
+    candidates
+}
+
+fn default_commands(url: &str, platform: Platform) -> Vec<CommandSpec> {
+    match platform {
+        Platform::Windows => vec![
+            CommandSpec {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "start".into(), "".into(), url.into()],
+            },
+            CommandSpec {
+                program: "rundll32".into(),
+                args: vec!["url.dll,FileProtocolHandler".into(), url.into()],
+            },
+        ],
+        Platform::Mac => vec![CommandSpec {
+            program: "open".into(),
+            args: vec![url.into()],
+        }],
+        Platform::Unix => vec![
+            CommandSpec {
+                program: "xdg-open".into(),
+                args: vec![url.into()],
+            },
+            CommandSpec {
+                program: "gio".into(),
+                args: vec!["open".into(), "--".into(), url.into()],
+            },
+            CommandSpec {
+                program: "sensible-browser".into(),
+                args: vec![url.into()],
+            },
+            CommandSpec {
+                program: "www-browser".into(),
+                args: vec![url.into()],
+            },
+        ],
+    }
+}
+
+fn parse_browser_env(value: &str, url: &str, platform: Platform) -> Vec<CommandSpec> {
+    let separator = match platform {
+        Platform::Windows => ';',
+        _ => ':',
+    };
+    value
+        .split(separator)
+        .filter(|entry| !entry.trim().is_empty())
+        .map(|entry| parse_browser_entry(entry.trim(), url))
+        .collect()
+}
+
+fn parse_browser_entry(entry: &str, url: &str) -> CommandSpec {
+    let mut parts = split_browser_entry(entry)
+        .unwrap_or_else(|| entry.split_whitespace().map(|s| s.to_string()).collect());
+    if parts.is_empty() {
+        return CommandSpec {
+            program: entry.to_string(),
+            args: vec![url.to_string()],
+        };
+    }
+
+    let program = parts.remove(0);
+    let mut args = Vec::new();
+    let mut has_placeholder = false;
+
+    for part in parts {
+        if part.contains("%s") {
+            has_placeholder = true;
+            args.push(part.replace("%s", url));
+        } else {
+            args.push(part);
+        }
+    }
+
+    if !has_placeholder {
+        args.push(url.to_string());
+    }
+
+    CommandSpec { program, args }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quote {
+    Single,
+    Double,
+}
+
+fn split_browser_entry(entry: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = entry.chars();
+    let mut quote = None;
+    let mut has_current = false;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(Quote::Single) => match ch {
+                '\'' => quote = None,
+                _ => {
+                    current.push(ch);
+                    has_current = true;
+                }
+            },
+            Some(Quote::Double) => match ch {
+                '"' => quote = None,
+                '\\' => match chars.next() {
+                    Some('\n') => has_current = true,
+                    Some(escaped) if matches!(escaped, '$' | '`' | '"' | '\\') => {
+                        current.push(escaped);
+                        has_current = true;
+                    }
+                    Some(escaped) => {
+                        current.push('\\');
+                        current.push(escaped);
+                        has_current = true;
+                    }
+                    None => {
+                        current.push('\\');
+                        has_current = true;
+                    }
+                },
+                _ => {
+                    current.push(ch);
+                    has_current = true;
+                }
+            },
+            None => match ch {
+                '\'' => {
+                    quote = Some(Quote::Single);
+                    has_current = true;
+                }
+                '"' => {
+                    quote = Some(Quote::Double);
+                    has_current = true;
+                }
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        if escaped == '\n' {
+                            continue;
+                        }
+                        current.push(escaped);
+                    } else {
+                        current.push('\\');
+                    }
+                    has_current = true;
+                }
+                '#' if !has_current => {
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                }
+                ' ' | '\t' | '\n' => {
+                    if has_current {
+                        parts.push(mem::take(&mut current));
+                        has_current = false;
+                    }
+                }
+                _ => {
+                    current.push(ch);
+                    has_current = true;
+                }
+            },
+        }
+    }
+
+    if quote.is_some() {
+        return None;
+    }
+
+    if has_current {
+        parts.push(current);
+    }
+
+    Some(parts)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct TestRunner {
+        succeed_on: RefCell<Option<String>>,
+        calls: RefCell<Vec<CommandSpec>>,
+    }
+
+    impl TestRunner {
+        fn succeed_on(program: &str) -> Self {
+            Self {
+                succeed_on: RefCell::new(Some(program.to_string())),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl CommandRunner for TestRunner {
+        fn spawn(&self, program: &str, args: &[String]) -> io::Result<()> {
+            self.calls.borrow_mut().push(CommandSpec {
+                program: program.to_string(),
+                args: args.to_vec(),
+            });
+            if self
+                .succeed_on
+                .borrow()
+                .as_ref()
+                .map(|target| target == program)
+                .unwrap_or(false)
+            {
+                Ok(())
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, "not found"))
+            }
+        }
+    }
+
+    #[test]
+    fn parses_browser_env_with_placeholder() {
+        let url = "https://example.com";
+        let value = "firefox -new-window %s:lynx";
+        let cmds = parse_browser_env(value, url, Platform::Unix);
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].program, "firefox");
+        assert_eq!(
+            cmds[0].args,
+            vec!["-new-window".to_string(), url.to_string()]
+        );
+        assert_eq!(cmds[1].program, "lynx");
+        assert_eq!(cmds[1].args, vec![url.to_string()]);
+    }
+
+    #[test]
+    fn parses_quoted_browser_path() {
+        let url = "https://example.com";
+        let cmd = parse_browser_entry("\"C:\\Program Files\\Browser\\browser.exe\" %s", url);
+        assert_eq!(cmd.program, "C:\\Program Files\\Browser\\browser.exe");
+        assert_eq!(cmd.args, vec![url.to_string()]);
+    }
+
+    #[test]
+    fn parses_quoted_browser_argument() {
+        let url = "https://example.com";
+        let cmd = parse_browser_entry(
+            "google-chrome --profile-directory=\"Default Profile\" %s",
+            url,
+        );
+        assert_eq!(cmd.program, "google-chrome");
+        assert_eq!(
+            cmd.args,
+            vec![
+                "--profile-directory=Default Profile".to_string(),
+                url.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_browser_entry_line_continuations() {
+        let url = "https://example.com";
+        let cases = [
+            (
+                "fire\\\nfox \"--new\\\n-window\" %s",
+                "firefox",
+                vec!["--new-window".to_string(), url.to_string()],
+            ),
+            (
+                "firefox \\\n  --new-window %s",
+                "firefox",
+                vec!["--new-window".to_string(), url.to_string()],
+            ),
+        ];
+
+        for (entry, expected_program, expected_args) in cases {
+            let cmd = parse_browser_entry(entry, url);
+            assert_eq!(cmd.program, expected_program, "entry: {entry:?}");
+            assert_eq!(cmd.args, expected_args, "entry: {entry:?}");
+        }
+    }
+
+    #[test]
+    fn falls_back_to_whitespace_split_for_unmatched_quote() {
+        let url = "https://example.com";
+        let cmd = parse_browser_entry("\"broken browser %s", url);
+        assert_eq!(cmd.program, "\"broken");
+        assert_eq!(cmd.args, vec!["browser".to_string(), url.to_string()]);
+    }
+
+    #[test]
+    fn picks_first_successful_command() {
+        let runner = TestRunner::succeed_on("gio");
+        let launcher = BrowserLauncher {
+            runner,
+            platform: Platform::Unix,
+        };
+        let outcome = launcher.open("https://example.com").unwrap();
+        assert_eq!(outcome, LaunchOutcome::Opened);
+    }
+
+    #[test]
+    fn falls_back_to_manual_when_all_fail() {
+        let runner = TestRunner::default();
+        let launcher = BrowserLauncher {
+            runner,
+            platform: Platform::Unix,
+        };
+        let outcome = launcher.open("https://example.com").unwrap();
+        assert_eq!(
+            outcome,
+            LaunchOutcome::ManualOpen {
+                url: "https://example.com".into()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_url() {
+        let launcher = BrowserLauncher::new();
+        let err = launcher.open(" ").unwrap_err();
+        assert!(matches!(err, BrowserError::EmptyUrl));
+    }
+}

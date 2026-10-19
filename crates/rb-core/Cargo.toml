@@ -12,6 +12,7 @@ security-framework = "3"
 sqlformat = "0.5"
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
+regex = "1"
 snowflake-connector-rs = { version = "=1.1.0", default-features = false, features = ["key-pair-auth", "external-browser-sso"] }
 ssh2-config = "0.8.2"
 tokio = { version = "1.53", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }

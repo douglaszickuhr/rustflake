@@ -100,7 +100,7 @@ fn describe(node: &str, c: &MetaCache) -> (Kind, Option<String>) {
     (kind, None)
 }
 
-type OpenTable = Rc<dyn Fn(String, String, &mut Window, &mut App)>;
+pub type OpenTable = Rc<dyn Fn(String, String, &mut Window, &mut App)>;
 
 pub struct SchemaTree {
     meta: Entity<MetaStore>,

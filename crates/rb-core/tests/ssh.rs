@@ -180,6 +180,7 @@ fn tunneled(e: &Env) -> (Engine, ConnectionConfig) {
         home,
     };
     let cfg = ConnectionConfig {
+        environment: None,
         id: "ssh-test".into(),
         name: "ssh".into(),
         host: "rb-pg".into(),

@@ -14,30 +14,57 @@ es = "Guardar"
 
 # Barra lateral e abas
 
-[ws.connections]
-en = "Connections"
-pt = "Conexões"
-es = "Conexiones"
 
 [ws.connecting]
 en = "connecting…"
 pt = "conectando…"
 es = "conectando…"
 
+[ws.rename_hint]
+en = "Double-click to rename"
+pt = "Duplo clique para renomear"
+es = "Doble clic para renombrar"
+
+[ws.rename_title]
+en = "Rename script"
+pt = "Renomear script"
+es = "Renombrar script"
+
+[ws.rename]
+en = "Rename"
+pt = "Renomear"
+es = "Renombrar"
+
 [ws.connect_failed]
 en = "Failed to connect: %{error}"
 pt = "Falha ao conectar: %{error}"
 es = "No se pudo conectar: %{error}"
+
+[conn.config]
+en = "Configuration"
+pt = "Configuração"
+es = "Configuración"
+
+[conn.config_none]
+en = "None"
+pt = "Nenhuma"
+es = "Ninguna"
+
+[conn.config_hint]
+en = "Company conventions (role names, classification, masking). Configurations live in %{dir}."
+pt = "Convenções da empresa (nomes de role, classificação, masking). As configurações ficam em %{dir}."
+es = "Convenciones de la empresa (nombres de rol, clasificación, masking). Las configuraciones están en %{dir}."
+
+[ws.config_failed]
+en = "Connected without the configuration: %{error}"
+pt = "Conectado sem a configuração: %{error}"
+es = "Conectado sin la configuración: %{error}"
 
 [ws.disconnect]
 en = "Disconnect"
 pt = "Desconectar"
 es = "Desconectar"
 
-[ws.no_connection]
-en = "No open connection"
-pt = "Nenhuma conexão aberta"
-es = "Ninguna conexión abierta"
 
 [ws.new_script_hint]
 en = "⌘T opens a script"
@@ -333,9 +360,9 @@ pt = "Buscar"
 es = "Buscar"
 
 [quick.placeholder]
-en = "database, schema, table or view"
-pt = "database, schema, tabela ou view"
-es = "base de datos, esquema, tabla o vista"
+en = "open tab, script text, database, schema, table or view"
+pt = "aba aberta, texto do script, database, schema, tabela ou view"
+es = "pestaña abierta, texto del script, base de datos, esquema, tabla o vista"
 
 [quick.no_results]
 en = "no results"
@@ -376,6 +403,11 @@ es = "falló la última actualización: %{error}"
 en = "Refresh index"
 pt = "Atualizar índice"
 es = "Actualizar índice"
+
+[quick.kind_tab]
+en = "Open tab"
+pt = "Aba aberta"
+es = "Pestaña abierta"
 
 [quick.kind_database]
 en = "database"
@@ -595,30 +627,10 @@ en = "Back"
 pt = "Voltar"
 es = "Volver"
 
-[admin.properties]
-en = "Properties"
-pt = "Propriedades"
-es = "Propiedades"
 
-[admin.default_role]
-en = "Default role"
-pt = "Role padrão"
-es = "Rol por defecto"
 
-[admin.default_warehouse]
-en = "Default warehouse"
-pt = "Warehouse padrão"
-es = "Warehouse por defecto"
 
-[admin.default_namespace]
-en = "Default namespace"
-pt = "Namespace padrão"
-es = "Namespace por defecto"
 
-[admin.status]
-en = "Status"
-pt = "Situação"
-es = "Estado"
 
 [admin.active]
 en = "active"
@@ -635,30 +647,10 @@ en = "Created"
 pt = "Criado em"
 es = "Creado"
 
-[admin.last_login]
-en = "Last login"
-pt = "Último login"
-es = "Último inicio de sesión"
 
-[admin.never]
-en = "never"
-pt = "nunca"
-es = "nunca"
 
-[admin.auth]
-en = "Authentication"
-pt = "Autenticação"
-es = "Autenticación"
 
-[admin.direct_roles]
-en = "Granted roles"
-pt = "Roles concedidas"
-es = "Roles concedidos"
 
-[admin.effective_roles]
-en = "Effective roles (inherited)"
-pt = "Roles efetivas (herdadas)"
-es = "Roles efectivos (heredados)"
 
 [admin.none]
 en = "none"
@@ -685,15 +677,7 @@ en = "Owner"
 pt = "Owner"
 es = "Owner"
 
-[admin.display_name]
-en = "Display name"
-pt = "Nome de exibição"
-es = "Nombre visible"
 
-[admin.email]
-en = "E-mail"
-pt = "E-mail"
-es = "Correo"
 
 [admin.comment]
 en = "Comment"
@@ -705,45 +689,17 @@ en = "password"
 pt = "senha"
 es = "contraseña"
 
-[admin.activity]
-en = "Activity (last 30 days)"
-pt = "Atividade (últimos 30 dias)"
-es = "Actividad (últimos 30 días)"
 
 [admin.activity_lag]
 en = "ACCOUNT_USAGE data, up to ~2 h behind"
 pt = "dados do ACCOUNT_USAGE, com até ~2 h de atraso"
 es = "datos de ACCOUNT_USAGE, con hasta ~2 h de retraso"
 
-[admin.logins]
-en = "Logins: %{ok} ok, %{failed} failed"
-pt = "Logins: %{ok} ok, %{failed} com falha"
-es = "Inicios de sesión: %{ok} ok, %{failed} fallidos"
 
-[admin.queries]
-en = "Queries: %{n} · last %{last} · %{time} total"
-pt = "Queries: %{n} · última %{last} · %{time} no total"
-es = "Consultas: %{n} · última %{last} · %{time} en total"
 
-[admin.top_warehouses]
-en = "Top warehouses"
-pt = "Warehouses mais usados"
-es = "Warehouses más usados"
 
-[admin.top_roles]
-en = "Top roles"
-pt = "Roles mais usadas"
-es = "Roles más usados"
 
-[admin.recent_logins]
-en = "Recent logins"
-pt = "Logins recentes"
-es = "Inicios de sesión recientes"
 
-[admin.queries_per_day]
-en = "Queries per day"
-pt = "Queries por dia"
-es = "Consultas por día"
 
 [admin.show_disabled]
 en = "+ disabled"
@@ -849,3 +805,1310 @@ es = "filas reales"
 en = "⌘+ ⌘− zoom · ⌘0 fit"
 pt = "⌘+ ⌘− zoom · ⌘0 ajustar"
 es = "⌘+ ⌘− zoom · ⌘0 ajustar"
+
+[conn.environment]
+en = "Environment"
+pt = "Ambiente"
+es = "Entorno"
+
+[conn.env_none]
+en = "None"
+pt = "Nenhum"
+es = "Ninguno"
+
+[conn.env_production]
+en = "Production"
+pt = "Produção"
+es = "Producción"
+
+[conn.env_development]
+en = "Development"
+pt = "Desenvolvimento"
+es = "Desarrollo"
+
+[frame.connect]
+en = "Connect…"
+pt = "Conectar…"
+es = "Conectar…"
+
+[frame.go_to]
+en = "Go to anything"
+pt = "Ir para qualquer coisa"
+es = "Ir a cualquier cosa"
+
+[frame.objects]
+en = "Objects"
+pt = "Objetos"
+es = "Objetos"
+
+[frame.access]
+en = "Access"
+pt = "Acesso"
+es = "Acceso"
+
+
+[frame.history]
+en = "History ⌘Y"
+pt = "Histórico ⌘Y"
+es = "Historial ⌘Y"
+
+[frame.connections]
+en = "Connections"
+pt = "Conexões"
+es = "Conexiones"
+
+[frame.new_connection]
+en = "+ New connection"
+pt = "+ Nova conexão"
+es = "+ Nueva conexión"
+
+[frame.connect_hint]
+en = "Connect to see objects."
+pt = "Conecte para ver os objetos."
+es = "Conéctate para ver los objetos."
+
+[frame.hint_statement]
+en = "statement"
+pt = "statement"
+es = "sentencia"
+
+[frame.hint_all]
+en = "all"
+pt = "tudo"
+es = "todo"
+
+[conn.env_staging]
+en = "Staging"
+pt = "Homologação"
+es = "Staging"
+
+[frame.hint_explain]
+en = "explain"
+pt = "explain"
+es = "explain"
+
+[kind.role]
+en = "role"
+pt = "role"
+es = "rol"
+
+[kind.warehouse]
+en = "warehouse"
+pt = "warehouse"
+es = "warehouse"
+
+[kind.database]
+en = "database"
+pt = "database"
+es = "base de datos"
+
+[kind.schema]
+en = "schema"
+pt = "schema"
+es = "esquema"
+
+
+[admin.loading_inherited]
+en = "loading inherited roles (SNOWFLAKE.ACCOUNT_USAGE, may take a few seconds)…"
+pt = "carregando roles herdadas (SNOWFLAKE.ACCOUNT_USAGE, pode levar alguns segundos)…"
+es = "cargando roles heredados (SNOWFLAKE.ACCOUNT_USAGE, puede tardar unos segundos)…"
+
+
+
+
+
+
+
+
+
+
+
+[admin.no_mfa]
+en = "no MFA"
+pt = "sem MFA"
+es = "sin MFA"
+
+[admin.scim]
+en = "SCIM-managed"
+pt = "Gerenciado por SCIM"
+es = "Gestionado por SCIM"
+
+[admin.scim_note]
+en = "Provisioned via SCIM (%{owner}): name, e-mail and role grants come from the identity provider, so change them there."
+pt = "Provisionado por SCIM (%{owner}): nome, e-mail e roles vêm do provedor de identidade; altere lá."
+es = "Aprovisionado por SCIM (%{owner}): nombre, correo y roles vienen del proveedor de identidad; cámbialos allí."
+
+[admin.defaults]
+en = "Defaults"
+pt = "Padrões"
+es = "Valores por defecto"
+
+[admin.role]
+en = "Role"
+pt = "Role"
+es = "Rol"
+
+[admin.warehouse]
+en = "Warehouse"
+pt = "Warehouse"
+es = "Warehouse"
+
+[admin.namespace]
+en = "Namespace"
+pt = "Namespace"
+es = "Namespace"
+
+[admin.not_set]
+en = "Not set"
+pt = "Não definido"
+es = "No definido"
+
+[admin.ago]
+en = "%{ago} ago"
+pt = "há %{ago}"
+es = "hace %{ago}"
+
+[admin.activity_30]
+en = "Activity · 30 days"
+pt = "Atividade · 30 dias"
+es = "Actividad · 30 días"
+
+[admin.tile_queries]
+en = "queries"
+pt = "queries"
+es = "consultas"
+
+[admin.tile_runtime]
+en = "total runtime"
+pt = "tempo total"
+es = "tiempo total"
+
+[admin.tile_logins]
+en = "logins"
+pt = "logins"
+es = "inicios de sesión"
+
+[admin.tile_failed]
+en = "/ %{n} failed"
+pt = "/ %{n} com falha"
+es = "/ %{n} fallidos"
+
+[admin.tile_since]
+en = "since last query"
+pt = "desde a última query"
+es = "desde la última consulta"
+
+[admin.peak]
+en = "%{day} · %{n} queries"
+pt = "%{day} · %{n} queries"
+es = "%{day} · %{n} consultas"
+
+[admin.today]
+en = "Today"
+pt = "Hoje"
+es = "Hoy"
+
+[admin.sign_ins]
+en = "Sign-ins"
+pt = "Logins"
+es = "Inicios de sesión"
+
+[admin.access]
+en = "Access"
+pt = "Acesso"
+es = "Acceso"
+
+
+[admin.default_marker]
+en = "default"
+pt = "padrão"
+es = "por defecto"
+
+
+
+[admin.of]
+en = "%{n} of %{total}"
+pt = "%{n} de %{total}"
+es = "%{n} de %{total}"
+
+[admin.role_meta]
+en = "%{users} users · %{roles} roles"
+pt = "%{users} usuários · %{roles} roles"
+es = "%{users} usuarios · %{roles} roles"
+
+[admin.meta_service]
+en = "service"
+pt = "serviço"
+es = "servicio"
+
+[admin.meta_service_key]
+en = "service · key-pair"
+pt = "serviço · par de chaves"
+es = "servicio · par de claves"
+
+[admin.meta_never]
+en = "never logged in · created %{age} ago"
+pt = "nunca entrou · criado há %{age}"
+es = "nunca inició sesión · creado hace %{age}"
+
+[admin.meta_idle]
+en = "idle %{n} days"
+pt = "parado há %{n} dias"
+es = "inactivo hace %{n} días"
+
+[admin.meta_active]
+en = "active · %{ago} ago"
+pt = "ativo · há %{ago}"
+es = "activo · hace %{ago}"
+
+[span.minutes]
+en = "%{n} min"
+pt = "%{n} min"
+es = "%{n} min"
+
+[span.hours]
+en = "%{n} h"
+pt = "%{n} h"
+es = "%{n} h"
+
+[span.days]
+en = "%{n} days"
+pt = "%{n} dias"
+es = "%{n} días"
+
+[span.months]
+en = "%{n} months"
+pt = "%{n} meses"
+es = "%{n} meses"
+
+[span.years]
+en = "%{n} years"
+pt = "%{n} anos"
+es = "%{n} años"
+
+[admin.kind_warehouse]
+en = "Warehouses"
+pt = "Warehouses"
+es = "Warehouses"
+
+[admin.kind_classification]
+en = "Classification"
+pt = "Classificação"
+es = "Clasificación"
+
+[admin.kind_department]
+en = "Departments"
+pt = "Departamentos"
+es = "Departamentos"
+
+[admin.kind_data]
+en = "Data access"
+pt = "Acesso a dados"
+es = "Acceso a datos"
+
+[admin.kind_functional]
+en = "Functional"
+pt = "Funcionais"
+es = "Funcionales"
+
+[admin.kind_other]
+en = "Other"
+pt = "Outras"
+es = "Otros"
+
+[admin.search_roles]
+en = "Filter roles, warehouses, databases…  try “sales” or “sandbox”"
+pt = "Filtrar roles, warehouses, databases…  tente “sales” ou “sandbox”"
+es = "Filtrar roles, warehouses, bases…  prueba “sales” o “sandbox”"
+
+[admin.all_roles]
+en = "All roles →"
+pt = "Todas as roles →"
+es = "Todos los roles →"
+
+[admin.all_types]
+en = "All"
+pt = "Todas"
+es = "Todos"
+
+[admin.unused_90]
+en = "Unused in 90 days"
+pt = "Sem uso em 90 dias"
+es = "Sin uso en 90 días"
+
+[admin.unused]
+en = "unused"
+pt = "sem uso"
+es = "sin uso"
+
+[admin.direct]
+en = "Direct"
+pt = "Diretas"
+es = "Directos"
+
+[admin.direct_n]
+en = "%{n} direct roles"
+pt = "%{n} roles diretas"
+es = "%{n} roles directos"
+
+[admin.inherited_loading]
+en = "→ loading inherited…"
+pt = "→ carregando herdadas…"
+es = "→ cargando heredados…"
+
+[admin.inherited_n]
+en = "→ %{n} inherited"
+pt = "→ %{n} herdadas"
+es = "→ %{n} heredados"
+
+[admin.fact_level]
+en = "Highest classification %{level}"
+pt = "Classificação mais alta %{level}"
+es = "Clasificación más alta %{level}"
+
+[admin.fact_warehouses]
+en = "%{n} warehouses"
+pt = "%{n} warehouses"
+es = "%{n} warehouses"
+
+[admin.fact_departments]
+en = "%{n} departments"
+pt = "%{n} departamentos"
+es = "%{n} departamentos"
+
+[admin.fact_data]
+en = "%{n} data roles across %{dbs} databases"
+pt = "%{n} roles de dados em %{dbs} databases"
+es = "%{n} roles de datos en %{dbs} bases"
+
+[admin.fact_by_hand]
+en = "%{n} granted by hand"
+pt = "%{n} concedidas à mão"
+es = "%{n} concedidos a mano"
+
+[admin.source_scim]
+en = "Identity-provider group"
+pt = "Grupo do provedor de identidade"
+es = "Grupo del proveedor de identidad"
+
+[admin.source_hand]
+en = "Granted by hand · %{by} · %{on}"
+pt = "Concedida à mão · %{by} · %{on}"
+es = "Concedido a mano · %{by} · %{on}"
+
+[admin.scim_short]
+en = "SCIM"
+pt = "SCIM"
+es = "SCIM"
+
+[admin.by_hand]
+en = "by hand"
+pt = "à mão"
+es = "a mano"
+
+[admin.reaches]
+en = "→ %{n} roles"
+pt = "→ %{n} roles"
+es = "→ %{n} roles"
+
+[admin.unknown_db]
+en = "(database unknown)"
+pt = "(database desconhecido)"
+es = "(base desconocida)"
+
+[admin.n_more]
+en = "%{n} more"
+pt = "mais %{n}"
+es = "%{n} más"
+
+[admin.no_match]
+en = "No role matches “%{q}”: no path reaches it."
+pt = "Nenhuma role casa com “%{q}”: nenhum caminho chega lá."
+es = "Ningún rol coincide con “%{q}”: ningún camino llega."
+
+[admin.copy]
+en = "Copy"
+pt = "Copiar"
+es = "Copiar"
+
+[admin.paths]
+en = "Paths (%{n})"
+pt = "Caminhos (%{n})"
+es = "Caminos (%{n})"
+
+[admin.scim_path]
+en = "Comes from an identity-provider group (SCIM): remove the person from the group there to revoke it."
+pt = "Vem de um grupo do provedor de identidade (SCIM): tire a pessoa do grupo lá para revogar."
+es = "Viene de un grupo del proveedor de identidad (SCIM): quita a la persona del grupo allí para revocarlo."
+
+[admin.wh_operate]
+en = "operate"
+pt = "operar"
+es = "operar"
+
+[admin.wh_monitor]
+en = "monitor"
+pt = "monitorar"
+es = "monitorizar"
+
+[admin.wh_both]
+en = "operate · monitor"
+pt = "operar · monitorar"
+es = "operar · monitorizar"
+
+[admin.n_roles]
+en = "%{n} roles"
+pt = "%{n} roles"
+es = "%{n} roles"
+
+[admin.read]
+en = "read"
+pt = "leitura"
+es = "lectura"
+
+[admin.read_write]
+en = "read · write"
+pt = "leitura · escrita"
+es = "lectura · escritura"
+
+[admin.base_role]
+en = "base role"
+pt = "role base"
+es = "rol base"
+
+[admin.functional_role]
+en = "functional role"
+pt = "role funcional"
+es = "rol funcional"
+
+[sql.query_id]
+en = "Query ID: %{id}"
+pt = "Query ID: %{id}"
+es = "Query ID: %{id}"
+
+[sql.copy_query_id]
+en = "Copy %{id}"
+pt = "Copiar %{id}"
+es = "Copiar %{id}"
+
+
+
+[admin.scope_everywhere]
+en = "everywhere"
+pt = "em todo lugar"
+es = "en todas partes"
+
+[admin.scope_group]
+en = "%{glob} databases"
+pt = "databases %{glob}"
+es = "bases %{glob}"
+
+[admin.scope_db]
+en = "%{db} (whole database)"
+pt = "%{db} (database inteiro)"
+es = "%{db} (base completa)"
+
+[admin.scope_schemas]
+en = "%{n} schemas"
+pt = "%{n} schemas"
+es = "%{n} esquemas"
+
+[admin.scope_dbs]
+en = "%{n} databases"
+pt = "%{n} databases"
+es = "%{n} bases"
+
+[admin.unmasks]
+en = "Unmasks %{level} in"
+pt = "Desmascara %{level} em"
+es = "Desenmascara %{level} en"
+
+[admin.scope_columns]
+en = "%{read} columns readable · %{unread} not"
+pt = "%{read} colunas que lê · %{unread} que não"
+es = "%{read} columnas que lee · %{unread} que no"
+
+[admin.counting_columns]
+en = "counting tagged columns (ACCOUNT_USAGE.TAG_REFERENCES)…"
+pt = "contando colunas com tag (ACCOUNT_USAGE.TAG_REFERENCES)…"
+es = "contando columnas etiquetadas (ACCOUNT_USAGE.TAG_REFERENCES)…"
+
+[admin.forced_masking]
+en = "Holds %{roles}: with it active, %{level} data stays masked regardless."
+pt = "Tem %{roles}: com ela ativa, dados %{level} ficam mascarados de qualquer jeito."
+es = "Tiene %{roles}: con ella activa, los datos %{level} quedan enmascarados igualmente."
+
+[admin.policy_note]
+en = "Rule from the tag-based masking policies (configuration %{config}). Unmasking doesn't grant read access."
+pt = "Regra das masking policies por tag (configuration %{config}). Desmascarar não dá acesso de leitura."
+es = "Regla de las masking policies por tag (configuration %{config}). Desenmascarar no da acceso de lectura."
+
+[plan.note_no_cost]
+en = "No cost data: Snowflake's estimate only weighs table scans (bytes), and this plan has none. Use Actual plan for real times."
+pt = "Sem dados de custo: o estimado do Snowflake só pesa leituras de tabela (bytes), e este plano não tem. Use Plano real para os tempos."
+es = "Sin datos de costo: el estimado de Snowflake solo pesa lecturas de tabla (bytes), y este plan no tiene. Usa Plan real para los tiempos."
+
+[plan.note_no_cost_secure]
+en = "No cost data: secure views hide their internals (tables, bytes) from non-owners. Use Actual plan for real times; each view still shows as one block."
+pt = "Sem dados de custo: secure views escondem o interior (tabelas, bytes) de quem não é dono. Use Plano real para os tempos; cada view continua um bloco só."
+es = "Sin datos de costo: las secure views ocultan su interior (tablas, bytes) a quien no es dueño. Usa Plan real; cada vista sigue siendo un bloque."
+
+[plan.note_no_cost_real]
+en = "Snowflake reported no time per operator for this run."
+pt = "O Snowflake não informou tempo por operador nesta execução."
+es = "Snowflake no informó tiempo por operador en esta ejecución."
+
+[plan.note_no_cost_secure_real]
+en = "Secure views hide their internals: each one shows as a single block without its own time."
+pt = "Secure views escondem o interior: cada uma aparece como um bloco só, sem tempo próprio."
+es = "Las secure views ocultan su interior: cada una aparece como un solo bloque sin tiempo propio."
+
+[plan.note_cached]
+en = "No operators ran: the result came from the cache. To profile it, run again after ALTER SESSION SET USE_CACHED_RESULT = FALSE."
+pt = "Nenhum operador executou: o resultado veio do cache. Para medir, rode de novo depois de ALTER SESSION SET USE_CACHED_RESULT = FALSE."
+es = "Ningún operador se ejecutó: el resultado vino de la caché. Para medirlo, ejecútalo de nuevo tras ALTER SESSION SET USE_CACHED_RESULT = FALSE."
+
+[plan.most_expensive]
+en = "Most expensive nodes"
+pt = "Nós mais caros"
+es = "Nodos más costosos"
+
+[plan.overview]
+en = "Profile overview"
+pt = "Visão geral"
+es = "Resumen del perfil"
+
+[plan.statistics]
+en = "Statistics"
+pt = "Estatísticas"
+es = "Estadísticas"
+
+[plan.back_overview]
+en = "← Overview"
+pt = "← Visão geral"
+es = "← Resumen"
+
+[plan.total_time]
+en = "Total time"
+pt = "Tempo total"
+es = "Tiempo total"
+
+[plan.compile_time]
+en = "Compilation"
+pt = "Compilação"
+es = "Compilación"
+
+[plan.queued_time]
+en = "Queued"
+pt = "Na fila"
+es = "En cola"
+
+[plan.exec_time]
+en = "Execution"
+pt = "Execução"
+es = "Ejecución"
+
+[plan.scan_progress]
+en = "Scan progress"
+pt = "Progresso da leitura"
+es = "Progreso del escaneo"
+
+[plan.bytes_scanned]
+en = "Bytes scanned"
+pt = "Bytes lidos"
+es = "Bytes leídos"
+
+[plan.from_cache]
+en = "Scanned from cache"
+pt = "Lido do cache"
+es = "Leído de la caché"
+
+[plan.partitions_scanned]
+en = "Partitions scanned"
+pt = "Partições lidas"
+es = "Particiones leídas"
+
+[plan.partitions_total]
+en = "Partitions total"
+pt = "Partições no total"
+es = "Particiones en total"
+
+[plan.spilled_local]
+en = "Spilled to local storage"
+pt = "Spill em disco local"
+es = "Spill a disco local"
+
+[plan.spilled_remote]
+en = "Spilled to remote storage"
+pt = "Spill em disco remoto"
+es = "Spill a disco remoto"
+
+[plan.network]
+en = "Network"
+pt = "Rede"
+es = "Red"
+
+[plan.cat_processing]
+en = "Processing"
+pt = "Processamento"
+es = "Procesamiento"
+
+[plan.cat_sync]
+en = "Synchronization"
+pt = "Sincronização"
+es = "Sincronización"
+
+[plan.cat_init]
+en = "Initialization"
+pt = "Inicialização"
+es = "Inicialización"
+
+[plan.cat_local_io]
+en = "Local disk I/O"
+pt = "E/S disco local"
+es = "E/S disco local"
+
+[plan.cat_remote_io]
+en = "Remote disk I/O"
+pt = "E/S disco remoto"
+es = "E/S disco remoto"
+
+[plan.cat_network]
+en = "Network communication"
+pt = "Comunicação de rede"
+es = "Comunicación de red"
+
+[plan.loading_actual]
+en = "loading the actual plan of this run (GET_QUERY_OPERATOR_STATS)…"
+pt = "carregando o plano real desta execução (GET_QUERY_OPERATOR_STATS)…"
+es = "cargando el plan real de esta ejecución (GET_QUERY_OPERATOR_STATS)…"
+
+[frame.warehouses]
+en = "Warehouses"
+pt = "Warehouses"
+es = "Warehouses"
+
+[wh.title]
+en = "Warehouses"
+pt = "Warehouses"
+es = "Warehouses"
+
+[wh.filter]
+en = "Filter warehouses…"
+pt = "Filtrar warehouses…"
+es = "Filtrar warehouses…"
+
+[wh.pick]
+en = "Pick a warehouse on the left."
+pt = "Escolha um warehouse à esquerda."
+es = "Elige un warehouse a la izquierda."
+
+[wh.meta_running]
+en = "%{size} · running · %{n} queries"
+pt = "%{size} · rodando · %{n} queries"
+es = "%{size} · en marcha · %{n} consultas"
+
+[wh.running_queued]
+en = "running %{running} · queued %{queued}"
+pt = "rodando %{running} · na fila %{queued}"
+es = "en marcha %{running} · en cola %{queued}"
+
+[wh.config]
+en = "Configuration"
+pt = "Configuração"
+es = "Configuración"
+
+[wh.size]
+en = "Size"
+pt = "Tamanho"
+es = "Tamaño"
+
+[wh.type]
+en = "Type"
+pt = "Tipo"
+es = "Tipo"
+
+[wh.auto_suspend]
+en = "Auto-suspend"
+pt = "Auto-suspend"
+es = "Auto-suspensión"
+
+[wh.auto_resume]
+en = "Auto-resume"
+pt = "Auto-resume"
+es = "Auto-reanudación"
+
+[wh.clusters]
+en = "Clusters"
+pt = "Clusters"
+es = "Clústeres"
+
+[wh.monitor]
+en = "Resource monitor"
+pt = "Resource monitor"
+es = "Resource monitor"
+
+[wh.resumed]
+en = "Resumed"
+pt = "Retomado"
+es = "Reanudado"
+
+[wh.never]
+en = "never"
+pt = "nunca"
+es = "nunca"
+
+[wh.yes]
+en = "yes"
+pt = "sim"
+es = "sí"
+
+[wh.no]
+en = "no"
+pt = "não"
+es = "no"
+
+[wh.who]
+en = "Who can use it"
+pt = "Quem pode usar"
+es = "Quién puede usarlo"
+
+[wh.users_reach]
+en = "%{n} users reach it"
+pt = "%{n} usuários chegam a ele"
+es = "%{n} usuarios llegan a él"
+
+[wh.counting_users]
+en = "counting users (ACCOUNT_USAGE)…"
+pt = "contando usuários (ACCOUNT_USAGE)…"
+es = "contando usuarios (ACCOUNT_USAGE)…"
+
+[wh.credits]
+en = "Credits · 14 days"
+pt = "Créditos · 14 dias"
+es = "Créditos · 14 días"
+
+[wh.credits_day]
+en = "%{day} · %{n} credits"
+pt = "%{day} · %{n} créditos"
+es = "%{day} · %{n} créditos"
+
+[wh.credits_total]
+en = "%{n} credits in total"
+pt = "%{n} créditos no total"
+es = "%{n} créditos en total"
+
+[wh.usage]
+en = "Usage · 14 days"
+pt = "Uso · 14 dias"
+es = "Uso · 14 días"
+
+[wh.top_users]
+en = "Top users"
+pt = "Quem mais usa"
+es = "Quién más lo usa"
+
+[wh.user_line]
+en = "%{n} queries · %{time}"
+pt = "%{n} queries · %{time}"
+es = "%{n} consultas · %{time}"
+
+[wh.queue_spill]
+en = "Queueing & spill"
+pt = "Fila & spill"
+es = "Cola y spill"
+
+[wh.queued_queries]
+en = "Queries that queued"
+pt = "Queries que esperaram na fila"
+es = "Consultas que esperaron en cola"
+
+[wh.queue_avg_max]
+en = "Queue wait avg / max"
+pt = "Espera média / máxima"
+es = "Espera media / máxima"
+
+[wh.undersized]
+en = "May be undersized: queries waited in the queue or spilled to remote storage."
+pt = "Pode estar subdimensionado: queries esperaram na fila ou fizeram spill no disco remoto."
+es = "Puede estar subdimensionado: consultas esperaron en cola o hicieron spill a disco remoto."
+
+[wh.slowest]
+en = "Slowest queries"
+pt = "Queries mais lentas"
+es = "Consultas más lentas"
+
+[wh.plan_title]
+en = "Actual plan"
+pt = "Plano real"
+es = "Plan real"
+
+[wh.hint_monitor]
+en = "Profiling other users' queries needs MONITOR on the warehouse (or an admin role)."
+pt = "Ver o perfil de queries de outros usuários precisa de MONITOR no warehouse (ou uma role de admin)."
+es = "Ver el perfil de consultas de otros usuarios necesita MONITOR en el warehouse (o un rol de admin)."
+
+[picker.search]
+en = "Search…"
+pt = "Buscar…"
+es = "Buscar…"
+
+[picker.recent]
+en = "Recent"
+pt = "Recentes"
+es = "Recientes"
+
+[picker.all]
+en = "All (%{n})"
+pt = "Todos (%{n})"
+es = "Todos (%{n})"
+
+[picker.matches]
+en = "%{n} matches"
+pt = "%{n} resultados"
+es = "%{n} resultados"
+
+[picker.none]
+en = "Nothing matches."
+pt = "Nada encontrado."
+es = "Nada coincide."
+
+[frame.no_database]
+en = "no database"
+pt = "sem database"
+es = "sin base de datos"
+
+[frame.context_menu]
+en = "Connections, role, warehouse, database, schema"
+pt = "Conexões, role, warehouse, database, schema"
+es = "Conexiones, rol, warehouse, base, esquema"
+
+[conn.tab_general]
+en = "General"
+pt = "Geral"
+es = "General"
+
+[conn.tab_auth]
+en = "Authentication"
+pt = "Autenticação"
+es = "Autenticación"
+
+[conn.dbt_intro]
+en = "Link a local clone of your dbt project to show descriptions, tests, owners and model SQL on tables in this connection."
+pt = "Ligue um clone local do projeto dbt para ver descrições, testes, owners e o SQL dos modelos nas tabelas desta conexão."
+es = "Vincula un clon local de tu proyecto dbt para ver descripciones, tests, owners y el SQL de los modelos en las tablas de esta conexión."
+
+[conn.dbt_folder]
+en = "Project folder"
+pt = "Pasta do projeto"
+es = "Carpeta del proyecto"
+
+[conn.dbt_target]
+en = "Target"
+pt = "Target"
+es = "Target"
+
+[conn.dbt_target_hint]
+en = "The profiles.yml target that points at this account."
+pt = "O target do profiles.yml que aponta para esta conta."
+es = "El target de profiles.yml que apunta a esta cuenta."
+
+[conn.choose_folder]
+en = "Choose…"
+pt = "Escolher…"
+es = "Elegir…"
+
+[dbt.not_configured]
+en = "dbt isn't set up for this connection."
+pt = "dbt não está configurado nesta conexão."
+es = "dbt no está configurado en esta conexión."
+
+[dbt.pick_folder]
+en = "Pick the project folder to check the manifest."
+pt = "Escolha a pasta do projeto para checar o manifest."
+es = "Elige la carpeta del proyecto para revisar el manifest."
+
+[dbt.manifest_found]
+en = "Manifest found"
+pt = "Manifest encontrado"
+es = "Manifest encontrado"
+
+[dbt.parsed_ago]
+en = "parsed %{ago} ago"
+pt = "gerado há %{ago}"
+es = "generado hace %{ago}"
+
+[dbt.counts]
+en = "%{models} models · %{sources} sources · %{seeds} seeds"
+pt = "%{models} modelos · %{sources} sources · %{seeds} seeds"
+es = "%{models} modelos · %{sources} sources · %{seeds} seeds"
+
+[dbt.branch]
+en = "branch"
+pt = "branch"
+es = "rama"
+
+[dbt.refresh]
+en = "Refresh dbt"
+pt = "Refresh dbt"
+es = "Refresh dbt"
+
+[dbt.refreshing]
+en = "Running dbt parse…"
+pt = "Rodando dbt parse…"
+es = "Ejecutando dbt parse…"
+
+[dbt.parse_failed]
+en = "dbt parse failed"
+pt = "dbt parse falhou"
+es = "dbt parse falló"
+
+[dbt.copy_output]
+en = "Copy output"
+pt = "Copiar saída"
+es = "Copiar salida"
+
+[dbt.parse_note]
+en = "Refresh runs dbt parse --target %{target} in the folder. It reads files only and never queries Snowflake."
+pt = "O Refresh roda dbt parse --target %{target} na pasta. Só lê arquivos, nunca consulta o Snowflake."
+es = "Refresh ejecuta dbt parse --target %{target} en la carpeta. Solo lee archivos, nunca consulta Snowflake."
+
+[tv.owner]
+en = "owner"
+pt = "owner"
+es = "owner"
+
+[tv.query]
+en = "Query"
+pt = "Consultar"
+es = "Consultar"
+
+[tv.kind_table]
+en = "Table"
+pt = "Tabela"
+es = "Tabla"
+
+[tv.kind_view]
+en = "View"
+pt = "View"
+es = "Vista"
+
+[tv.kind_matview]
+en = "Materialized view"
+pt = "View materializada"
+es = "Vista materializada"
+
+[tv.rows]
+en = "%{n} rows"
+pt = "%{n} linhas"
+es = "%{n} filas"
+
+[tv.changed]
+en = "changed %{ago}"
+pt = "alterada %{ago}"
+es = "cambiada %{ago}"
+
+[tv.data]
+en = "Data"
+pt = "Dados"
+es = "Datos"
+
+[tv.definition]
+en = "Definition"
+pt = "Definição"
+es = "Definición"
+
+[tv.col_column]
+en = "Column"
+pt = "Coluna"
+es = "Columna"
+
+[tv.col_type]
+en = "Type"
+pt = "Tipo"
+es = "Tipo"
+
+[tv.col_desc]
+en = "Description"
+pt = "Descrição"
+es = "Descripción"
+
+[tv.col_class]
+en = "Classification"
+pt = "Classificação"
+es = "Clasificación"
+
+[tv.col_tests]
+en = "dbt tests"
+pt = "Testes dbt"
+es = "Tests dbt"
+
+[tv.no_desc]
+en = "No description"
+pt = "Sem descrição"
+es = "Sin descripción"
+
+[tv.sum_columns]
+en = "%{n} columns"
+pt = "%{n} colunas"
+es = "%{n} columnas"
+
+[tv.sum_classified]
+en = "%{n} classified"
+pt = "%{n} classificadas"
+es = "%{n} clasificadas"
+
+[tv.sum_tests]
+en = "%{n} tests"
+pt = "%{n} testes"
+es = "%{n} tests"
+
+[tv.sum_undocumented]
+en = "%{n} undocumented"
+pt = "%{n} sem descrição"
+es = "%{n} sin descripción"
+
+[tv.nullable]
+en = "nullable"
+pt = "aceita nulo"
+es = "admite nulo"
+
+[tv.not_null]
+en = "not null"
+pt = "não nulo"
+es = "no nulo"
+
+[tv.no_default]
+en = "no default"
+pt = "sem default"
+es = "sin default"
+
+[tv.sf_comment]
+en = "Snowflake comment: “%{c}”"
+pt = "Comentário no Snowflake: “%{c}”"
+es = "Comentario en Snowflake: “%{c}”"
+
+[tv.protection]
+en = "Protection"
+pt = "Proteção"
+es = "Protección"
+
+[tv.masked_by]
+en = "Masked by %{p}"
+pt = "Mascarada por %{p}"
+es = "Enmascarada por %{p}"
+
+[tv.comes_from]
+en = "Comes from"
+pt = "Vem de"
+es = "Viene de"
+
+[tv.no_lineage]
+en = "No lineage in Snowflake yet."
+pt = "Ainda sem linhagem no Snowflake."
+es = "Aún sin linaje en Snowflake."
+
+[tv.lineage_lag]
+en = "Snowflake lineage · up to ~3 h behind"
+pt = "Linhagem do Snowflake · até ~3 h de atraso"
+es = "Linaje de Snowflake · hasta ~3 h de retraso"
+
+[tv.hint_lineage]
+en = "Lineage needs Enterprise edition and the VIEW LINEAGE privilege."
+pt = "Linhagem precisa da edição Enterprise e do privilégio VIEW LINEAGE."
+es = "El linaje necesita la edición Enterprise y el privilegio VIEW LINEAGE."
+
+[tv.outside_dbt]
+en = "outside dbt"
+pt = "fora do dbt"
+es = "fuera de dbt"
+
+[tv.dbt_missing]
+en = "dbt project not available"
+pt = "Projeto dbt indisponível"
+es = "Proyecto dbt no disponible"
+
+[tv.dbt_setup_hint]
+en = "Set the dbt project folder in the connection settings (✎ → dbt)."
+pt = "Defina a pasta do projeto dbt nas configurações da conexão (✎ → dbt)."
+es = "Define la carpeta del proyecto dbt en la configuración de la conexión (✎ → dbt)."
+
+[tv.not_a_model]
+en = "This table isn't a dbt model in this project."
+pt = "Esta tabela não é um modelo dbt deste projeto."
+es = "Esta tabla no es un modelo dbt de este proyecto."
+
+[tv.n_values]
+en = "%{n} values"
+pt = "%{n} valores"
+es = "%{n} valores"
+
+[tv.model_level]
+en = "model"
+pt = "modelo"
+es = "modelo"
+
+[tv.materialized]
+en = "Materialized"
+pt = "Materialização"
+es = "Materialización"
+
+[tv.unique_key]
+en = "Unique key"
+pt = "Chave única"
+es = "Clave única"
+
+[tv.tests_n]
+en = "Tests · %{n}"
+pt = "Testes · %{n}"
+es = "Tests · %{n}"
+
+[tv.source]
+en = "Source"
+pt = "Fonte"
+es = "Fuente"
+
+[tv.compiled]
+en = "Compiled"
+pt = "Compilado"
+es = "Compilado"
+
+[tv.no_compiled]
+en = "No compiled SQL yet: click Compile."
+pt = "Ainda sem SQL compilado: clique em Compilar."
+es = "Aún sin SQL compilado: pulsa Compilar."
+
+[tv.open_github]
+en = "Open on GitHub"
+pt = "Abrir no GitHub"
+es = "Abrir en GitHub"
+
+[tv.open_editor]
+en = "Open in editor"
+pt = "Abrir no editor"
+es = "Abrir en el editor"
+
+[tv.not_classified]
+en = "not classified"
+pt = "sem classificação"
+es = "sin clasificar"
+
+[tv.class_unavailable]
+en = "classification unavailable: %{error}"
+pt = "classificação indisponível: %{error}"
+es = "clasificación no disponible: %{error}"
+
+[tv.src_dbt]
+en = "DBT"
+pt = "DBT"
+es = "DBT"
+
+[tv.src_comment]
+en = "COMMENT"
+pt = "COMENTÁRIO"
+es = "COMENTARIO"
+
+[tv.default]
+en = "default %{d}"
+pt = "default %{d}"
+es = "por defecto %{d}"
+
+[tv.meta]
+en = "Meta"
+pt = "Meta"
+es = "Meta"
+
+[tv.tags]
+en = "Tags"
+pt = "Tags"
+es = "Etiquetas"
+
+[tv.manifest_footer]
+en = "Manifest · target %{target} · %{ago}"
+pt = "Manifest · target %{target} · %{ago}"
+es = "Manifest · target %{target} · %{ago}"
+
+[dbt.github]
+en = "GitHub: %{repo} · branch %{branch}"
+pt = "GitHub: %{repo} · branch %{branch}"
+es = "GitHub: %{repo} · rama %{branch}"
+
+[tv.matched_by_name]
+en = "matched by name (manifest from another target)"
+pt = "casado pelo nome (manifest de outro target)"
+es = "emparejado por nombre (manifest de otro target)"
+
+[ws.connecting_to]
+en = "connecting to %{name}…"
+pt = "conectando a %{name}…"
+es = "conectando a %{name}…"
+
+[tv.more]
+en = "more"
+pt = "mais"
+es = "más"
+
+[tv.less]
+en = "less"
+pt = "menos"
+es = "menos"
+
+[conn.dbt_aws]
+en = "AWS profile (dbt-loom / S3)"
+pt = "Perfil AWS (dbt-loom / S3)"
+es = "Perfil AWS (dbt-loom / S3)"
+
+[conn.dbt_aws_hint]
+en = "Used as AWS_PROFILE when running dbt parse; empty = your shell's. Profiles: %{profiles}"
+pt = "Usado como AWS_PROFILE no dbt parse; vazio = o do seu shell. Perfis: %{profiles}"
+es = "Se usa como AWS_PROFILE en dbt parse; vacío = el de tu shell. Perfiles: %{profiles}"
+
+[dbt.aws_expired]
+en = "AWS SSO session expired: dbt-loom fetches manifests from S3."
+pt = "Sessão SSO da AWS vencida: o dbt-loom busca manifests no S3."
+es = "Sesión SSO de AWS vencida: dbt-loom descarga manifests de S3."
+
+[dbt.aws_pick]
+en = "Pick the AWS profile that can read the bucket, then log in. The app retries dbt parse with it."
+pt = "Escolha o perfil AWS que lê o bucket e faça login. O app tenta o dbt parse de novo com ele."
+es = "Elige el perfil AWS que puede leer el bucket e inicia sesión. La app reintenta dbt parse con él."
+
+[dbt.aws_login]
+en = "Log in to AWS (%{profile})"
+pt = "Entrar na AWS (%{profile})"
+es = "Iniciar sesión en AWS (%{profile})"
+
+[dbt.aws_login_pick]
+en = "Pick a profile to log in"
+pt = "Escolha um perfil para entrar"
+es = "Elige un perfil para entrar"
+
+[dbt.aws_note]
+en = "dbt said: %{out}"
+pt = "O dbt disse: %{out}"
+es = "dbt dijo: %{out}"
+
+[tv.uncommitted]
+en = "not committed yet"
+pt = "ainda não commitado"
+es = "aún sin commit"
+
+[tv.compile]
+en = "Compile"
+pt = "Compilar"
+es = "Compilar"
+
+[tv.compiling]
+en = "Compiling…"
+pt = "Compilando…"
+es = "Compilando…"
+
+[tv.compile_tip]
+en = "Runs dbt compile --select <model> in the project. Unlike parse, compile may query the warehouse (macros with run_query)."
+pt = "Roda dbt compile --select <modelo> no projeto. Diferente do parse, o compile pode consultar o warehouse (macros com run_query)."
+es = "Ejecuta dbt compile --select <modelo> en el proyecto. A diferencia de parse, compile puede consultar el warehouse (macros con run_query)."
+
+[tv.compiled_ago]
+en = "compiled %{ago}"
+pt = "compilado %{ago}"
+es = "compilado %{ago}"

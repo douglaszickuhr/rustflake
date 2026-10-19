@@ -6083,6 +6083,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "pollster 1.0.1",
+ "regex",
  "russh",
  "rust-i18n",
  "rustls",
@@ -7271,8 +7272,6 @@ dependencies = [
 [[package]]
 name = "snowflake-connector-rs"
 version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c4c045c3483e13660b4b7f9dd9eca43238419ffd22b00966ef22e3d789d2167"
 dependencies = [
  "base64 0.22.1",
  "bytes",

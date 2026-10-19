@@ -4,15 +4,16 @@ use rust_i18n::t;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use rb_core::explain::{Placed, Plan, PlanNode, edge_width, hottest, layout, node_at, short_count};
+use rb_core::explain::{Placed, Plan, PlanNode, PlanNote, Profile, edge_width, hottest, layout, node_at, short_count, top_nodes};
 
 use crate::{PlanFit, PlanZoomIn, PlanZoomOut};
 
 const BOX_W: f32 = 220.0;
-const BOX_H: f32 = 76.0;
+const BOX_H: f32 = 84.0;
 /// Margem interna da área do diagrama (`p_4`), descontada no ajustar à tela.
 const PAD: f32 = 16.0;
 const GAP_X: f32 = 32.0;
@@ -48,10 +49,40 @@ fn rows_of(n: &PlanNode) -> Option<f64> {
     n.act_rows.or(n.est_rows)
 }
 
+fn human(ms: f64) -> String {
+    if ms < 1000.0 { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.0) }
+}
+
+/// Categorias do EXECUTION_TIME_BREAKDOWN, com os nomes do Query Profile.
+fn cat_label(cat: &str) -> String {
+    match cat {
+        "processing" => t!("plan.cat_processing").to_string(),
+        "synchronization" => t!("plan.cat_sync").to_string(),
+        "initialization" => t!("plan.cat_init").to_string(),
+        "local_disk_io" => t!("plan.cat_local_io").to_string(),
+        "remote_disk_io" => t!("plan.cat_remote_io").to_string(),
+        "network_communication" => t!("plan.cat_network").to_string(),
+        other => other.replace('_', " "),
+    }
+}
+
+fn cat_color(cat: &str, theme: &gpui_kit::component::Theme) -> Hsla {
+    match cat {
+        "processing" => theme.primary,
+        "synchronization" => theme.info,
+        "initialization" => theme.warning,
+        "local_disk_io" => theme.success,
+        "remote_disk_io" => theme.danger,
+        _ => theme.muted_foreground,
+    }
+}
+
 pub struct PlanView {
     plan: Plan,
     placed: Vec<Placed>,
     selected: Vec<usize>,
+    /// Painel da direita no resumo do Query Profile (nada selecionado). Só no plano real do Snowflake.
+    overview: bool,
     zoom: f32,
     fitted: bool,
     /// Área visível, medida no último quadro (ajustar à tela e zoom pelo ponteiro).
@@ -64,7 +95,8 @@ impl PlanView {
     pub fn new(plan: Plan, cx: &mut Context<Self>) -> Self {
         let placed = layout(&plan.root, BOX_W, BOX_H, GAP_X, GAP_Y);
         let selected = hottest(&plan.root);
-        PlanView { plan, placed, selected, zoom: 1.0, fitted: false, viewport: Rc::default(), scroll: ScrollHandle::new(), focus: cx.focus_handle() }
+        let overview = plan.profile.is_some();
+        PlanView { plan, placed, selected, overview, zoom: 1.0, fitted: false, viewport: Rc::default(), scroll: ScrollHandle::new(), focus: cx.focus_handle() }
     }
 
     fn content_size(&self) -> (f32, f32) {
@@ -108,7 +140,102 @@ impl PlanView {
         cx.notify();
     }
 
-    fn render_details(&self, cx: &App) -> impl IntoElement {
+    /// Como o painel do Query Profile: nós mais caros, onde o tempo foi e o que foi lido.
+    fn render_overview(&self, p: &Profile, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let head = |s: String| div().pt_2().font_weight(FontWeight::SEMIBOLD).child(s);
+        let row = |k: String, v: String| h_flex().justify_between().gap_2().text_sm().child(div().text_color(theme.muted_foreground).child(k)).child(div().font_family(theme.mono_font_family.clone()).child(v));
+        let mut out = v_flex().gap_2();
+
+        let top = top_nodes(&self.plan.root, 5);
+        out = out.child(head(t!("plan.most_expensive").to_string()));
+        for (i, path) in top.into_iter().enumerate() {
+            let Some(n) = node_at(&self.plan.root, &path) else { continue };
+            let label = match n.id {
+                Some(id) => format!("{} [{id}]", n.op),
+                None => n.op.clone(),
+            };
+            out = out.child(
+                h_flex()
+                    .id(("top", i))
+                    .justify_between()
+                    .px_1()
+                    .rounded(theme.radius)
+                    .cursor_pointer()
+                    .text_sm()
+                    .hover(|d| d.bg(theme.secondary_hover))
+                    .child(label)
+                    .child(div().font_family(theme.mono_font_family.clone()).child(format!("{:.1}%", n.pct)))
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        v.selected = path.clone();
+                        v.overview = false;
+                        cx.notify();
+                    })),
+            );
+        }
+
+        out = out.child(head(t!("plan.overview").to_string()));
+        if !p.breakdown.is_empty() {
+            let total: f64 = p.breakdown.iter().map(|(_, v)| v).sum::<f64>().max(1e-9);
+            let mut bar = h_flex().h(px(6.)).w_full().rounded(px(3.)).overflow_hidden();
+            for (cat, v) in &p.breakdown {
+                bar = bar.child(div().h_full().w(relative((*v / total) as f32)).bg(cat_color(cat, &theme)));
+            }
+            out = out.child(bar);
+            for (cat, v) in &p.breakdown {
+                out = out.child(
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .child(div().size(px(6.)).rounded_full().bg(cat_color(cat, &theme)))
+                        .child(div().flex_1().text_color(theme.muted_foreground).child(cat_label(cat)))
+                        .child(div().font_family(theme.mono_font_family.clone()).child(format!("{:.1}%", v / total * 100.0))),
+                );
+            }
+        }
+        if let Some(t) = p.timing {
+            out = out
+                .child(row(t!("plan.total_time").to_string(), human(t.total_ms)))
+                .child(row(t!("plan.compile_time").to_string(), human(t.compile_ms)))
+                .when(t.queued_ms > 0.0, |d| d.child(row(t!("plan.queued_time").to_string(), human(t.queued_ms))))
+                .child(row(t!("plan.exec_time").to_string(), human(t.exec_ms)));
+        }
+
+        out = out.child(head(t!("plan.statistics").to_string()));
+        if let Some(sp) = p.scan_progress {
+            out = out.child(row(t!("plan.scan_progress").to_string(), format!("{:.2}%", sp * 100.0)));
+        }
+        out = out.child(row(t!("plan.bytes_scanned").to_string(), format!("{}B", short_count(p.bytes_scanned))));
+        if let Some(c) = p.from_cache {
+            out = out.child(row(t!("plan.from_cache").to_string(), format!("{:.2}%", c * 100.0)));
+        }
+        if p.partitions_total > 0.0 {
+            out = out.child(row(t!("plan.partitions_scanned").to_string(), short_count(p.partitions_scanned))).child(row(t!("plan.partitions_total").to_string(), short_count(p.partitions_total)));
+        }
+        if p.spilled_local > 0.0 {
+            out = out.child(row(t!("plan.spilled_local").to_string(), format!("{}B", short_count(p.spilled_local))));
+        }
+        if p.spilled_remote > 0.0 {
+            out = out.child(row(t!("plan.spilled_remote").to_string(), format!("{}B", short_count(p.spilled_remote))));
+        }
+        if p.network_bytes > 0.0 {
+            out = out.child(row(t!("plan.network").to_string(), format!("{}B", short_count(p.network_bytes))));
+        }
+        out
+    }
+
+    fn render_details(&self, cx: &mut Context<Self>) -> Div {
+        if self.overview
+            && let Some(p) = self.plan.profile.clone()
+        {
+            return self.render_overview(&p, cx);
+        }
+        let back = self.plan.profile.is_some().then(|| {
+            Button::new("plan-overview").label(t!("plan.back_overview").to_string()).ghost().xsmall().on_click(cx.listener(|v, _, _, cx| {
+                v.overview = true;
+                cx.notify();
+            }))
+        });
         let theme = cx.theme();
         let Some(n) = node_at(&self.plan.root, &self.selected) else { return v_flex() };
         let mut nums: Vec<(String, String)> = Vec::new();
@@ -128,7 +255,12 @@ impl PlanView {
         let kv = |(k, v): (String, String)| v_flex().child(div().text_xs().text_color(theme.muted_foreground).child(k)).child(div().text_sm().font_family("monospace").child(v));
         v_flex()
             .gap_2()
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(n.op.clone()))
+            .children(back)
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(match n.id {
+                Some(id) => format!("{} [{id}]", n.op),
+                None => n.op.clone(),
+            }))
+            .when_some(n.summary.clone().filter(|s| Some(s) != n.object.as_ref()), |d, s| d.child(div().text_sm().font_family("monospace").child(s)))
             .when_some(n.object.clone(), |d, o| d.child(div().text_sm().text_color(theme.muted_foreground).child(o)))
             .children(n.warn.iter().map(|w| div().text_sm().text_color(theme.warning).child(format!("⚠ {w}"))))
             .children(nums.into_iter().map(kv))
@@ -184,6 +316,7 @@ impl Render for PlanView {
             Some(div().absolute().left(px(x + 4.0)).top(px(y - 8.0)).text_xs().text_color(theme.muted_foreground).child(short_count(rows)))
         });
 
+        let no_pct = self.plan.note;
         let boxes = self.placed.iter().zip(&nodes).enumerate().map(|(i, (p, n))| {
             let selected = p.path == self.selected;
             let path = p.path.clone();
@@ -214,10 +347,18 @@ impl Render for PlanView {
                 .child(
                     h_flex()
                         .gap_1()
-                        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_weight(FontWeight::SEMIBOLD).child(n.op.clone()))
-                        .child(format!("{:.0}%", n.pct)),
+                        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_weight(FontWeight::SEMIBOLD).child(match n.id {
+                            Some(id) => format!("{} [{id}]", n.op),
+                            None => n.op.clone(),
+                        }))
+                        // Sem dado nenhum, "0%" em tudo engana: o aviso no topo explica.
+                        .when(no_pct.is_none(), |d| d.child(format!("{:.0}%", n.pct))),
                 )
-                .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(theme.muted_foreground).child(n.object.clone().unwrap_or_default()))
+                .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(theme.muted_foreground).child(n.summary.clone().or_else(|| n.object.clone()).unwrap_or_default()))
+                // Barra do % como no Query Profile (só quando há números).
+                .when(no_pct.is_none() && self.plan.analyzed, |d| {
+                    d.child(div().h(px(3.0 * z)).w_full().rounded_full().bg(theme.secondary).child(div().h_full().rounded_full().bg(theme.primary).w(relative((n.pct / 100.0) as f32))))
+                })
                 .child(
                     h_flex()
                         .gap_1()
@@ -226,11 +367,19 @@ impl Render for PlanView {
                 )
                 .on_click(cx.listener(move |v, _, window, cx| {
                     v.selected = path.clone();
+                    v.overview = false;
                     v.focus.focus(window, cx);
                     cx.notify();
                 }))
         });
 
+        let note = self.plan.note.map(|n| match n {
+            PlanNote::NoCost { secure_views: true } if self.plan.analyzed => t!("plan.note_no_cost_secure_real").to_string(),
+            PlanNote::NoCost { secure_views: true } => t!("plan.note_no_cost_secure").to_string(),
+            PlanNote::NoCost { .. } if self.plan.analyzed => t!("plan.note_no_cost_real").to_string(),
+            PlanNote::NoCost { .. } => t!("plan.note_no_cost").to_string(),
+            PlanNote::Cached => t!("plan.note_cached").to_string(),
+        });
         let header = if self.plan.analyzed {
             t!("plan.real", time = self.plan.total_ms.map_or(String::new(), |ms| format!("{ms:.1} ms"))).to_string()
         } else {
@@ -246,6 +395,7 @@ impl Render for PlanView {
             .on_action(cx.listener(|v, _: &PlanZoomOut, _, cx| v.zoom_step(false, cx)))
             .on_action(cx.listener(|v, _: &PlanFit, _, cx| v.zoom_fit(cx)))
             .child(h_flex().px_2().py_1().gap_3().text_sm().child(header).child(div().text_color(theme.muted_foreground).child(t!("plan.zoom_hint").to_string())))
+            .when_some(note, |d, n| d.child(div().mx_2().mb_1().px_2().py_1().rounded(theme.radius).bg(theme.secondary).text_sm().text_color(theme.muted_foreground).child(n)))
             .child(
                 h_flex()
                     .flex_1()

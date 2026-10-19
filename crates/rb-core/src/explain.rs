@@ -23,6 +23,10 @@ pub struct PlanNode {
     pub pct: f64,
     pub warn: Vec<String>,
     pub children: Vec<PlanNode>,
+    /// `[id]` do Snowflake (o mesmo do Query Profile).
+    pub id: Option<i64>,
+    /// Segunda linha da caixa: condição do join/filtro, tabela, chaves.
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +34,94 @@ pub struct Plan {
     pub root: PlanNode,
     pub analyzed: bool,
     pub total_ms: Option<f64>,
+    /// Por que os números estão vazios, quando estão.
+    pub note: Option<PlanNote>,
+    /// Só no real do Snowflake: o que o Query Profile mostra ao lado do diagrama.
+    pub profile: Option<Profile>,
+}
+
+/// Agregados de GET_QUERY_OPERATOR_STATS (todos os operadores) + tempos do QUERY_HISTORY.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Profile {
+    /// Categoria → fração do tempo total (soma dos operadores), maior primeiro.
+    pub breakdown: Vec<(String, f64)>,
+    pub bytes_scanned: f64,
+    /// Fração lida do cache do warehouse, ponderada pelos bytes.
+    pub from_cache: Option<f64>,
+    /// O scan mais atrasado (1.0 = terminou).
+    pub scan_progress: Option<f64>,
+    pub partitions_scanned: f64,
+    pub partitions_total: f64,
+    pub spilled_local: f64,
+    pub spilled_remote: f64,
+    pub network_bytes: f64,
+    pub timing: Option<Timing>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Timing {
+    pub compile_ms: f64,
+    pub queued_ms: f64,
+    pub exec_ms: f64,
+    pub total_ms: f64,
+}
+
+/// Tempos da query pelo id (INFORMATION_SCHEMA: sem o atraso do ACCOUNT_USAGE).
+pub fn query_timing_sql(query_id: &str) -> String {
+    format!(
+        "select compilation_time, queued_provisioning_time + queued_repair_time + queued_overload_time as queued, execution_time, total_elapsed_time \
+from table(information_schema.query_history(result_limit => 1000)) where query_id = '{}'",
+        query_id.replace('\'', "")
+    )
+}
+
+pub fn parse_timing(names: &[String], rows: &[Vec<Option<String>>]) -> Option<Timing> {
+    let r = rows.first()?;
+    let n = |c: &str| names.iter().position(|x| x.eq_ignore_ascii_case(c)).and_then(|i| r.get(i).cloned().flatten()).and_then(|v| v.parse::<f64>().ok());
+    Some(Timing { compile_ms: n("COMPILATION_TIME")?, queued_ms: n("QUEUED").unwrap_or(0.0), exec_ms: n("EXECUTION_TIME")?, total_ms: n("TOTAL_ELAPSED_TIME")? })
+}
+
+/// Caminhos dos `n` nós mais caros (maior % primeiro).
+pub fn top_nodes(root: &PlanNode, n: usize) -> Vec<Vec<usize>> {
+    fn walk(node: &PlanNode, path: &mut Vec<usize>, out: &mut Vec<(f64, Vec<usize>)>) {
+        out.push((node.pct, path.clone()));
+        for (i, c) in node.children.iter().enumerate() {
+            path.push(i);
+            walk(c, path, out);
+            path.pop();
+        }
+    }
+    let mut all = Vec::new();
+    walk(root, &mut Vec::new(), &mut all);
+    all.retain(|(p, _)| *p > 0.0);
+    all.sort_by(|a, b| b.0.total_cmp(&a.0));
+    all.into_iter().take(n).map(|(_, p)| p).collect()
+}
+
+/// Atributo mais informativo do operador, na ordem em que o Query Profile mostra.
+fn summary_of(at: &Value) -> Option<String> {
+    ["table_name", "equality_join_condition", "filter_condition", "additional_join_condition", "grouping_keys", "sort_keys", "functions", "input_expressions"]
+        .iter()
+        .find_map(|k| at.get(*k).map(text).filter(|s| !s.is_empty()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanNote {
+    /// Nenhum nó com custo: o estimado do Snowflake só tem bytes de TableScan, e secure views escondem o interior.
+    NoCost { secure_views: bool },
+    /// GET_QUERY_OPERATOR_STATS vazio: o resultado veio do cache, nada executou.
+    Cached,
+}
+
+/// Todos os nós sem peso → explica (em vez de mostrar 0% em tudo).
+fn no_cost_note(root: &PlanNode) -> Option<PlanNote> {
+    fn all_zero(n: &PlanNode) -> bool {
+        n.pct == 0.0 && n.children.iter().all(all_zero)
+    }
+    fn secure(n: &PlanNode) -> bool {
+        n.op.contains("SecureView") || n.children.iter().any(secure)
+    }
+    all_zero(root).then(|| PlanNote::NoCost { secure_views: secure(root) })
 }
 
 /// Posição de um nó no diagrama; `parent` é o índice do pai neste mesmo vetor.
@@ -112,6 +204,8 @@ fn pg_node(v: &Value, analyzed: bool) -> PlanNode {
         pct: 0.0,
         warn,
         children: kids.iter().map(|c| pg_node(c, analyzed)).collect(),
+        id: None,
+        summary: None,
     }
 }
 
@@ -139,7 +233,7 @@ pub fn parse_pg(json: &str, analyzed: bool) -> Result<Plan, DbError> {
         fill_pct(&mut root, |n| n.cost.unwrap_or(0.0));
     }
     let total_ms = if analyzed { num(top, "Execution Time").or_else(|| pg_incl_time(plan)) } else { None };
-    Ok(Plan { root, analyzed, total_ms })
+    Ok(Plan { root, analyzed, total_ms, note: None, profile: None })
 }
 
 /// Monta a árvore a partir de (id, pai, nó); um nó com vários pais fica sob o primeiro.
@@ -197,19 +291,92 @@ pub fn parse_sf_explain(json: &str) -> Result<Plan, DbError> {
         .collect();
     let mut root = tree_from_parents(items)?;
     fill_pct(&mut root, |n| n.cost.unwrap_or(0.0));
-    Ok(Plan { root, analyzed: false, total_ms: None })
+    let note = no_cost_note(&root);
+    Ok(Plan { root, analyzed: false, total_ms: None, note, profile: None })
+}
+
+/// Estatísticas reais por operador de uma query já executada (o id vem do Snowflake; sem aspas por garantia).
+/// As colunas VARIANT vêm como texto: o conector recusa o `NaN` que o Snowflake põe no JSON.
+pub fn operator_stats_sql(query_id: &str) -> String {
+    format!(
+        "SELECT operator_id, parent_operators::string AS parent_operators, operator_type, operator_statistics::string AS operator_statistics, \
+execution_time_breakdown::string AS execution_time_breakdown, operator_attributes::string AS operator_attributes \
+FROM TABLE(GET_QUERY_OPERATOR_STATS('{}'))",
+        query_id.replace('\'', "")
+    )
+}
+
+/// `NaN` / `Infinity` / `-Infinity` soltos (fora de strings) viram `null`: JSON não tem esses valores.
+pub fn sanitize_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let (mut in_str, mut esc) = (false, false);
+    let mut rest = s;
+    while let Some(c) = rest.chars().next() {
+        if in_str {
+            out.push(c);
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        in_str = c == '"';
+        match ["-Infinity", "Infinity", "NaN"].into_iter().find(|t| rest.starts_with(t)) {
+            Some(t) => {
+                out.push_str("null");
+                rest = &rest[t.len()..];
+            }
+            None => {
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+    out
 }
 
 /// `GET_QUERY_OPERATOR_STATS`: colunas pelo nome; variants chegam como texto JSON.
 pub fn parse_sf_stats(names: &[String], rows: &[Vec<Option<String>>]) -> Result<Plan, DbError> {
+    if rows.is_empty() {
+        let root = PlanNode { op: "Result".into(), ..Default::default() };
+        return Ok(Plan { root, analyzed: true, total_ms: None, note: Some(PlanNote::Cached), profile: None });
+    }
     let col = |n: &str| names.iter().position(|c| c.eq_ignore_ascii_case(n)).ok_or_else(|| bad_json(n));
     let (id, parents, op, stats, time, attrs) = (col("OPERATOR_ID")?, col("PARENT_OPERATORS")?, col("OPERATOR_TYPE")?, col("OPERATOR_STATISTICS")?, col("EXECUTION_TIME_BREAKDOWN")?, col("OPERATOR_ATTRIBUTES")?);
     let cell = |r: &[Option<String>], i: usize| r.get(i).cloned().flatten();
-    let json = |r: &[Option<String>], i: usize| cell(r, i).and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(Value::Null);
+    let json = |r: &[Option<String>], i: usize| cell(r, i).and_then(|s| serde_json::from_str::<Value>(&sanitize_json(&s)).ok()).unwrap_or(Value::Null);
+    let mut prof = Profile::default();
+    let mut breakdown: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    let (mut cache_w, mut cache_seen) = (0.0, false);
     let items = rows
         .iter()
         .map(|r| {
             let (st, tm, at) = (json(r, stats), json(r, time), json(r, attrs));
+            let f = |v: &Value, p: &str| v.pointer(p).and_then(Value::as_f64).unwrap_or(0.0);
+            // Perfil: soma das categorias de tempo e das estatísticas de leitura de todos os operadores.
+            if let Some(obj) = tm.as_object() {
+                for (k, v) in obj.iter().filter(|(k, _)| k.as_str() != "overall_percentage") {
+                    *breakdown.entry(k.clone()).or_insert(0.0) += v.as_f64().unwrap_or(0.0);
+                }
+            }
+            let bytes = f(&st, "/io/bytes_scanned");
+            prof.bytes_scanned += bytes;
+            if let Some(c) = st.pointer("/io/percentage_scanned_from_cache").and_then(Value::as_f64) {
+                cache_w += c * bytes;
+                cache_seen = true;
+            }
+            if let Some(p) = st.pointer("/io/scan_progress").and_then(Value::as_f64) {
+                prof.scan_progress = Some(prof.scan_progress.map_or(p, |m: f64| m.min(p)));
+            }
+            prof.partitions_scanned += f(&st, "/pruning/partitions_scanned");
+            prof.partitions_total += f(&st, "/pruning/partitions_total");
+            prof.spilled_local += f(&st, "/spilling/bytes_spilled_local_storage");
+            prof.spilled_remote += f(&st, "/spilling/bytes_spilled_remote_storage");
+            prof.network_bytes += f(&st, "/network/network_bytes");
             let mut warn = Vec::new();
             if st.pointer("/spilling/bytes_spilled_remote_storage").and_then(Value::as_f64).is_some_and(|b| b > 0.0) {
                 warn.push(t!("plan.warn_spill").to_string());
@@ -226,13 +393,20 @@ pub fn parse_sf_stats(names: &[String], rows: &[Vec<Option<String>>]) -> Result<
                 act_rows: st.get("output_rows").and_then(Value::as_f64),
                 pct: tm.get("overall_percentage").and_then(Value::as_f64).unwrap_or(0.0) * 100.0,
                 warn,
+                id: cell(r, id).and_then(|s| s.parse().ok()),
+                summary: summary_of(&at),
                 ..Default::default()
             };
             let parent = first_parent(Some(&json(r, parents)));
             (cell(r, id).and_then(|s| s.parse().ok()).unwrap_or(-1), parent, node)
         })
         .collect();
-    Ok(Plan { root: tree_from_parents(items)?, analyzed: true, total_ms: None })
+    let root = tree_from_parents(items)?;
+    let note = no_cost_note(&root);
+    prof.from_cache = (cache_seen && prof.bytes_scanned > 0.0).then(|| cache_w / prof.bytes_scanned);
+    prof.breakdown = breakdown.into_iter().filter(|(_, v)| *v > 0.0).collect();
+    prof.breakdown.sort_by(|a, b| b.1.total_cmp(&a.1));
+    Ok(Plan { root, analyzed: true, total_ms: None, note, profile: Some(prof) })
 }
 
 /// Raiz em cima; cada subárvore ocupa a soma das larguras dos filhos e o pai fica centralizado.
@@ -295,6 +469,89 @@ pub fn short_count(n: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn stats_row(id: &str, parent: Option<&str>, op: &str, stats: &str, time: &str, attrs: &str) -> Vec<Option<String>> {
+        vec![Some(id.into()), parent.map(String::from), Some(op.into()), Some(stats.into()), Some(time.into()), Some(attrs.into())]
+    }
+
+    fn stats_names() -> Vec<String> {
+        ["OPERATOR_ID", "PARENT_OPERATORS", "OPERATOR_TYPE", "OPERATOR_STATISTICS", "EXECUTION_TIME_BREAKDOWN", "OPERATOR_ATTRIBUTES"].iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn profile_aggregates_time_and_scan_statistics() {
+        let rows = vec![
+            stats_row("0", None, "Result", r#"{"output_rows": 10}"#, r#"{"overall_percentage": 0.1, "processing": 0.1}"#, "{}"),
+            stats_row("1", Some("[0]"), "Join", r#"{"output_rows": 159400}"#, r#"{"overall_percentage": 0.5, "processing": 0.4, "synchronization": 0.1}"#, r#"{"equality_join_condition": "(F.A = T.B)"}"#),
+            stats_row(
+                "2",
+                Some("[1]"),
+                "TableScan",
+                r#"{"output_rows": 56920, "io": {"bytes_scanned": 300, "percentage_scanned_from_cache": 1.0, "scan_progress": 1.0}, "pruning": {"partitions_scanned": 374, "partitions_total": 393}, "spilling": {"bytes_spilled_local_storage": 7}}"#,
+                r#"{"overall_percentage": 0.4, "processing": 0.3, "initialization": 0.1}"#,
+                r#"{"table_name": "DB.S.T"}"#,
+            ),
+            stats_row("3", Some("[1]"), "TableScan", r#"{"io": {"bytes_scanned": 100, "percentage_scanned_from_cache": 0.0, "scan_progress": 0.5}}"#, "{}", r#"{"table_name": "DB.S.U"}"#),
+        ];
+        let plan = parse_sf_stats(&stats_names(), &rows).unwrap();
+        let p = plan.profile.expect("perfil no plano real");
+        let get = |k: &str| p.breakdown.iter().find(|(c, _)| c == k).map(|(_, v)| *v).unwrap_or(0.0);
+        assert!((get("processing") - 0.8).abs() < 1e-9 && (get("synchronization") - 0.1).abs() < 1e-9 && (get("initialization") - 0.1).abs() < 1e-9);
+        assert_eq!(p.breakdown.first().map(|(c, _)| c.as_str()), Some("processing"), "maior primeiro");
+        assert_eq!(p.bytes_scanned, 400.0);
+        assert!((p.from_cache.unwrap() - 0.75).abs() < 1e-9, "média ponderada pelos bytes");
+        assert_eq!(p.scan_progress, Some(0.5), "o scan mais atrasado");
+        assert_eq!((p.partitions_scanned, p.partitions_total), (374.0, 393.0));
+        assert_eq!(p.spilled_local, 7.0);
+        let join = &plan.root.children[0];
+        assert_eq!((join.id, join.summary.as_deref()), (Some(1), Some("(F.A = T.B)")));
+        assert_eq!(join.children[0].summary.as_deref(), Some("DB.S.T"));
+        let top: Vec<i64> = top_nodes(&plan.root, 2).iter().filter_map(|p| node_at(&plan.root, p).and_then(|n| n.id)).collect();
+        assert_eq!(top, vec![1, 2]);
+    }
+
+    #[test]
+    fn query_timing_from_history() {
+        assert!(query_timing_sql("a'b").contains("query_id = 'ab'"));
+        let names: Vec<String> = ["COMPILATION_TIME", "QUEUED", "EXECUTION_TIME", "TOTAL_ELAPSED_TIME"].iter().map(|s| s.to_string()).collect();
+        let t = parse_timing(&names, &[vec![Some("120".into()), Some("0".into()), Some("980".into()), Some("1110".into())]]).unwrap();
+        assert_eq!(t, Timing { compile_ms: 120.0, queued_ms: 0.0, exec_ms: 980.0, total_ms: 1110.0 });
+        assert_eq!(parse_timing(&names, &[]), None);
+    }
+
+    #[test]
+    fn plan_without_any_cost_says_why() {
+        let json = r#"{"Operations":[[{"id":0,"operation":"Result"},{"id":1,"operation":"DynamicSecureView","objects":["V (+ RowAccessPolicy)"],"parentOperators":[0]}]]}"#;
+        assert_eq!(parse_sf_explain(json).unwrap().note, Some(PlanNote::NoCost { secure_views: true }));
+        let with_bytes = r#"{"Operations":[[{"id":0,"operation":"Result"},{"id":1,"operation":"TableScan","bytesAssigned":100,"parentOperators":[0]}]]}"#;
+        assert_eq!(parse_sf_explain(with_bytes).unwrap().note, None);
+    }
+
+    #[test]
+    fn empty_operator_stats_mean_cached_result() {
+        let names: Vec<String> = ["OPERATOR_ID", "PARENT_OPERATORS", "OPERATOR_TYPE", "OPERATOR_STATISTICS", "EXECUTION_TIME_BREAKDOWN", "OPERATOR_ATTRIBUTES"].iter().map(|s| s.to_string()).collect();
+        let plan = parse_sf_stats(&names, &[]).unwrap();
+        assert_eq!(plan.note, Some(PlanNote::Cached));
+        assert!(plan.root.children.is_empty());
+    }
+
+    #[test]
+    fn operator_stats_sql_quotes_the_id_safely() {
+        let sql = operator_stats_sql("01b2-x");
+        assert!(sql.contains("GET_QUERY_OPERATOR_STATS('01b2-x')"), "{sql}");
+        assert!(sql.contains("execution_time_breakdown::string"), "variant chega como texto: o conector não aceita NaN");
+        assert!(operator_stats_sql("a'b").contains("STATS('ab')"));
+    }
+
+    #[test]
+    fn nan_in_stats_does_not_break_the_plan() {
+        assert_eq!(sanitize_json("{\"other\": NaN, \"x\": -Infinity, \"s\": \"NaN\"}"), "{\"other\": null, \"x\": null, \"s\": \"NaN\"}");
+        assert_eq!(sanitize_json(r#"{"a": "q\"NaN", "b": NaN}"#), r#"{"a": "q\"NaN", "b": null}"#, "aspas escapadas não fecham a string");
+        let names: Vec<String> = ["OPERATOR_ID", "PARENT_OPERATORS", "OPERATOR_TYPE", "OPERATOR_STATISTICS", "EXECUTION_TIME_BREAKDOWN", "OPERATOR_ATTRIBUTES"].iter().map(|s| s.to_string()).collect();
+        let row = vec![Some("0".into()), None, Some("Result".into()), Some("{}".into()), Some("{\n  \"other\": NaN,\n  \"overall_percentage\": 1.000000000000000e+00\n}".into()), Some("{}".into())];
+        let plan = parse_sf_stats(&names, &[row]).unwrap();
+        assert_eq!(plan.root.pct, 100.0);
+    }
+
     use super::*;
 
     const ANALYZE: &str = include_str!("../tests/fixtures/pg_analyze.json");

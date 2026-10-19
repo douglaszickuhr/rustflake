@@ -76,7 +76,7 @@ impl Indexer {
                         ix.error = None;
                     }
                     Err(e) => {
-                        tracing::warn!("índice da busca rápida: {e}");
+                        tracing::warn!("quick-open index: {e}");
                         ix.error = Some(e.to_string());
                     }
                 }

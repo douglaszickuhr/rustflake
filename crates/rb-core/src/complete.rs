@@ -168,6 +168,33 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
     out
 }
 
+/// Tabela/view sob o cursor (⌘-clique no editor): (trecho do nome, chave do schema no cache,
+/// nome). Nome com 1 ou 2 partes só vale se o catálogo conhece (senão `alias.coluna` viraria
+/// link); `DB.SCHEMA.TABELA` no Snowflake vale sempre.
+pub fn relation_at(src: &str, cursor: usize, cache: &MetaCache) -> Option<(Range<usize>, String, String)> {
+    let toks = tokenize(src);
+    let is_name = |t: &Token| matches!(t.kind, TokKind::Word | TokKind::QuotedIdent);
+    // Ponto colado nos dois nomes: `a.b`, não `a . b` solto.
+    let joined = |l: &Token, dot: &Token, r: &Token| dot.kind == TokKind::Punct && &src[dot.start..dot.end] == "." && l.end == dot.start && dot.end == r.start;
+    let i = toks.iter().position(|t| is_name(t) && t.start <= cursor && cursor < t.end)?;
+    let (mut a, mut b) = (i, i);
+    while a >= 2 && is_name(&toks[a - 2]) && joined(&toks[a - 2], &toks[a - 1], &toks[a]) {
+        a -= 2;
+    }
+    while b + 2 < toks.len() && is_name(&toks[b + 2]) && joined(&toks[b], &toks[b + 1], &toks[b + 2]) {
+        b += 2;
+    }
+    let parts: Vec<String> = (a..=b).step_by(2).map(|k| cache.dialect.fold(&src[toks[k].start..toks[k].end])).collect();
+    let known = |s: &str, t: &str| cache.objects.get(s).is_some_and(|o| o.contains_relation(t));
+    let (schema, table) = match parts.as_slice() {
+        [t] => (resolve_schema(cache, t), t.clone()),
+        [s, t] => (cache.schema_key(s), t.clone()),
+        [db, s, t] if cache.dialect == Dialect::Snowflake => return Some((toks[a].start..toks[b].end, format!("{db}.{s}"), t.clone())),
+        _ => return None,
+    };
+    known(&schema, &table).then(|| (toks[a].start..toks[b].end, schema, table))
+}
+
 fn resolve_schema(cache: &MetaCache, table: &str) -> String {
     cache
         .search_path
@@ -354,6 +381,20 @@ mod tests {
         c.objects.insert("DB.RAW".into(), SchemaObjects { tables: vec!["EVENTS".into()], ..Default::default() });
         c.columns.insert(("DB.PUBLIC".into(), "ORDERS".into()), vec![col("ID", "NUMBER(38,0)"), col("status", "VARCHAR")]);
         c
+    }
+
+    #[test]
+    fn relation_under_the_cursor() {
+        let c = snowflake_cache();
+        let src = "select o.id from orders o join raw.events e on 1=1 join X.Y.Z;";
+        let at = |needle: &str| relation_at(src, src.find(needle).unwrap(), &c).map(|(r, s, t)| (src[r].to_string(), s, t));
+        assert_eq!(at("orders"), Some(("orders".into(), "DB.PUBLIC".into(), "ORDERS".into())));
+        assert_eq!(at("events"), Some(("raw.events".into(), "DB.RAW".into(), "EVENTS".into())), "nome inteiro sublinhado");
+        assert_eq!(at("raw."), Some(("raw.events".into(), "DB.RAW".into(), "EVENTS".into())));
+        assert_eq!(at("X.Y"), Some(("X.Y.Z".into(), "X.Y".into(), "Z".into())), "3 partes valem sem catálogo");
+        assert_eq!(at("o.id"), None, "alias.coluna não é tabela");
+        assert_eq!(at("select"), None);
+        assert_eq!(relation_at("from orders", 11, &c), None, "fim do texto");
     }
 
     #[test]

@@ -15,15 +15,35 @@ use rb_core::metadata::MetaRequest;
 use rb_core::session::Session;
 use rb_core::table::{EditTarget, PendingEdits, TABLE_LIMIT, build_sql, columns_match, select_sql};
 
+use std::collections::HashMap;
+
+use rb_core::table_info::{ColInfo, Facts, LinNode};
+
+use crate::admin_tab::Load;
+use crate::dbt_store::DbtStore;
 use crate::grid::{self, ResultGrid};
 use crate::lang::Lang;
 use crate::meta::{ConnTarget, MetaStore};
 use crate::{CancelQuery, CopyCells, Db, SaveEdits};
 
+/// Abre uma aba SQL com o texto (botão Query).
+pub type OpenQuery = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Data,
+    Definition,
+    Dbt,
+}
+
+/// Colunas, classificação e mascaramento vindos do Snowflake (o dbt entra na hora de desenhar).
+/// + as demais tags por coluna e o erro das consultas de tag/policy (aparece no resumo).
+pub(crate) type DefRaw = (Vec<ColInfo>, HashMap<String, (u8, String)>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>, Option<String>);
+
 pub struct TableTab {
     focus: FocusHandle,
-    schema: String,
-    table: String,
+    pub(crate) schema: String,
+    pub(crate) table: String,
     conn: ConnTarget,
     meta: Entity<MetaStore>,
     session: Option<Arc<Session>>,
@@ -37,11 +57,33 @@ pub struct TableTab {
     loaded_once: bool,
     /// Carga em andamento (liga o skeleton da grade depois de um instante).
     _busy: Option<Task<()>>,
+    // Visão de tabela (Snowflake): seções Data | Definition | dbt.
+    pub(crate) section: Section,
+    pub(crate) dbt: Option<Entity<DbtStore>>,
+    pub(crate) open_query: OpenQuery,
+    pub(crate) facts: Option<Load<Facts>>,
+    pub(crate) def_raw: Option<Load<DefRaw>>,
+    pub(crate) selected_col: Option<String>,
+    pub(crate) col_lineage: HashMap<String, Load<Vec<LinNode>>>,
+    pub(crate) show_compiled: bool,
+    /// Comentário da tabela aberto por inteiro no cabeçalho.
+    pub(crate) comment_open: bool,
+    /// git blame do arquivo do modelo (carregado ao ligar o Blame).
+    pub(crate) blame: Option<(String, Load<Vec<rb_core::dbt::BlameLine>>)>,
+    pub(crate) show_blame: bool,
+    /// SQL compilado do modelo (disco ou `dbt compile`), por unique_id, com quando foi gerado.
+    pub(crate) compiled: Option<(String, Load<(String, Option<std::time::SystemTime>)>)>,
+    pub(crate) compiling: bool,
+    /// Últimas linhas do `dbt compile` em andamento.
+    pub(crate) compile_live: Vec<String>,
+    /// SQL do modelo (somente leitura): estado do editor e qual texto está nele.
+    pub(crate) sql_view: Option<(Entity<EditorState>, String)>,
     _subs: Vec<Subscription>,
 }
 
 impl TableTab {
-    pub fn new(schema: String, table: String, conn: ConnTarget, meta: Entity<MetaStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(schema: String, table: String, conn: ConnTarget, meta: Entity<MetaStore>, dbt: Option<Entity<DbtStore>>, open_query: OpenQuery, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("table.filter_placeholder").to_string()));
         let grid = cx.new(|cx| TableState::new(ResultGrid::new(true), window, cx).cell_selectable(true));
 
@@ -89,9 +131,28 @@ impl TableTab {
             after_load: None,
             loaded_once: false,
             _busy: None,
+            section: Section::Data,
+            dbt: dbt.clone(),
+            open_query,
+            facts: None,
+            def_raw: None,
+            selected_col: None,
+            col_lineage: HashMap::new(),
+            show_compiled: false,
+            comment_open: false,
+            blame: None,
+            show_blame: false,
+            compiled: None,
+            compiling: false,
+            compile_live: Vec::new(),
+            sql_view: None,
             _subs: subs,
         };
+        if let Some(d) = &dbt {
+            this._subs.push(cx.observe(d, |_, _, cx| cx.notify()));
+        }
         this.on_meta(cx);
+        this.ensure_facts(cx);
         this
     }
 
@@ -300,7 +361,22 @@ impl TableTab {
 }
 
 impl Render for TableTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sf = self.meta.read(cx).cache.dialect == Dialect::Snowflake;
+        if !sf {
+            return self.render_data(cx);
+        }
+        let content = match self.section {
+            Section::Data => self.render_data(cx),
+            Section::Definition => self.render_definition(cx),
+            Section::Dbt => self.render_dbt(window, cx),
+        };
+        v_flex().size_full().child(self.render_header(cx)).child(div().flex_1().min_h_0().child(content)).into_any_element()
+    }
+}
+
+impl TableTab {
+    fn render_data(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let g = self.grid.read(cx).delegate();
         let editable = g.edits.is_some();
         let pending = g.edits.as_ref().is_some_and(|e| !e.is_empty());
@@ -358,5 +434,9 @@ impl Render for TableTab {
                     })
                     .child(self.status.clone()),
             )
+            .into_any_element()
     }
 }
+
+#[path = "table_sections.rs"]
+mod sections;
