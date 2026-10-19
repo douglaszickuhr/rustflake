@@ -122,3 +122,7 @@ cargo test --workspace
 ```
 
 Snowflake integration tests need a real account: set `RB_TEST_SNOWFLAKE_{ACCOUNT,USER,WAREHOUSE,ROLE,DATABASE}` plus either `RB_TEST_SNOWFLAKE_PRIVATE_KEY` (path to a `.p8`) or `RB_TEST_SNOWFLAKE_PAT`.
+
+## License
+
+[MIT](LICENSE). The bundled Geist fonts are under the SIL Open Font License (`crates/rb-app/assets/fonts/OFL.txt`), and the vendored Snowflake connector keeps its own MIT license.
