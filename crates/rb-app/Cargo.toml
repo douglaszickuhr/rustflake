@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "rustflake"
 path = "src/main.rs"
@@ -18,9 +21,6 @@ rust-i18n = "4.2"
 sys-locale = "0.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[dev-dependencies]
-toml = "1"
 
 # Dock icon at runtime (the app runs without an .app bundle); these already come with gpui.
 [target.'cfg(target_os = "macos")'.dependencies]

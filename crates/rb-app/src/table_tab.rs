@@ -20,11 +20,11 @@ use std::collections::HashMap;
 
 use rb_core::table_info::{ColInfo, DefSort, Facts, LinNode};
 
-use crate::admin_tab::Load;
 use crate::dbt_store::DbtStore;
 use crate::grid::{self, ResultGrid};
 use crate::lang::Lang;
 use crate::meta::{ConnTarget, MetaStore};
+use crate::ui::Load;
 use crate::{CancelQuery, CopyCells, Db, SaveEdits};
 
 /// Opens a SQL tab with the text (Query button).
@@ -74,15 +74,28 @@ pub(crate) struct CustomSection {
 }
 
 /// Columns, classification and masking coming from Snowflake (dbt is merged at draw time).
-/// + the remaining per-column tags and the tag/policy query error (shown in the summary).
-pub(crate) type DefRaw = (Vec<ColInfo>, HashMap<String, (u8, String)>, HashMap<String, String>, HashMap<String, Vec<rb_core::table_info::ColTag>>, Option<String>);
+#[derive(Clone)]
+pub(crate) struct DefRaw {
+    pub(crate) cols: Vec<ColInfo>,
+    /// Column → (level, tag) of the configured classification tag.
+    pub(crate) class_tags: HashMap<String, (u8, String)>,
+    /// Column → masking policy.
+    pub(crate) masking: HashMap<String, String>,
+    /// Column → all its tags (inherited ones too; the table shows only the column's own).
+    pub(crate) other_tags: HashMap<String, Vec<rb_core::table_info::ColTag>>,
+    /// Tags or policies didn't load (shown in the summary instead of "nothing classified").
+    pub(crate) tag_error: Option<String>,
+}
+
+/// Model unique_id and its compiled SQL with when it was generated.
+pub(crate) type Compiled = (String, Load<(String, Option<std::time::SystemTime>)>);
 
 pub struct TableTab {
     focus: FocusHandle,
     pub(crate) schema: String,
     pub(crate) table: String,
-    conn: ConnTarget,
-    meta: Entity<MetaStore>,
+    pub(crate) conn: ConnTarget,
+    pub(crate) meta: Entity<MetaStore>,
     session: Option<Arc<Session>>,
     filter: Entity<InputState>,
     /// Definition: search over everything shown, and the sort (column, ascending).
@@ -91,7 +104,7 @@ pub struct TableTab {
     pub(crate) data_started: bool,
     pub(crate) def_sort: (DefSort, bool),
     grid: Entity<TableState<ResultGrid>>,
-    target: Option<EditTarget>,
+    pub(crate) target: Option<EditTarget>,
     sort: Option<(usize, bool)>,
     status: SharedString,
     /// Message to show when the next load finishes (e.g. save result).
@@ -119,7 +132,7 @@ pub struct TableTab {
     /// dbt section: model details on the right; × closes, "Details" in the toolbar reopens.
     pub(crate) dbt_details: bool,
     /// Compiled model SQL (disk or `dbt compile`), by unique_id, with when it was generated.
-    pub(crate) compiled: Option<(String, Load<(String, Option<std::time::SystemTime>)>)>,
+    pub(crate) compiled: Option<Compiled>,
     pub(crate) compiling: bool,
     /// Last lines of the running `dbt compile`.
     pub(crate) compile_live: Vec<String>,
@@ -150,7 +163,7 @@ impl TableTab {
         let grid = cx.new(|cx| TableState::new(ResultGrid::new(true), window, cx).cell_selectable(true));
 
         let weak = cx.entity().downgrade();
-        let on_sort: Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)> = Rc::new(move |col, sort, _, cx| {
+        let on_sort: grid::OnSort = Rc::new(move |col, sort, _, cx| {
             let weak = weak.clone();
             // The grid is mid-update now; reloading later avoids a double borrow.
             cx.defer(move |cx| {
@@ -277,7 +290,7 @@ impl TableTab {
         self.grid.read(cx).delegate().edits.as_ref().is_some_and(|e| !e.is_empty())
     }
 
-    fn load(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn load(&mut self, cx: &mut Context<Self>) {
         self.data_started = true;
         if self.has_pending(cx) {
             self.status = t!("table.save_before_reload").to_string().into();
@@ -617,6 +630,3 @@ impl TableTab {
             .into_any_element()
     }
 }
-
-#[path = "table_sections.rs"]
-pub(crate) mod sections;

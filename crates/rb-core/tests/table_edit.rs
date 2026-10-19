@@ -3,9 +3,10 @@ mod common;
 use pollster::block_on;
 use rb_core::DbError;
 use rb_core::batch::ResultSet;
+use rb_core::lexer::qualify;
 use rb_core::lexer::quote_ident;
 use rb_core::metadata;
-use rb_core::table::{EditTarget, PendingEdits, RowEdit, build_sql, qualified, select_sql};
+use rb_core::table::{EditTarget, PendingEdits, RowEdit, build_sql, select_sql};
 
 #[test]
 fn pending_edits_round_trip_through_postgres() {
@@ -22,7 +23,7 @@ fn pending_edits_round_trip_through_postgres() {
         }
         let target = EditTarget { schema: schema.clone(), table: "Order Items".into(), columns: metadata::columns(&s, &schema, "Order Items").await.unwrap() };
         let read = async || {
-            let out = s.execute(select_sql(&qualified(&schema, "Order Items"), None, Some(("id", true)), None)).await.unwrap();
+            let out = s.execute(select_sql(&qualify(&[&schema, "Order Items"]), None, Some(("id", true)), None)).await.unwrap();
             ResultSet::new(out.columns, out.batch, out.more)
         };
 

@@ -128,6 +128,7 @@ fn agent_only_authentication() {
     t.identities_explicit = false;
     let res = run(Tunnel::connect(t, None)).err();
     agent.kill().ok();
+    let _ = agent.wait();
     let _ = std::fs::remove_file(&sock);
     assert!(added.success());
     assert_eq!(res, None);

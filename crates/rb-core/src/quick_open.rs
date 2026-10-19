@@ -7,6 +7,7 @@ use crate::DbError;
 use crate::lexer::quote_always;
 use crate::metadata::{MetaCache, MetaRequest};
 use crate::session::Session;
+use crate::snowflake::{Rows, named};
 
 const MAX_HITS: usize = 50;
 /// Row cap of a `SHOW`; when it is hit, the listing may be truncated.
@@ -97,30 +98,25 @@ pub fn rank(hits: Vec<Hit>, text: &str) -> Vec<Hit> {
     scored.into_iter().take(MAX_HITS).map(|(_, _, h)| h).collect()
 }
 
-fn col(names: &[String], row: &[Option<String>], c: &str) -> Option<String> {
-    names.iter().position(|n| n.eq_ignore_ascii_case(c)).and_then(|i| row.get(i).cloned().flatten())
-}
-
 /// `SHOW TERSE OBJECTS`: tables and views (matview flagged).
-pub fn parse_sf_objects(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<Hit> {
-    rows.iter()
+pub fn parse_sf_objects(names: &[String], rows: &Rows) -> Vec<Hit> {
+    named(names, rows)
         .filter_map(|r| {
-            let kind = col(names, r, "kind").unwrap_or_default();
-            let is_view = kind.contains("VIEW");
+            let kind = r.get("kind").unwrap_or_default();
             Some(Hit {
-                kind: if is_view { HitKind::View } else { HitKind::Table },
+                kind: if kind.contains("VIEW") { HitKind::View } else { HitKind::Table },
                 matview: kind.contains("MATERIALIZED"),
-                database: Some(col(names, r, "database_name")?),
-                schema: Some(col(names, r, "schema_name")?),
-                name: col(names, r, "name")?,
+                database: Some(r.text("database_name")?),
+                schema: Some(r.text("schema_name")?),
+                name: r.text("name")?,
             })
         })
         .collect()
 }
 
 /// `SHOW TERSE SCHEMAS`.
-pub fn parse_sf_schemas(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<Hit> {
-    rows.iter().filter_map(|r| Some(Hit { kind: HitKind::Schema, matview: false, database: Some(col(names, r, "database_name")?), schema: None, name: col(names, r, "name")? })).collect()
+pub fn parse_sf_schemas(names: &[String], rows: &Rows) -> Vec<Hit> {
+    named(names, rows).filter_map(|r| Some(Hit { kind: HitKind::Schema, matview: false, database: Some(r.text("database_name")?), schema: None, name: r.text("name")? })).collect()
 }
 
 /// Tables, views and schemas of the account, as the current role sees them.

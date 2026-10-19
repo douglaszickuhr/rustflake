@@ -1,4 +1,5 @@
-//! Quick-open index on Snowflake: own session, rebuilt every 30 s; the diff fixes the tree.
+//! Quick-open index on Snowflake: own session, rebuilt every few minutes and when ⌘K opens a stale one;
+//! the diff fixes the tree.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +11,10 @@ use rb_core::session::Session;
 use crate::Db;
 use crate::meta::{ConnTarget, MetaStore};
 
-const TICK: Duration = Duration::from_secs(30);
+/// `SHOW … IN ACCOUNT` costs cloud-services credits: the background refresh is rare.
+const TICK: Duration = Duration::from_secs(5 * 60);
+/// Older than this, opening ⌘K refreshes it.
+const STALE: Duration = Duration::from_secs(30);
 
 pub struct Indexer {
     pub index: Option<SfIndex>,
@@ -41,6 +45,12 @@ impl Indexer {
             }
         });
         Indexer { index: None, running: false, error: None, conn, session: None, meta, _tick: tick, _meta: sub }
+    }
+
+    pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
+        if self.index.as_ref().and_then(|i| i.refreshed).is_none_or(|t| t.elapsed() > STALE) {
+            self.refresh(cx);
+        }
     }
 
     /// New snapshot; skipped if the previous one is still running.

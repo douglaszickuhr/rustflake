@@ -1,6 +1,6 @@
 //! Naming rules that change from one database to another.
 
-use crate::lexer::{ident_text, quote_always, quote_ident, quote_ident_snowflake};
+use crate::lexer::{ident_text, qualify, quote_ident, quote_ident_snowflake};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Dialect {
@@ -30,9 +30,14 @@ impl Dialect {
     /// `FROM` fully quoted. On Snowflake the schema key is `DB.SCHEMA`.
     /// ponytail: database with "." in the name is not supported.
     pub fn qualified(self, schema_key: &str, table: &str) -> String {
+        format!("{}.{}", self.qualified_schema(schema_key), qualify(&[table]))
+    }
+
+    /// Schema key quoted: `DB.SCHEMA` on Snowflake becomes `"DB"."SCHEMA"`.
+    pub fn qualified_schema(self, schema_key: &str) -> String {
         match (self, schema_key.split_once('.')) {
-            (Dialect::Snowflake, Some((db, s))) => format!("{}.{}.{}", quote_always(db), quote_always(s), quote_always(table)),
-            _ => format!("{}.{}", quote_always(schema_key), quote_always(table)),
+            (Dialect::Snowflake, Some((db, s))) => qualify(&[db, s]),
+            _ => qualify(&[schema_key]),
         }
     }
 }

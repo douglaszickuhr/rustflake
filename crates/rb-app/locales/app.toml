@@ -456,6 +456,11 @@ en = "%{n} row(s)"
 pt = "%{n} linha(s)"
 es = "%{n} fila(s)"
 
+[grid.text_capped]
+en = "Text mode shows the first %{n} rows; switch to Grid for the rest."
+pt = "O modo Texto mostra as primeiras %{n} linhas; troque para Grid para ver o resto."
+es = "El modo Texto muestra las primeras %{n} filas; cambia a Grid para ver el resto."
+
 # Table tab
 
 [table.filter_placeholder]

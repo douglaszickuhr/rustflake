@@ -1,0 +1,3 @@
+# The codebase favours long, single-line expressions; these settings match it (smallest reformat).
+max_width = 200
+use_small_heuristics = "Max"

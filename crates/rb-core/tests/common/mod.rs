@@ -9,7 +9,7 @@ pub fn open() -> Option<(Engine, Session)> {
     let pg: tokio_postgres::Config = url.parse().expect("RB_TEST_DATABASE_URL invalid");
     let host = match &pg.get_hosts()[0] {
         tokio_postgres::config::Host::Tcp(h) => h.clone(),
-        _ => panic!("use host TCP em RB_TEST_DATABASE_URL"),
+        _ => panic!("RB_TEST_DATABASE_URL needs a TCP host"),
     };
     let cfg = ConnectionConfig {
         environment: None,

@@ -297,9 +297,12 @@ pub fn open(
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn open_tabs_match_by_title_or_script_text() {
         let tab = |ix, title: &str, body: Option<&str>| OpenTab { ix, title: title.into(), body: body.map(Into::into) };
         let tabs = vec![tab(0, "Prod · daily checks", Some("select 1;\n  update ORDERS set x = 1;")), tab(1, "Prod · USERS", None)];

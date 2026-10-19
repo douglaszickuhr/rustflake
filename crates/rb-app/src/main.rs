@@ -15,8 +15,11 @@ mod picker;
 mod plan_view;
 mod quick_open;
 mod schema_tree;
+mod settings;
 mod sql_tab;
+mod table_sections;
 mod table_tab;
+mod ui;
 mod warehouse_tab;
 mod workspace;
 mod zoom;
@@ -100,14 +103,18 @@ fn set_dock_icon() {
     let Some(mtm) = MainThreadMarker::new() else { return };
     let data = NSData::with_bytes(include_bytes!("../assets/app-icon.png"));
     if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
-        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+        // AppKit marks the setter unsafe; the image is a valid NSImage and we are on the main thread.
+        #[allow(unsafe_code)]
+        unsafe {
+            NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image))
+        };
     }
 }
 
 fn main() {
     let started = Instant::now();
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
-    rb_core::config::migrate_legacy_dir();
+    rb_core::config::prepare_app_dir();
     let engine = Engine::new().expect("create database runtime");
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
@@ -125,6 +132,7 @@ fn main() {
         if let Err(e) = cx.text_system().add_fonts(fonts) {
             tracing::warn!("Geist fonts: {e}");
         }
+        settings::init(cx);
         lang::init(cx);
         appearance::init(cx);
         #[cfg(target_os = "macos")]

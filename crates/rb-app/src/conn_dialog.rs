@@ -175,8 +175,7 @@ fn key_field(id: &'static str, input: &Entity<InputState>) -> impl IntoElement {
             .spawn(cx, async move |cx| {
                 let Ok(Ok(Some(paths))) = rx.await else { return };
                 let Some(path) = paths.first() else { return };
-                let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-                let value = tilde(path, &home);
+                let value = tilde(path, &rb_core::config::home_dir());
                 cx.update(|window, cx| target.update(cx, |s, cx| s.set_value(value, window, cx))).ok();
             })
             .detach();
@@ -194,8 +193,7 @@ fn folder_field(id: &'static str, input: &Entity<InputState>, changed: impl Fn(&
             .spawn(cx, async move |cx| {
                 let Ok(Ok(Some(paths))) = rx.await else { return };
                 let Some(path) = paths.first() else { return };
-                let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-                let value = tilde(path, &home);
+                let value = tilde(path, &rb_core::config::home_dir());
                 cx.update(|window, cx| {
                     target.update(cx, |s, cx| s.set_value(value, window, cx)).ok();
                     changed(cx);
@@ -217,7 +215,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         port: 5432,
         database: "postgres".into(),
         user: "postgres".into(),
-        ssl: SslMode::Disable,
+        ssl: SslMode::default(),
         ssh: None,
         snowflake: None,
     });
@@ -231,7 +229,8 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         SslMode::Prefer => 1,
         SslMode::Require => 2,
     };
-    // Folder read on every dialog open; a new configuration shows up on reopen.
+    // Read once per dialog open (not per render); a new configuration or AWS profile shows up on reopen.
+    let aws_profiles = rb_core::dbt::read_aws_profiles().join(", ");
     let (installed, errs) = rb_core::org_config::load_all(&rb_core::org_config::org_configs_dir());
     let mut orgs: Vec<String> = std::iter::once(t!("conn.config_none").to_string()).chain(installed.iter().map(|a| a.name().to_string())).collect();
     let current = sf.as_ref().and_then(|s| s.configuration.clone());
@@ -308,7 +307,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         let (f, ws, aliases, targets) = (f.clone(), ws.clone(), aliases.clone(), resolved_targets.clone());
         // The builder runs on every render: the type and auth buttons swap the fields.
         let snowflake = f.snowflake.get();
-        let tipo = {
+        let kind = {
             let (k1, k2) = (f.snowflake.clone(), f.snowflake.clone());
             h_flex()
                 .gap_2()
@@ -350,7 +349,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         }
         let form = match (tab, snowflake) {
             (0, true) => v_form()
-                .child(field().label(t!("conn.kind").to_string()).child(tipo))
+                .child(field().label(t!("conn.kind").to_string()).child(kind))
                 .child(field().label(t!("conn.name").to_string()).child(Input::new(&f.name)))
                 .child(environment)
                 .child(field().label(t!("conn.account").to_string()).child(Input::new(&f.sf_account)))
@@ -365,7 +364,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                         .child(Select::new(&f.org)),
                 ),
             (0, false) => v_form()
-                .child(field().label(t!("conn.kind").to_string()).child(tipo))
+                .child(field().label(t!("conn.kind").to_string()).child(kind))
                 .child(field().label(t!("conn.name").to_string()).child(Input::new(&f.name)))
                 .child(environment)
                 .child(field().label("Host").child(Input::new(&f.host)))
@@ -417,12 +416,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                         f3.dbt_card.update(cx, |c, cx| c.set_cfg(cfg, cx));
                     })))
                     .child(field().label(t!("conn.dbt_target").to_string()).description(t!("conn.dbt_target_hint").to_string()).child(Input::new(&f.dbt_target)))
-                    .child(
-                        field()
-                            .label(t!("conn.dbt_aws").to_string())
-                            .description(t!("conn.dbt_aws_hint", profiles = rb_core::dbt::read_aws_profiles().join(", ")).to_string())
-                            .child(Input::new(&f.dbt_aws)),
-                    )
+                    .child(field().label(t!("conn.dbt_aws").to_string()).description(t!("conn.dbt_aws_hint", profiles = aws_profiles).to_string()).child(Input::new(&f.dbt_aws)))
                     .child(field().child(f.dbt_card.clone()))
             }
         };
@@ -463,9 +457,12 @@ fn ssh_host_field(input: &Entity<InputState>, aliases: Rc<Vec<String>>, targets:
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn snowflake_fields() {
         let c = parse_snowflake("xy12345.us-east-1", SnowflakeAuth::KeyPair, "~/.ssh/sf.p8", "WH", "", "PUBLIC").unwrap();
         assert_eq!(c.private_key.as_deref(), Some("~/.ssh/sf.p8"));
@@ -474,7 +471,7 @@ mod tests {
         assert!(parse_snowflake("a", SnowflakeAuth::KeyPair, "", "", "", "").is_err(), "keypair without key");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn chosen_key_inside_home_is_shortened() {
         let home = Path::new("/Users/eu");
         assert_eq!(tilde(Path::new("/Users/eu/.ssh/id_ed25519"), home), "~/.ssh/id_ed25519");
@@ -482,12 +479,12 @@ mod tests {
         assert_eq!(tilde(Path::new("/k"), Path::new("")), "/k");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn empty_ssh_host_means_no_tunnel() {
         assert_eq!(parse_ssh("", "u", "22", "k"), Ok(None));
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn ssh_fields_become_optional_overrides() {
         let ssh = parse_ssh("prod-bastion", "", "", "~/.ssh/id_ed25519").unwrap().unwrap();
         assert_eq!(ssh, SshConfig { host: "prod-bastion".into(), user: None, port: None, identity_file: Some("~/.ssh/id_ed25519".into()) });

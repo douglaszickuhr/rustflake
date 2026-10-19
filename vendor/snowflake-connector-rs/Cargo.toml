@@ -68,46 +68,6 @@ pkcs8-des = [
 name = "snowflake_connector_rs"
 path = "src/lib.rs"
 
-[[example]]
-name = "derive_from_row"
-path = "examples/derive_from_row.rs"
-required-features = [
-    "derive",
-    "external-browser-sso",
-]
-
-[[example]]
-name = "dynamic_rows"
-path = "examples/dynamic_rows.rs"
-
-[[example]]
-name = "error_handling"
-path = "examples/error_handling.rs"
-
-[[example]]
-name = "external_browser_sso"
-path = "examples/external_browser_sso.rs"
-required-features = ["external-browser-sso"]
-
-[[example]]
-name = "external_browser_sso_without_callback_listener"
-path = "examples/external_browser_sso_without_callback_listener.rs"
-required-features = ["external-browser-sso"]
-
-[[example]]
-name = "hand_written_decode"
-path = "examples/hand_written_decode.rs"
-
-[[example]]
-name = "query_cancel"
-path = "examples/query_cancel.rs"
-required-features = ["external-browser-sso"]
-
-[[example]]
-name = "statement_bind"
-path = "examples/statement_bind.rs"
-required-features = ["external-browser-sso"]
-
 [[test]]
 name = "auto_trait_trybuild"
 path = "tests/auto_trait_trybuild.rs"
@@ -119,12 +79,6 @@ path = "tests/derive_trybuild.rs"
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
-
-[[bench]]
-name = "result_table"
-path = "benches/result_table.rs"
-harness = false
-required-features = ["bench-internals"]
 
 [dependencies.base64]
 version = "0.22"

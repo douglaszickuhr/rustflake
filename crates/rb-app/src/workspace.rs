@@ -1,5 +1,5 @@
 use rust_i18n::t;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -24,7 +24,6 @@ use rb_core::secrets;
 use rb_core::session::Credentials;
 use rb_core::ssh::{self, SshEnv};
 
-use crate::admin_tab::Load;
 use crate::admin_tab::{AdminTab, Target};
 use crate::appearance::{self, Appearance, palette};
 use crate::dbt_store::DbtStore;
@@ -34,10 +33,12 @@ use crate::lang::{self, Lang};
 use crate::meta::{ConnTarget, MetaStore};
 use crate::picker::Picker;
 use crate::schema_tree::SchemaTree;
+use crate::settings;
 use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
+use crate::ui::Load;
 use crate::warehouse_tab::WarehouseTab;
-use crate::{CloseTab, Db, EditConnection, NewSqlTab, QuickOpen, Quit, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
+use crate::{CloseTab, Db, EditConnection, NewSqlTab, QuickOpen, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
 use rb_core::picker::{list_sql, parse_available_roles, push_recent};
 
 /// Open connection: its own metadata session and tree; each tab keeps its own session.
@@ -110,13 +111,12 @@ pub struct Workspace {
     connecting: Option<String>,
     connect_task: Option<Task<()>>,
     /// Connections to reopen at startup, one after the other (SSO opens one window at a time).
-    reconnect_queue: Vec<String>,
-    /// Recent picker choices ("connection:kind"), mirror of settings.toml.
-    recent: std::collections::BTreeMap<String, Vec<String>>,
+    reconnect_queue: VecDeque<String>,
     /// Last list of roles/warehouses/… per "connection:kind": the picker opens with it instantly.
     pick_cache: HashMap<String, Vec<String>>,
-    /// Reopening saved table tabs: they are already in settings.toml, nothing to save.
+    /// Reopening saved table tabs: they are already in tables.toml, nothing to save.
     restoring: bool,
+    _quit: Subscription,
 }
 
 impl Workspace {
@@ -131,8 +131,19 @@ impl Workspace {
         cx.observe_window_appearance(window, |_, window, cx| appearance::system_changed(window, cx)).detach();
         // Reopens the connections that were open when the app closed (with the ID token, no browser).
         let ids: Vec<String> = connections.iter().map(|c| c.id.clone()).collect();
-        let reconnect_queue = config::reconnect_order(&config::load_settings(&config::settings_path()).last_open, &ids);
+        let reconnect_queue = config::reconnect_order(&settings::get(cx).last_open, &ids).into();
         cx.defer_in(window, |ws, window, cx| ws.reconnect_next(window, cx));
+        // Any way out (⌘Q, Dock, closing the window) saves the scripts: autosave waits a second.
+        let quit = cx.on_app_quit(|ws, cx| {
+            ws.save_all(cx);
+            settings::flush(cx);
+            async {}
+        });
+        let ws = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            ws.update(cx, |ws, cx| ws.save_all(cx)).ok();
+            true
+        });
         Workspace {
             reconnect_queue,
             focus: cx.focus_handle(),
@@ -149,9 +160,19 @@ impl Workspace {
             active_tab: 0,
             connecting: None,
             connect_task: None,
-            recent: config::load_settings(&config::settings_path()).recent,
             pick_cache: HashMap::new(),
             restoring: false,
+            _quit: quit,
+        }
+    }
+
+    fn conn_ix(&self, id: &str) -> Option<usize> {
+        self.connections.iter().position(|c| c.id == id)
+    }
+
+    fn edit_connection(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.conn_ix(id) {
+            conn_dialog::open(Some(self.connections[ix].clone()), window, cx);
         }
     }
 
@@ -208,9 +229,7 @@ impl Workspace {
                 Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
                 Ok(()) if reconnect => {
                     ws.disconnect(&id, cx);
-                    if let Some(ix) = ws.connections.iter().position(|c| c.id == id) {
-                        ws.connect(ix, window, cx);
-                    }
+                    ws.connect(&id, window, cx);
                 }
                 Ok(()) => {}
             })
@@ -221,8 +240,10 @@ impl Workspace {
     }
 
     /// Closed: connects. Open: becomes current; if it already was, collapses/expands the tree.
-    fn connect(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let id = self.connections[ix].id.clone();
+    fn connect(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // By id, not index: the list may change between a click being armed and running.
+        let Some(ix) = self.conn_ix(id) else { return };
+        let id = id.to_string();
         if self.open_conn(&id).is_some() {
             // The frame follows the active tab: switching connection goes to one of its tabs (or opens a script),
             // otherwise the context bar would show one connection and ⌘↵ would run on another.
@@ -242,11 +263,11 @@ impl Workspace {
         let cfg = self.connections[ix].clone();
         let engine = cx.global::<Db>().0.clone();
         let task = cx.spawn_in(window, async move |this, cx| {
-            let id = cfg.id.clone();
             let result = async {
+                let id = cfg.id.clone();
                 let has_ssh = cfg.ssh.is_some();
                 let is_sf = cfg.snowflake.is_some();
-                let creds = cx
+                let creds: Arc<Credentials> = cx
                     .background_spawn(async move {
                         Ok::<_, rb_core::DbError>(Credentials {
                             password: secrets::get_password(&id)?,
@@ -254,7 +275,8 @@ impl Workspace {
                             key_passphrase: if is_sf { secrets::get_password(&secrets::key_account(&id))? } else { None },
                         })
                     })
-                    .await?;
+                    .await
+                    .map(Arc::new)?;
                 let session = engine.connect(&cfg, creds.clone()).await?;
                 // A missing or broken OrgConfig doesn't block the connection: proceeds without conventions and warns.
                 let name = cfg.snowflake.as_ref().and_then(|s| s.configuration.clone());
@@ -283,7 +305,7 @@ impl Workspace {
                         cx.observe(&meta, |_, _, cx| cx.notify()).detach();
                         let ws_weak = cx.entity().downgrade();
                         let tree_id = id.clone();
-                        let open: Rc<dyn Fn(String, String, &mut Window, &mut App)> = Rc::new(move |schema, table, window, cx| {
+                        let open: crate::schema_tree::OpenTable = Rc::new(move |schema, table, window, cx| {
                             ws_weak.update(cx, |ws, cx| ws.open_table(&tree_id, schema, table, window, cx)).ok();
                         });
                         let tree = cx.new(|cx| SchemaTree::new(meta.clone(), open, cx));
@@ -293,12 +315,12 @@ impl Workspace {
                             cx.new(|cx| DbtStore::new(cfg, cx))
                         });
                         ws.open.push(Open { conn, meta, tree, indexer, dbt });
-                        ws.save_open();
+                        ws.save_open(cx);
                         ws.current = Some(id.clone());
                         ws.objects_open = true;
                         ws.on_connected(&id, window, cx);
                     }
-                    Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => ws.confirm_trust(ix, host, port, fingerprint, key, window, cx),
+                    Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => ws.confirm_trust(&id, host, port, fingerprint, key, window, cx),
                     Err(e) => window.push_notification(Notification::error(t!("ws.connect_failed", error = e).to_string()), cx),
                 }
                 ws.reconnect_next(window, cx);
@@ -311,12 +333,9 @@ impl Workspace {
 
     /// Next in the reconnect queue (each waits for the previous to finish).
     fn reconnect_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        while !self.reconnect_queue.is_empty() {
-            let id = self.reconnect_queue.remove(0);
-            if let Some(ix) = self.connections.iter().position(|c| c.id == id)
-                && self.open_conn(&id).is_none()
-            {
-                self.connect(ix, window, cx);
+        while let Some(id) = self.reconnect_queue.pop_front() {
+            if self.conn_ix(&id).is_some() && self.open_conn(&id).is_none() {
+                self.connect(&id, window, cx);
                 return;
             }
         }
@@ -341,14 +360,9 @@ impl Workspace {
     }
 
     /// Remembers which connections are open, for the next startup.
-    fn save_open(&self) {
+    fn save_open(&self, cx: &mut App) {
         let ids: Vec<String> = self.open.iter().map(|o| o.conn.cfg.id.clone()).collect();
-        let path = config::settings_path();
-        std::thread::spawn(move || {
-            if let Err(e) = config::update_settings(&path, |s| s.last_open = ids) {
-                tracing::warn!("settings.toml: {e}");
-            }
-        });
+        settings::update(cx, |s| s.last_open = ids);
     }
 
     /// Abandons the connection attempt: the task is dropped and the result, if it arrives, is discarded.
@@ -439,6 +453,10 @@ impl Workspace {
             return;
         };
         let (meta, indexer, id) = (o.meta.clone(), o.indexer.clone(), o.conn.cfg.id.clone());
+        // The index refreshes slowly on its own; opening ⌘K is when freshness matters.
+        if let Some(ix) = &indexer {
+            ix.update(cx, |ix, cx| ix.refresh_if_stale(cx));
+        }
         let tabs: Vec<quick_open::OpenTab> = self
             .tabs
             .iter()
@@ -524,7 +542,7 @@ impl Workspace {
 
     /// New script already holding the SQL (Query button of the table tab).
     fn open_query(&mut self, conn_id: &str, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let created = config::new_script(&config::scripts_dir().join(conn_id)).and_then(|p| std::fs::write(&p, sql).map(|_| p).map_err(|e| rb_core::DbError::Io(e.to_string())));
+        let created = config::new_script(&config::scripts_dir().join(conn_id)).and_then(|p| config::write_private(&p, sql).map(|_| p).map_err(|e| rb_core::DbError::Io(e.to_string())));
         match created {
             Ok(path) => self.open_sql_file(path, conn_id, window, cx),
             Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
@@ -637,8 +655,8 @@ impl Workspace {
         div().flex_1().min_w_0().min_h_0().size_full().child(content).into_any_element()
     }
 
-    fn confirm_remove(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(c) = self.connections.get(ix).cloned() else { return };
+    fn confirm_remove(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.conn_ix(id).map(|ix| self.connections[ix].clone()) else { return };
         let ws = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, _| {
             let (ws, id) = (ws.clone(), c.id.clone());
@@ -692,7 +710,7 @@ impl Workspace {
         let mut k = keep.into_iter();
         self.tabs.retain(|_| k.next().unwrap_or(true));
         self.open.retain(|o| o.conn.cfg.id != id);
-        self.save_open();
+        self.save_open(cx);
         self.active_tab = before.min(self.tabs.len().saturating_sub(1));
         self.current = self.tabs.get(self.active_tab).map(|t| t.conn_id(cx)).or_else(|| self.open.first().map(|o| o.conn.cfg.id.clone()));
         cx.notify();
@@ -708,10 +726,11 @@ impl Workspace {
 
     /// SSH host not in known_hosts: shows the fingerprint and, if the user trusts it, saves and reconnects.
     #[allow(clippy::too_many_arguments)]
-    fn confirm_trust(&mut self, ix: usize, host: String, port: u16, fingerprint: String, key: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_trust(&mut self, id: &str, host: String, port: u16, fingerprint: String, key: String, window: &mut Window, cx: &mut Context<Self>) {
         let ws = cx.entity().downgrade();
+        let id = id.to_string();
         window.open_dialog(cx, move |dialog, _, _| {
-            let (ws, host, key) = (ws.clone(), host.clone(), key.clone());
+            let (ws, host, key, id) = (ws.clone(), host.clone(), key.clone(), id.clone());
             dialog.title(t!("ws.unknown_host_title").to_string()).w(px(480.)).child(t!("ws.unknown_host_body", host = host, port = port, fingerprint = fingerprint).to_string()).footer(
                 h_flex().justify_end().gap_2().child(Button::new("trust-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx))).child(
                     Button::new("trust-ok").label(t!("ws.trust").to_string()).primary().on_click(move |_, window, cx| {
@@ -719,7 +738,7 @@ impl Workspace {
                         // ponytail: one-line append to known_hosts on the UI thread; small file.
                         match ssh::trust_host(&SshEnv::system().known_hosts, &host, port, &key) {
                             Ok(()) => {
-                                ws.update(cx, |ws, cx| ws.connect(ix, window, cx)).ok();
+                                ws.update(cx, |ws, cx| ws.connect(&id, window, cx)).ok();
                             }
                             Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
                         }
@@ -813,21 +832,11 @@ impl Workspace {
             }
         };
         let cached = self.pick_cache.get(&key).cloned().map_or(Load::Loading, Load::Ready);
-        let recent = self.recent.get(&key).cloned().unwrap_or_default();
-        let ws = cx.entity().downgrade();
+        let recent = settings::get(cx).recent.get(&key).cloned().unwrap_or_default();
         let (k2, meta2, session2) = (key.clone(), meta.clone(), session.clone());
         let on_pick: crate::picker::OnPick = Rc::new(move |name, window, cx| {
             let (session, meta, key) = (session2.clone(), meta2.clone(), k2.clone());
-            ws.update(cx, |ws, _| {
-                push_recent(ws.recent.entry(key.clone()).or_default(), &name);
-                let (path, recent) = (config::settings_path(), ws.recent.clone());
-                std::thread::spawn(move || {
-                    if let Err(e) = config::update_settings(&path, |s| s.recent = recent) {
-                        tracing::warn!("settings.toml: {e}");
-                    }
-                });
-            })
-            .ok();
+            settings::update(cx, |s| push_recent(s.recent.entry(key).or_default(), &name));
             let sql = format!("use {kind} {}", quote_always(&name));
             window
                 .spawn(cx, async move |cx| {
@@ -1027,30 +1036,29 @@ impl Workspace {
         for (ix, c) in self.connections.iter().enumerate() {
             let open = self.open_conn(&c.id).is_some();
             let current = self.current.as_deref() == Some(c.id.as_str());
-            let id = c.id.clone();
+            let (id1, id2, id3, id4) = (c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone());
             let (c1, c2, c3, c4) = (close.clone(), close.clone(), close.clone(), close.clone());
             menu = menu.child(
                 h_flex()
                     .gap_1()
                     .child(side_item(("m-conn", ix), Some(logo(c)), c.name.clone(), current, cx).flex_1().on_click(cx.listener(move |ws, _, w, cx| {
                         c1(w, cx);
-                        ws.connect(ix, w, cx)
+                        ws.connect(&id1, w, cx)
                     })))
                     .when_some(c.environment, |d, e| d.child(div().text_xs().text_color(theme.muted_foreground).child(e.label())))
                     .when(open, |d| {
                         d.child(Button::new(("m-disc", ix)).label("⏏").ghost().xsmall().tooltip(t!("ws.disconnect").to_string()).on_click(cx.listener(move |ws, _, w, cx| {
                             c2(w, cx);
-                            ws.request_disconnect(&id, w, cx)
+                            ws.request_disconnect(&id2, w, cx)
                         })))
                     })
                     .child(Button::new(("m-edit", ix)).label("✎").ghost().xsmall().tooltip(t!("conn.edit_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| {
                         c3(w, cx);
-                        let c = ws.connections[ix].clone();
-                        conn_dialog::open(Some(c), w, cx)
+                        ws.edit_connection(&id3, w, cx)
                     })))
                     .child(Button::new(("m-del", ix)).label("×").ghost().xsmall().tooltip(t!("ws.remove_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| {
                         c4(w, cx);
-                        ws.confirm_remove(ix, w, cx)
+                        ws.confirm_remove(&id4, w, cx)
                     }))),
             );
         }
@@ -1150,16 +1158,16 @@ impl Workspace {
         let theme = cx.theme().clone();
         let mut list = v_flex().w_full().max_w(px(480.)).gap_1().child(section_label(t!("frame.connections").to_string(), &theme));
         for (ix, c) in self.connections.iter().enumerate() {
+            let (id1, id2, id3) = (c.id.clone(), c.id.clone(), c.id.clone());
             list = list.child(
                 h_flex()
                     .gap_1()
-                    .child(side_item(("e-conn", ix), Some(logo(c)), c.name.clone(), false, cx).flex_1().on_click(cx.listener(move |ws, _, w, cx| ws.connect(ix, w, cx))))
+                    .child(side_item(("e-conn", ix), Some(logo(c)), c.name.clone(), false, cx).flex_1().on_click(cx.listener(move |ws, _, w, cx| ws.connect(&id1, w, cx))))
                     .when_some(c.environment, |d, e| d.child(div().text_xs().text_color(theme.muted_foreground).child(e.label())))
-                    .child(Button::new(("e-edit", ix)).label("✎").ghost().xsmall().tooltip(t!("conn.edit_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| {
-                        let c = ws.connections[ix].clone();
-                        conn_dialog::open(Some(c), w, cx)
-                    })))
-                    .child(Button::new(("e-del", ix)).label("×").ghost().xsmall().tooltip(t!("ws.remove_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| ws.confirm_remove(ix, w, cx)))),
+                    .child(
+                        Button::new(("e-edit", ix)).label("✎").ghost().xsmall().tooltip(t!("conn.edit_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| ws.edit_connection(&id2, w, cx))),
+                    )
+                    .child(Button::new(("e-del", ix)).label("×").ghost().xsmall().tooltip(t!("ws.remove_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| ws.confirm_remove(&id3, w, cx)))),
             );
         }
         list = list
@@ -1176,7 +1184,7 @@ impl Workspace {
         let ctx = self.display_conn(cx).map(|o| {
             let c = &o.meta.read(cx).cache;
             let env = o.conn.cfg.environment;
-            let parts = context_parts(None, c.dialect, &o.conn.cfg.user, c.role.as_deref(), c.warehouse.as_deref(), &c.search_path);
+            let parts = context_parts(c.dialect, &o.conn.cfg.user, c.role.as_deref(), c.warehouse.as_deref(), &c.search_path);
             (o.conn.cfg.id.clone(), o.conn.cfg.name.clone(), c.dialect, parts, env, env_color(env, theme.mode.is_dark()))
         });
         // Environment and connection name inside the button: clicking them opens the menu.
@@ -1408,15 +1416,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|ws, _: &QuickOpen, window, cx| ws.quick_open(window, cx)))
             .on_action(cx.listener(|ws, _: &ShowHistory, window, cx| ws.show_history(window, cx)))
             // ⌘, (Ctrl+, elsewhere): edits the active connection; none open = new connection.
-            .on_action(cx.listener(|ws, _: &EditConnection, window, cx| {
-                let c = ws.current_open().and_then(|o| ws.connections.iter().find(|c| c.id == o.conn.cfg.id).cloned());
-                conn_dialog::open(c, window, cx)
+            .on_action(cx.listener(|ws, _: &EditConnection, window, cx| match ws.current.clone() {
+                Some(id) => ws.edit_connection(&id, window, cx),
+                None => conn_dialog::open(None, window, cx),
             }))
             .on_action(cx.listener(|ws, _: &CloseTab, window, cx| ws.close_tab(ws.active_tab, window, cx)))
-            .on_action(cx.listener(|ws, _: &Quit, _, cx| {
-                ws.save_all(cx);
-                cx.quit();
-            }))
             .child(self.render_title(window, cx))
             .child(h_flex().flex_1().min_h_0().child(self.render_rail(cx)).child(div().flex_1().min_w_0().h_full().child(split)))
             .child(self.render_status(cx))
@@ -1425,13 +1429,16 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn tabs_shrink_to_fit_then_overflow() {
         assert_eq!(tab_width(1000., 2), (TAB_MAX, false), "few tabs: max width");
         assert_eq!(tab_width(1000., 5), (200., false), "they share the space");
         assert_eq!(tab_width(1000., 9), (TAB_MIN, true), "below the minimum: scroll and show the menu");
-        assert_eq!(tab_width(0., 3), (TAB_MAX, false), "antes da primeira medida");
+        assert_eq!(tab_width(0., 3), (TAB_MAX, false), "before the first measurement");
     }
 }

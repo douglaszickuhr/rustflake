@@ -147,9 +147,12 @@ pub fn open(conn_name: String, path: PathBuf, on_pick: impl Fn(String, bool, &mu
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn when_label_says_today_yesterday_or_date() {
         let utc = chrono::Utc;
         let now = 1_760_560_000_000; // 2025-10-15 20:26:40 UTC

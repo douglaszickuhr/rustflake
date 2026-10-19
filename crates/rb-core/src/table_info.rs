@@ -3,25 +3,19 @@
 
 use std::collections::HashMap;
 
-use crate::admin::{quote_ident, sql_str};
+use crate::lexer::{qualify, quote_always, sql_str};
 use crate::org_config::OrgConfig;
-use crate::snowflake::field;
-
-type Rows = [Vec<Option<String>>];
-
-fn opt(names: &[String], r: &[Option<String>], col: &str) -> Option<String> {
-    field(names, r, col).filter(|v| !v.is_empty()).map(String::from)
-}
+use crate::snowflake::{Named, Rows, named};
 
 fn fq(db: &str, schema: &str, table: &str) -> String {
-    format!("{}.{}.{}", quote_ident(db), quote_ident(schema), quote_ident(table))
+    qualify(&[db, schema, table])
 }
 
 /// Always the INFORMATION_SCHEMA of the table's database (may not be the session's).
 pub fn facts_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
         "select table_type, row_count, bytes, last_altered, comment from {}.information_schema.tables where table_schema = {} and table_name = {}",
-        quote_ident(db),
+        quote_always(db),
         sql_str(schema),
         sql_str(table)
     )
@@ -37,20 +31,20 @@ pub struct Facts {
 }
 
 pub fn parse_facts(names: &[String], rows: &Rows) -> Option<Facts> {
-    let r = rows.first()?;
+    let r = named(names, rows).next()?;
     Some(Facts {
-        kind: opt(names, r, "table_type").unwrap_or_default(),
-        rows: opt(names, r, "row_count").and_then(|v| v.parse().ok()),
-        bytes: opt(names, r, "bytes").and_then(|v| v.parse().ok()),
-        last_altered: opt(names, r, "last_altered"),
-        comment: opt(names, r, "comment"),
+        kind: r.text("table_type").unwrap_or_default(),
+        rows: r.text("row_count").and_then(|v| v.parse().ok()),
+        bytes: r.text("bytes").and_then(|v| v.parse().ok()),
+        last_altered: r.text("last_altered"),
+        comment: r.text("comment"),
     })
 }
 
 pub fn columns_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
         "select ordinal_position, column_name, data_type, is_nullable, column_default, comment from {}.information_schema.columns where table_schema = {} and table_name = {} order by ordinal_position",
-        quote_ident(db),
+        quote_always(db),
         sql_str(schema),
         sql_str(table)
     )
@@ -68,15 +62,15 @@ pub struct ColInfo {
 }
 
 pub fn parse_columns(names: &[String], rows: &Rows) -> Vec<ColInfo> {
-    rows.iter()
+    named(names, rows)
         .filter_map(|r| {
             Some(ColInfo {
-                position: field(names, r, "ordinal_position").and_then(|v| v.parse().ok()).unwrap_or_default(),
-                name: opt(names, r, "column_name")?,
-                kind: opt(names, r, "data_type").unwrap_or_default(),
-                nullable: field(names, r, "is_nullable").is_some_and(|v| v.eq_ignore_ascii_case("YES")),
-                default: opt(names, r, "column_default"),
-                comment: opt(names, r, "comment"),
+                position: r.get("ordinal_position").and_then(|v| v.parse().ok()).unwrap_or_default(),
+                name: r.text("column_name")?,
+                kind: r.text("data_type").unwrap_or_default(),
+                nullable: r.get("is_nullable").is_some_and(|v| v.eq_ignore_ascii_case("YES")),
+                default: r.text("column_default"),
+                comment: r.text("comment"),
             })
         })
         .collect()
@@ -87,14 +81,14 @@ pub fn tags_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
         // `*`: apply_method only exists on newer accounts; missing = no "assigned by".
         "select * from table({}.information_schema.tag_references_all_columns({}, 'table'))",
-        quote_ident(db),
+        quote_always(db),
         sql_str(&fq(db, schema, table))
     )
 }
 
 /// The row belongs to the configured classification tag (all 3 parts).
-fn is_class(org: &OrgConfig, names: &[String], r: &[Option<String>]) -> bool {
-    match (field(names, r, "tag_database"), field(names, r, "tag_schema"), field(names, r, "tag_name")) {
+fn is_class(org: &OrgConfig, r: Named) -> bool {
+    match (r.get("tag_database"), r.get("tag_schema"), r.get("tag_name")) {
         (Some(d), Some(s), Some(n)) => org.is_class_tag(d, s, n),
         _ => false,
     }
@@ -102,12 +96,12 @@ fn is_class(org: &OrgConfig, names: &[String], r: &[Option<String>]) -> bool {
 
 /// Column → (C level, tag) — only the configured classification tag.
 pub fn parse_class_tags(org: &OrgConfig, names: &[String], rows: &Rows) -> HashMap<String, (u8, String)> {
-    rows.iter()
-        .filter(|r| is_class(org, names, r))
+    named(names, rows)
+        .filter(|r| is_class(org, *r))
         .filter_map(|r| {
-            let level = org.tag_level(field(names, r, "tag_value")?)?;
-            let tag = format!("{}.{}.{}", opt(names, r, "tag_database")?, opt(names, r, "tag_schema")?, opt(names, r, "tag_name")?);
-            Some((opt(names, r, "column_name")?, (level, tag)))
+            let level = org.tag_level(r.get("tag_value")?)?;
+            let tag = format!("{}.{}.{}", r.text("tag_database")?, r.text("tag_schema")?, r.text("tag_name")?);
+            Some((r.text("column_name")?, (level, tag)))
         })
         .collect()
 }
@@ -134,17 +128,10 @@ impl ColTag {
 /// Every tag of each column, sorted by name like Snowsight's Tags column.
 pub fn parse_all_tags(names: &[String], rows: &Rows) -> HashMap<String, Vec<ColTag>> {
     let mut m: HashMap<String, Vec<ColTag>> = HashMap::new();
-    for r in rows {
-        let (Some(col), Some(name)) = (opt(names, r, "column_name"), opt(names, r, "tag_name")) else { continue };
-        let s = |k| opt(names, r, k).unwrap_or_default();
-        m.entry(col).or_default().push(ColTag {
-            name,
-            value: s("tag_value"),
-            database: s("tag_database"),
-            schema: s("tag_schema"),
-            method: opt(names, r, "apply_method"),
-            level: opt(names, r, "level"),
-        });
+    for r in named(names, rows) {
+        let (Some(col), Some(name)) = (r.text("column_name"), r.text("tag_name")) else { continue };
+        let s = |k| r.text(k).unwrap_or_default();
+        m.entry(col).or_default().push(ColTag { name, value: s("tag_value"), database: s("tag_database"), schema: s("tag_schema"), method: r.text("apply_method"), level: r.text("level") });
     }
     m.values_mut().for_each(|v| v.sort());
     m
@@ -153,16 +140,16 @@ pub fn parse_all_tags(names: &[String], rows: &Rows) -> HashMap<String, Vec<ColT
 pub fn policies_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
         "select ref_column_name, policy_name, policy_db, policy_schema, policy_kind from table({}.information_schema.policy_references(ref_entity_name => {}, ref_entity_domain => 'table'))",
-        quote_ident(db),
+        quote_always(db),
         sql_str(&fq(db, schema, table))
     )
 }
 
 /// Column → masking policy (including those attached by tag).
 pub fn parse_masking(names: &[String], rows: &Rows) -> HashMap<String, String> {
-    rows.iter()
-        .filter(|r| field(names, r, "policy_kind") == Some("MASKING_POLICY"))
-        .filter_map(|r| Some((opt(names, r, "ref_column_name")?, format!("{}.{}.{}", opt(names, r, "policy_db")?, opt(names, r, "policy_schema")?, opt(names, r, "policy_name")?))))
+    named(names, rows)
+        .filter(|r| r.get("policy_kind") == Some("MASKING_POLICY"))
+        .filter_map(|r| Some((r.text("ref_column_name")?, format!("{}.{}.{}", r.text("policy_db")?, r.text("policy_schema")?, r.text("policy_name")?))))
         .collect()
 }
 
@@ -288,7 +275,7 @@ pub fn summary(rows: &[DefRow]) -> Summary {
 }
 
 pub fn column_lineage_sql(db: &str, schema: &str, table: &str, column: &str) -> String {
-    format!("select * from table(snowflake.core.get_lineage({}, 'COLUMN', 'UPSTREAM', 5))", sql_str(&format!("{}.{}", fq(db, schema, table), quote_ident(column))))
+    format!("select * from table(snowflake.core.get_lineage({}, 'COLUMN', 'UPSTREAM', 5))", sql_str(&format!("{}.{}", fq(db, schema, table), quote_always(column))))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -304,25 +291,25 @@ pub struct LinNode {
 /// (MERGE incremental).
 pub fn parse_column_lineage(names: &[String], rows: &Rows) -> Vec<LinNode> {
     let mut out: Vec<LinNode> = Vec::new();
-    for r in rows {
-        let (Some(object), Some(column)) = (opt(names, r, "source_object_name"), opt(names, r, "source_column_name")) else { continue };
-        let (db, schema) = (opt(names, r, "source_object_database").unwrap_or_default(), opt(names, r, "source_object_schema").unwrap_or_default());
+    for r in named(names, rows) {
+        let (Some(object), Some(column)) = (r.text("source_object_name"), r.text("source_column_name")) else { continue };
+        let (db, schema) = (r.text("source_object_database").unwrap_or_default(), r.text("source_object_schema").unwrap_or_default());
         // Self-edge only if it is truly the same object (database and schema too).
-        let same = |c: &str, v: &str| opt(names, r, c).is_none_or(|x| x == v);
+        let same = |c: &str, v: &str| r.text(c).is_none_or(|x| x == v);
         if same("target_object_database", &db)
             && same("target_object_schema", &schema)
-            && Some(&object) == opt(names, r, "target_object_name").as_ref()
-            && Some(&column) == opt(names, r, "target_column_name").as_ref()
+            && Some(&object) == r.text("target_object_name").as_ref()
+            && Some(&column) == r.text("target_column_name").as_ref()
         {
             continue;
         }
-        let distance = opt(names, r, "distance").and_then(|d| d.parse().ok()).unwrap_or(0);
+        let distance = r.text("distance").and_then(|d| d.parse().ok()).unwrap_or(0);
         if out.iter().any(|n| n.db == db && n.schema == schema && n.object == object && n.column == column) {
             continue;
         }
         out.push(LinNode { db, schema, object, column, distance });
     }
-    out.sort_by(|a, b| b.distance.cmp(&a.distance));
+    out.sort_by_key(|n| std::cmp::Reverse(n.distance));
     out
 }
 

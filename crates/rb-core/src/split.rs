@@ -26,13 +26,19 @@ pub fn statement_at(src: &str, offset: usize) -> Option<Range<usize>> {
     stmts.iter().find(|r| r.start <= offset && offset <= r.end).or_else(|| stmts.iter().rev().find(|r| r.end < offset)).or(stmts.first()).cloned()
 }
 
-fn words(stmt: &str) -> impl Iterator<Item = String> + '_ {
+/// Words of the statement, lowercase, skipping comments and literals.
+pub(crate) fn words(stmt: &str) -> impl Iterator<Item = String> + '_ {
     tokenize(stmt).into_iter().filter(|t| t.kind == TokKind::Word).map(move |t| stmt[t.start..t.end].to_lowercase())
 }
 
-/// BEGIN / START TRANSACTION / SAVEPOINT: the app runs in autocommit only.
+/// BEGIN, COMMIT, ROLLBACK, SAVEPOINT and friends: the app runs in autocommit only.
 pub fn is_transaction_control(stmt: &str) -> bool {
-    matches!(words(stmt).next().as_deref(), Some("begin" | "start" | "savepoint"))
+    matches!(words(stmt).next().as_deref(), Some("begin" | "start" | "savepoint" | "commit" | "rollback" | "end" | "abort" | "release"))
+}
+
+/// `USE …` (Snowflake context switch), even after a comment.
+pub fn is_use(stmt: &str) -> bool {
+    words(stmt).next().as_deref() == Some("use")
 }
 
 /// Read-only? Reads may stay paginated on an open portal; writes are completed
@@ -110,7 +116,9 @@ mod tests {
     fn classifies_transaction_control_and_reads() {
         assert!(is_transaction_control("/* c */ BEGIN"));
         assert!(is_transaction_control("start transaction"));
+        assert!(is_transaction_control("COMMIT") && is_transaction_control("rollback to savepoint a"));
         assert!(!is_transaction_control("do $$ begin end $$"));
+        assert!(is_use("-- pick\nuse role x") && is_use("USE WAREHOUSE w") && !is_use("select 'use'"));
         assert!(is_read_only_query("select 1"));
         assert!(is_read_only_query("with a as (select 1) select * from a"));
         assert!(!is_read_only_query("with a as (delete from t returning *) select * from a"));

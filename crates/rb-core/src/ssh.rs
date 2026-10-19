@@ -13,7 +13,8 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 use crate::DbError;
-use crate::config::SshConfig;
+use crate::config::{SshConfig, expand_home_in, home_dir};
+use crate::metadata::{glob_match, wildcard};
 
 /// Where the user's SSH config comes from. Injectable so tests don't touch the real `~/.ssh`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +28,7 @@ pub struct SshEnv {
 
 impl SshEnv {
     pub fn system() -> SshEnv {
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        let home = home_dir();
         SshEnv {
             config_file: home.join(".ssh/config"),
             known_hosts: home.join(".ssh/known_hosts"),
@@ -53,13 +54,6 @@ pub struct SshTarget {
 
 const DEFAULT_KEYS: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
 
-fn expand(path: &str, home: &Path) -> PathBuf {
-    match path.strip_prefix("~/") {
-        Some(rest) => home.join(rest),
-        None => PathBuf::from(path),
-    }
-}
-
 /// Keyword of an ssh_config line (`Host x` or `Host=x`), lowercased, and the rest.
 fn keyword(line: &str) -> Option<(String, &str)> {
     let l = line.trim_start();
@@ -68,21 +62,10 @@ fn keyword(line: &str) -> Option<(String, &str)> {
     (!k.is_empty() && !k.starts_with('#')).then(|| (k.to_ascii_lowercase(), rest.trim_start_matches(|c: char| c.is_whitespace() || c == '=').trim_end()))
 }
 
-/// ssh_config wildcard (`*` and `?`) in a file name.
-fn wildcard(p: &[u8], n: &[u8]) -> bool {
-    match (p.first(), n.first()) {
-        (None, None) => true,
-        (Some(b'*'), _) => wildcard(&p[1..], n) || (!n.is_empty() && wildcard(p, &n[1..])),
-        (Some(b'?'), Some(_)) => wildcard(&p[1..], &n[1..]),
-        (Some(a), Some(b)) if a == b => wildcard(&p[1..], &n[1..]),
-        _ => false,
-    }
-}
-
 /// Files of an `Include`; a relative path is relative to `~/.ssh`, as in OpenSSH.
 /// ponytail: wildcard only in the file name, not in directories.
 fn include_paths(pattern: &str, home: &Path) -> Vec<PathBuf> {
-    let path = if pattern.starts_with('~') || pattern.starts_with('/') { expand(pattern, home) } else { home.join(".ssh").join(pattern) };
+    let path = if pattern.starts_with('~') || pattern.starts_with('/') { expand_home_in(pattern, home) } else { home.join(".ssh").join(pattern) };
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if !name.contains(['*', '?']) {
         return vec![path];
@@ -94,8 +77,7 @@ fn include_paths(pattern: &str, home: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Merges the `Include`s into the text and drops `Match` blocks. ssh2-config does not evaluate `Match` (it would apply
-/// the block to every host) and would resolve `Include`s via the real HOME, without removing their `Match`.
+/// Merges the `Include`s into the text and drops `Match` blocks (not evaluated: they would apply to every host).
 /// ponytail: an Include inside a Host block is inlined without restoring the block afterwards.
 fn preprocess(text: &str, home: &Path, depth: u8, out: &mut String) {
     let mut skipping = false;
@@ -126,19 +108,64 @@ fn preprocess(text: &str, home: &Path, depth: u8, out: &mut String) {
     }
 }
 
-fn read_config(env: &SshEnv) -> Result<ssh2_config::SshConfig, DbError> {
-    let Ok(raw) = std::fs::read_to_string(&env.config_file) else { return Ok(ssh2_config::SshConfig::default()) };
+/// `~/.ssh/config` with the `Include`s merged and without `Match` blocks; missing file = empty.
+fn read_config(env: &SshEnv) -> String {
     let mut text = String::new();
-    preprocess(&raw, &env.home, 0, &mut text);
-    let rules = ssh2_config::ParseRule::ALLOW_UNKNOWN_FIELDS | ssh2_config::ParseRule::ALLOW_UNSUPPORTED_FIELDS;
-    ssh2_config::SshConfig::default().parse(&mut text.as_bytes(), rules).map_err(|e| DbError::Ssh(format!("{}: {e}", env.config_file.display())))
+    if let Ok(raw) = std::fs::read_to_string(&env.config_file) {
+        preprocess(&raw, &env.home, 0, &mut text);
+    }
+    text
+}
+
+/// The options this app uses, for one host.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct HostParams {
+    host_name: Option<String>,
+    port: Option<u16>,
+    user: Option<String>,
+    identity_files: Vec<PathBuf>,
+}
+
+/// `Host a b !c`: some pattern matches and no negated one does (case-insensitive, like OpenSSH).
+fn host_matches(patterns: &str, host: &str) -> bool {
+    let mut hit = false;
+    for p in patterns.split_whitespace() {
+        match p.strip_prefix('!') {
+            Some(neg) if glob_match(neg, host) => return false,
+            Some(_) => {}
+            None => hit |= glob_match(p, host),
+        }
+    }
+    hit
+}
+
+/// OpenSSH rules: every matching block contributes, the first value of an option wins and
+/// `IdentityFile` accumulates. Lines before the first `Host` apply to every host.
+fn query(text: &str, host: &str, home: &Path) -> Result<HostParams, String> {
+    let mut p = HostParams::default();
+    let mut active = true;
+    for (k, v) in text.lines().filter_map(keyword) {
+        let v = v.trim_matches('"');
+        match k.as_str() {
+            "host" => active = host_matches(v, host),
+            _ if !active => {}
+            "hostname" => {
+                p.host_name.get_or_insert_with(|| v.replace("%h", host));
+            }
+            "user" => {
+                p.user.get_or_insert_with(|| v.to_string());
+            }
+            "port" if p.port.is_none() => p.port = Some(v.parse().map_err(|_| format!("Port {v}"))?),
+            "identityfile" => p.identity_files.push(expand_home_in(v, home)),
+            _ => {}
+        }
+    }
+    Ok(p)
 }
 
 /// Names of the `Host` blocks in `~/.ssh/config` (with the `Include`s), without wildcards or negations, in file order.
 pub fn host_aliases(env: &SshEnv) -> Vec<String> {
-    let Ok(raw) = std::fs::read_to_string(&env.config_file) else { return Vec::new() };
-    let mut text = String::new();
-    preprocess(&raw, &env.home, 0, &mut text);
+    let text = read_config(env);
     let mut out: Vec<String> = Vec::new();
     for (_, rest) in text.lines().filter_map(keyword).filter(|(k, _)| k == "host") {
         for name in rest.split_whitespace().filter(|n| !n.contains(['*', '?', '!'])) {
@@ -152,17 +179,17 @@ pub fn host_aliases(env: &SshEnv) -> Vec<String> {
 
 impl SshConfig {
     pub fn resolve(&self, env: &SshEnv) -> Result<SshTarget, DbError> {
-        let p = read_config(env)?.query(&self.host);
+        let p = query(&read_config(env), &self.host, &env.home).map_err(|e| DbError::Ssh(format!("{}: {e}", env.config_file.display())))?;
         let configured: Vec<PathBuf> = match &self.identity_file {
-            Some(f) => vec![expand(f, &env.home)],
-            None => p.identity_file.clone().unwrap_or_default(),
+            Some(f) => vec![expand_home_in(f, &env.home)],
+            None => p.identity_files,
         };
         let identities_explicit = !configured.is_empty();
         let identity_files = if identities_explicit { configured } else { DEFAULT_KEYS.iter().map(|k| env.home.join(".ssh").join(k)).filter(|p| p.exists()).collect() };
         Ok(SshTarget {
-            hostname: p.host_name.clone().unwrap_or_else(|| self.host.clone()),
+            hostname: p.host_name.unwrap_or_else(|| self.host.clone()),
             port: self.port.or(p.port).unwrap_or(22),
-            user: self.user.clone().or(p.user.clone()).unwrap_or_else(|| env.user.clone()),
+            user: self.user.clone().or(p.user).unwrap_or_else(|| env.user.clone()),
             identity_files,
             identities_explicit,
             agent: env.agent.clone(),
@@ -370,9 +397,9 @@ mod tests {
 
     #[test]
     fn host_aliases_skip_patterns_and_follow_includes() {
-        let env = env_with(Some("Host prod bastion-*\n  User x\nHost=staging !nope\nHost *\nInclude extra\nMatch host foo\nHost dentro-do-match\nHost prod\n"));
-        std::fs::write(env.home.join(".ssh/extra"), "Host incluido\n").unwrap();
-        assert_eq!(host_aliases(&env), ["prod", "staging", "incluido", "dentro-do-match"]);
+        let env = env_with(Some("Host prod bastion-*\n  User x\nHost=staging !nope\nHost *\nInclude extra\nMatch host foo\nHost inside-match\nHost prod\n"));
+        std::fs::write(env.home.join(".ssh/extra"), "Host included\n").unwrap();
+        assert_eq!(host_aliases(&env), ["prod", "staging", "included", "inside-match"]);
         assert!(host_aliases(&env_with(None)).is_empty());
     }
 
@@ -421,19 +448,32 @@ mod tests {
     #[test]
     fn includes_are_inlined_without_leaking_match() {
         let env = env_with(Some("Include inc.conf conf.d/*.conf\nHost=b\n  HostName b.example\nHost a\n  HostName a.example\n"));
-        std::fs::write(env.home.join(".ssh/inc.conf"), "Match host other\n  User vazado\n  Port 2999\nHost incl\n  User de-include\n").unwrap();
+        std::fs::write(env.home.join(".ssh/inc.conf"), "Match host other\n  User leaked\n  Port 2999\nHost incl\n  User from-include\n").unwrap();
         std::fs::create_dir_all(env.home.join(".ssh/conf.d")).unwrap();
         std::fs::write(env.home.join(".ssh/conf.d/x.conf"), "Host g\n  User globbed\n").unwrap();
         let a = ssh("a").resolve(&env).unwrap();
         assert_eq!((a.hostname.as_str(), a.user.as_str(), a.port), ("a.example", "eu", 22));
-        assert_eq!(ssh("incl").resolve(&env).unwrap().user, "de-include");
+        assert_eq!(ssh("incl").resolve(&env).unwrap().user, "from-include");
         assert_eq!(ssh("g").resolve(&env).unwrap().user, "globbed");
         assert_eq!(ssh("b").resolve(&env).unwrap().hostname, "b.example");
     }
 
     #[test]
+    fn first_value_wins_identities_accumulate_and_negations_exclude() {
+        let text = "User global\nHost web-* !web-old\n  HostName %h.example.com\n  IdentityFile ~/.ssh/web\n  Port 2222\nHost *\n  HostName ignored\n  User later\n  Port 1\n  IdentityFile /k/all\n";
+        let home = Path::new("/h");
+        let p = query(text, "WEB-1", home).unwrap();
+        assert_eq!(
+            p,
+            HostParams { host_name: Some("WEB-1.example.com".into()), port: Some(2222), user: Some("global".into()), identity_files: vec![PathBuf::from("/h/.ssh/web"), PathBuf::from("/k/all")] }
+        );
+        assert_eq!(query(text, "web-old", home).unwrap().host_name.as_deref(), Some("ignored"), "negated pattern skips the block");
+        assert!(query("Port x\n", "a", home).is_err());
+    }
+
+    #[test]
     fn match_blocks_do_not_leak() {
-        let env = env_with(Some("Match host x\n  User vazado\nHost a\n  HostName a.example\nHost c\n  Port 2222\n"));
+        let env = env_with(Some("Match host x\n  User leaked\nHost a\n  HostName a.example\nHost c\n  Port 2222\n"));
         assert_eq!(ssh("c").resolve(&env).unwrap().user, "eu");
         assert_eq!(ssh("a").resolve(&env).unwrap().hostname, "a.example");
     }

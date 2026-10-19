@@ -335,6 +335,9 @@ impl Render for SchemaTree {
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use rb_core::metadata::{ColumnMeta, SchemaObjects};
 
     use super::*;
@@ -347,7 +350,7 @@ mod tests {
         c
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn snowflake_tree_starts_at_databases() {
         let mut c = cache();
         c.dialect = rb_core::dialect::Dialect::Snowflake;
@@ -364,7 +367,7 @@ mod tests {
         assert_eq!(items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["OTHER"]);
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn each_node_gets_its_kind() {
         let c = cache();
         let k = |parts: &[&str]| describe(&id(parts), &c).0;
@@ -382,7 +385,7 @@ mod tests {
         assert_eq!(k(&["i", "public", "t", "t_pkey"]), Kind::Index);
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn rebuild_keeps_selection_unless_a_reveal_is_pending() {
         let (a, b): (SharedString, SharedString) = ("a".into(), "b".into());
         assert_eq!(selection_after_rebuild(None, Some(a.clone())), Some((a.clone(), false)));
@@ -390,7 +393,7 @@ mod tests {
         assert_eq!(selection_after_rebuild(None, None), None);
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn revealed_path_is_built_expanded() {
         let mut c = cache();
         c.schemas = vec!["public".into()];
@@ -404,7 +407,7 @@ mod tests {
         assert!(group.is_expanded() && group.children.iter().any(|i| i.id == ids[2]));
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn columns_carry_their_type_as_detail() {
         assert_eq!(describe(&id(&["c", "public", "t", "n"]), &cache()).1.as_deref(), Some("integer"));
         assert_eq!(describe(&id(&["r", "public", "t"]), &cache()).1, None);

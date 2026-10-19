@@ -18,6 +18,9 @@ const BOX_H: f32 = 84.0;
 const GAP_X: f32 = 32.0;
 const GAP_Y: f32 = 56.0;
 
+/// Arrow: from, to (content coordinates, already zoomed) and stroke width.
+type Edge = ((f32, f32), (f32, f32), f32);
+
 /// 0 = neutral, 1 = strong red; saturates at 50%.
 fn heat(pct: f64) -> f32 {
     (pct / 50.0).clamp(0.0, 1.0) as f32
@@ -266,7 +269,7 @@ impl Render for PlanView {
         let nodes: Vec<&PlanNode> = self.placed.iter().map(|p| node_at(&self.plan.root, &p.path).expect("layout only has valid paths")).collect();
 
         // Child (top) → parent (bottom) arrows, in content coordinates already zoomed.
-        let edges: Vec<((f32, f32), (f32, f32), f32)> = self
+        let edges: Vec<Edge> = self
             .placed
             .iter()
             .zip(&nodes)
@@ -417,9 +420,12 @@ impl Render for PlanView {
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn heat_is_clamped() {
         assert_eq!(heat(0.0), 0.0);
         assert_eq!(heat(25.0), 0.5);

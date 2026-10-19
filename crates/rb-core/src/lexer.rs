@@ -283,6 +283,16 @@ pub fn quote_always(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Each part always quoted, joined by `.`: `["DB", "my s"]` → `"DB"."my s"`.
+pub fn qualify(parts: &[&str]) -> String {
+    parts.iter().map(|p| quote_always(p)).collect::<Vec<_>>().join(".")
+}
+
+/// Snowflake string literal. There `\` also escapes inside '...': both are doubled.
+pub fn sql_str(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
+}
+
 /// Snowflake reserved words (cannot be an unquoted identifier).
 const RESERVED_SNOWFLAKE: &[&str] = &[
     "ALL",
