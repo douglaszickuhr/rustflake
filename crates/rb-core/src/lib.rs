@@ -11,6 +11,7 @@ pub mod explain;
 pub mod format;
 pub mod history;
 pub mod lexer;
+pub mod lineage;
 pub mod masking;
 pub mod metadata;
 pub mod picker;
