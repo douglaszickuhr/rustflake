@@ -10,6 +10,7 @@ mod grid;
 mod history_popup;
 mod indexer;
 mod lang;
+mod lineage_view;
 mod meta;
 mod picker;
 mod plan_view;
@@ -18,6 +19,7 @@ mod schema_tree;
 mod sql_tab;
 mod table_tab;
 mod workspace;
+mod zoom;
 
 use std::time::Instant;
 
@@ -26,7 +28,7 @@ use gpui_kit::*;
 rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustflake, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment, EditConnection]);
+gpui_kit::actions!(rustflake, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment, EditConnection, ClearLineage]);
 
 /// Database runtime shared by the application.
 pub struct Db(pub Engine);
@@ -115,6 +117,7 @@ fn main() {
             KeyBinding::new("secondary-+", PlanZoomIn, Some("PlanView")),
             KeyBinding::new("secondary--", PlanZoomOut, Some("PlanView")),
             KeyBinding::new("secondary-0", PlanFit, Some("PlanView")),
+            KeyBinding::new("escape", ClearLineage, Some("PlanView")),
             KeyBinding::new("secondary-=", PlanZoomIn, Some("SqlTab")),
             KeyBinding::new("secondary-+", PlanZoomIn, Some("SqlTab")),
             KeyBinding::new("secondary--", PlanZoomOut, Some("SqlTab")),

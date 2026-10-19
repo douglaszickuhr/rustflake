@@ -358,7 +358,11 @@ impl Workspace {
         let open_query: crate::table_tab::OpenQuery = Rc::new(move |sql, window, cx| {
             ws.update(cx, |ws, cx| ws.open_query(&id, &sql, window, cx)).ok();
         });
-        let tab = cx.new(|cx| TableTab::new(schema, table, conn, meta, dbt, open_query, window, cx));
+        let (ws, id) = (cx.entity().downgrade(), conn_id.to_string());
+        let open_table: crate::schema_tree::OpenTable = Rc::new(move |schema, table, window, cx| {
+            ws.update(cx, |ws, cx| ws.open_table(&id, schema, table, window, cx)).ok();
+        });
+        let tab = cx.new(|cx| TableTab::new(schema, table, conn, meta, dbt, open_query, open_table, window, cx));
         self.tabs.push(TabView::Table(tab));
         self.select_tab(self.tabs.len() - 1, cx);
     }

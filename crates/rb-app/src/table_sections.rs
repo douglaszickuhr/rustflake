@@ -18,12 +18,11 @@ use rb_core::user_view;
 use rust_i18n::t;
 
 use super::{Section, TableTab};
-use crate::Db;
 use crate::admin_tab::Load;
 use crate::dbt_store::parsed_ago;
 
 /// Node type color (dbt model / source / seed / outside dbt), same as lineage.
-fn kind_dot(kind: &str, theme: &gpui_kit::component::Theme) -> Hsla {
+pub(crate) fn kind_dot(kind: &str, theme: &gpui_kit::component::Theme) -> Hsla {
     match kind {
         "model" | "snapshot" => theme.primary,
         "source" => theme.success,
@@ -89,19 +88,7 @@ impl TableTab {
         run: impl AsyncFnOnce(&rb_core::session::Session) -> Result<T, rb_core::DbError> + 'static,
         done: impl FnOnce(&mut Self, Result<T, rb_core::DbError>, &mut Context<Self>) + 'static,
     ) {
-        let (conn, engine) = (self.conn.clone(), cx.global::<Db>().0.clone());
-        cx.spawn(async move |this, cx| {
-            let res = match engine.connect(&conn.cfg, conn.creds.clone()).await {
-                Ok(s) => run(&s).await,
-                Err(e) => Err(e),
-            };
-            this.update(cx, |t, cx| {
-                done(t, res, cx);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        super::spawn_query(self.conn.clone(), cx, run, done);
     }
 
     pub(crate) fn ensure_facts(&mut self, cx: &mut Context<Self>) {
@@ -182,6 +169,17 @@ impl TableTab {
         self.section = s;
         if s == Section::Definition {
             self.ensure_definition(cx);
+        }
+        if s == Section::Lineage && self.lineage.is_none() {
+            let (db, schema) = self.db_schema();
+            // The kind lets the focus show its DDL (views) before any lineage row arrives.
+            let kind = match &self.facts {
+                Some(Load::Ready(f)) if !f.kind.is_empty() && f.kind != "BASE TABLE" => Some(f.kind.clone()),
+                _ => None,
+            };
+            let focus = rb_core::lineage::Obj { key: rb_core::lineage::ObjKey::table(&db, &schema, &self.table), kind, masked: false };
+            let (conn, dbt, open_table, open_query) = (self.conn.clone(), self.dbt.clone(), self.open_table.clone(), self.open_query.clone());
+            self.lineage = Some(cx.new(|cx| crate::lineage_view::LineageView::new(focus, conn, dbt, open_table, open_query, cx)));
         }
         // Custom tab: runs/opens only the first time; after that, ↻ or the button.
         if let Section::Custom(i) = s
@@ -295,6 +293,7 @@ impl TableTab {
                     .child(tab("tv-data", t!("tv.data").to_string(), Section::Data, cur, cx))
                     .child(tab("tv-def", t!("tv.definition").to_string(), Section::Definition, cur, cx))
                     .child(tab("tv-dbt", "dbt".into(), Section::Dbt, cur, cx))
+                    .child(tab("tv-lineage", t!("tv.lineage").to_string(), Section::Lineage, cur, cx))
                     .children(self.custom.iter().enumerate().map(|(i, c)| {
                         let s = Section::Custom(i);
                         Button::new(("tv-custom", i)).label(c.name.clone()).ghost().small().selected(s == cur).on_click(cx.listener(move |t, _, _, cx| t.go(s, cx)))

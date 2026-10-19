@@ -30,11 +30,35 @@ use crate::{CancelQuery, CopyCells, Db, SaveEdits};
 /// Opens a SQL tab with the text (Query button).
 pub type OpenQuery = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
+/// Runs `run` on a new session of `conn` and hands the result to `done`; each call has its own session,
+/// so two calls run in parallel (one session runs its commands one at a time).
+pub(crate) fn spawn_query<V: 'static, T: 'static>(
+    conn: ConnTarget,
+    cx: &mut Context<V>,
+    run: impl AsyncFnOnce(&Session) -> Result<T, rb_core::DbError> + 'static,
+    done: impl FnOnce(&mut V, Result<T, rb_core::DbError>, &mut Context<V>) + 'static,
+) {
+    let engine = cx.global::<Db>().0.clone();
+    cx.spawn(async move |this, cx| {
+        let res = match engine.connect(&conn.cfg, conn.creds.clone()).await {
+            Ok(s) => run(&s).await,
+            Err(e) => Err(e),
+        };
+        this.update(cx, |t, cx| {
+            done(t, res, cx);
+            cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Data,
     Definition,
     Dbt,
+    Lineage,
     /// Tab from the configuration (index into `custom`).
     Custom(usize),
 }
@@ -74,6 +98,9 @@ pub struct TableTab {
     pub(crate) section: Section,
     pub(crate) dbt: Option<Entity<DbtStore>>,
     pub(crate) open_query: OpenQuery,
+    pub(crate) open_table: crate::schema_tree::OpenTable,
+    /// Created the first time the Lineage section opens.
+    pub(crate) lineage: Option<Entity<crate::lineage_view::LineageView>>,
     pub(crate) facts: Option<Load<Facts>>,
     pub(crate) def_raw: Option<Load<DefRaw>>,
     pub(crate) selected_col: Option<String>,
@@ -100,7 +127,7 @@ pub struct TableTab {
 
 impl TableTab {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(schema: String, table: String, conn: ConnTarget, meta: Entity<MetaStore>, dbt: Option<Entity<DbtStore>>, open_query: OpenQuery, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(schema: String, table: String, conn: ConnTarget, meta: Entity<MetaStore>, dbt: Option<Entity<DbtStore>>, open_query: OpenQuery, open_table: crate::schema_tree::OpenTable, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("table.filter_placeholder").to_string()));
         let grid = cx.new(|cx| TableState::new(ResultGrid::new(true), window, cx).cell_selectable(true));
 
@@ -164,6 +191,8 @@ impl TableTab {
             section: Section::Data,
             dbt: dbt.clone(),
             open_query,
+            open_table,
+            lineage: None,
             facts: None,
             def_raw: None,
             selected_col: None,
@@ -497,6 +526,7 @@ impl Render for TableTab {
             Section::Data => self.render_data(window, cx),
             Section::Definition => self.render_definition(cx),
             Section::Dbt => self.render_dbt(window, cx),
+            Section::Lineage => self.lineage.clone().map_or_else(|| div().into_any_element(), |l| l.into_any_element()),
             Section::Custom(i) => self.render_custom(i, cx),
         };
         v_flex().size_full().child(self.render_header(cx)).child(div().flex_1().min_h_0().child(content)).into_any_element()
@@ -568,4 +598,4 @@ impl TableTab {
 }
 
 #[path = "table_sections.rs"]
-mod sections;
+pub(crate) mod sections;

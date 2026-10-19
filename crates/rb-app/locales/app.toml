@@ -2117,3 +2117,128 @@ es = "Abrir en el navegador"
 en = "All open tabs"
 pt = "Todas as abas abertas"
 es = "Todas las pestañas abiertas"
+
+[tv.lineage]
+en = "Lineage"
+pt = "Linhagem"
+es = "Linaje"
+
+[lin.up_loading]
+en = "upstream…"
+pt = "acima…"
+es = "arriba…"
+
+[lin.down_loading]
+en = "downstream…"
+pt = "abaixo…"
+es = "abajo…"
+
+[lin.up_count]
+en = "← %{n} upstream"
+pt = "← %{n} acima"
+es = "← %{n} arriba"
+
+[lin.down_count]
+en = "%{n} downstream →"
+pt = "%{n} abaixo →"
+es = "%{n} abajo →"
+
+[lin.truncated]
+en = "cut at %{n} rows: the deepest level may be incomplete"
+pt = "cortado em %{n} linhas: o nível mais distante pode estar incompleto"
+es = "cortado en %{n} filas: el nivel más lejano puede estar incompleto"
+
+[lin.more]
+en = "+%{n} more"
+pt = "+%{n} mais"
+es = "+%{n} más"
+
+[lin.hidden]
+en = "%{n} hidden objects"
+pt = "%{n} objetos escondidos"
+es = "%{n} objetos ocultos"
+
+[lin.show]
+en = "Show"
+pt = "Mostrar"
+es = "Mostrar"
+
+[lin.no_access]
+en = "no access"
+pt = "sem acesso"
+es = "sin acceso"
+
+[lin.center_more]
+en = "Center here to see further"
+pt = "Centralizar aqui para ver além"
+es = "Centrar aquí para ver más allá"
+
+[lin.back]
+en = "← Back"
+pt = "← Voltar"
+es = "← Volver"
+
+[lin.clear_column]
+en = "Clear (Esc)"
+pt = "Limpar (Esc)"
+es = "Limpiar (Esc)"
+
+[lin.open_table]
+en = "Open table"
+pt = "Abrir tabela"
+es = "Abrir tabla"
+
+[lin.center]
+en = "Center here"
+pt = "Centralizar aqui"
+es = "Centrar aquí"
+
+[lin.built]
+en = "How it's built"
+pt = "Como é construído"
+es = "Cómo se construye"
+
+[lin.model_def]
+en = "dbt model %{name}"
+pt = "modelo dbt %{name}"
+es = "modelo dbt %{name}"
+
+[lin.def_note]
+en = "The object's definition, not necessarily the statement behind each input (incremental MERGE, manual INSERT): see the queries below."
+pt = "A definição do objeto, não necessariamente o comando por trás de cada entrada (MERGE incremental, INSERT manual): veja as queries abaixo."
+es = "La definición del objeto, no necesariamente la sentencia detrás de cada entrada (MERGE incremental, INSERT manual): vea las consultas abajo."
+
+[lin.no_definition]
+en = "No definition to show: not a dbt model, view or dynamic table."
+pt = "Sem definição para mostrar: não é modelo dbt, view nem dynamic table."
+es = "Sin definición para mostrar: no es modelo dbt, vista ni dynamic table."
+
+[lin.open_sql]
+en = "Open in SQL tab"
+pt = "Abrir em aba SQL"
+es = "Abrir en pestaña SQL"
+
+[lin.inputs]
+en = "Inputs"
+pt = "Entradas"
+es = "Entradas"
+
+[lin.no_inputs]
+en = "No inputs in the graph."
+pt = "Sem entradas no gráfico."
+es = "Sin entradas en el gráfico."
+
+[lin.copy]
+en = "Copy"
+pt = "Copiar"
+es = "Copiar"
+
+[lin.columns]
+en = "Columns"
+pt = "Colunas"
+es = "Columnas"
+
+[lin.col_outside]
+en = "%{n} object(s) on this path are outside the graph"
+pt = "%{n} objeto(s) deste caminho estão fora do gráfico"
+es = "%{n} objeto(s) de este camino están fuera del gráfico"
