@@ -1,5 +1,5 @@
-//! Definição da tabela (Snowflake): fatos do cabeçalho, colunas, classificação, mascaramento e
-//! linhagem de coluna, juntados com as descrições e testes do dbt.
+//! Table definition (Snowflake): header facts, columns, classification, masking and
+//! column lineage, joined with dbt descriptions and tests.
 
 use std::collections::HashMap;
 
@@ -17,7 +17,7 @@ fn fq(db: &str, schema: &str, table: &str) -> String {
     format!("{}.{}.{}", quote_ident(db), quote_ident(schema), quote_ident(table))
 }
 
-/// Sempre o INFORMATION_SCHEMA do database da tabela (pode não ser o da sessão).
+/// Always the INFORMATION_SCHEMA of the table's database (may not be the session's).
 pub fn facts_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
         "select table_type, row_count, bytes, last_altered, comment from {}.information_schema.tables where table_schema = {} and table_name = {}",
@@ -79,7 +79,7 @@ pub fn parse_columns(names: &[String], rows: &Rows) -> Vec<ColInfo> {
         .collect()
 }
 
-/// Tags das colunas, ao vivo (função do INFORMATION_SCHEMA; o ACCOUNT_USAGE atrasa horas).
+/// Column tags, live (INFORMATION_SCHEMA function; ACCOUNT_USAGE lags hours).
 pub fn tags_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
         "select column_name, tag_name, tag_value, tag_database, tag_schema from table({}.information_schema.tag_references_all_columns({}, 'table'))",
@@ -88,7 +88,7 @@ pub fn tags_sql(db: &str, schema: &str, table: &str) -> String {
     )
 }
 
-/// A linha é da tag de classificação da configuração (as 3 partes).
+/// The row belongs to the configured classification tag (all 3 parts).
 fn is_class(org: &OrgConfig, names: &[String], r: &[Option<String>]) -> bool {
     match (field(names, r, "tag_database"), field(names, r, "tag_schema"), field(names, r, "tag_name")) {
         (Some(d), Some(s), Some(n)) => org.is_class_tag(d, s, n),
@@ -96,7 +96,7 @@ fn is_class(org: &OrgConfig, names: &[String], r: &[Option<String>]) -> bool {
     }
 }
 
-/// Coluna → (nível C, tag) — só a tag de classificação da configuração.
+/// Column → (C level, tag) — only the configured classification tag.
 pub fn parse_class_tags(org: &OrgConfig, names: &[String], rows: &Rows) -> HashMap<String, (u8, String)> {
     rows.iter()
         .filter(|r| is_class(org, names, r))
@@ -108,12 +108,12 @@ pub fn parse_class_tags(org: &OrgConfig, names: &[String], rows: &Rows) -> HashM
         .collect()
 }
 
-/// As outras tags da coluna, para o painel; a de classificação vira o chip.
+/// The column's other tags, for the panel; the classification one becomes the chip.
 pub fn parse_all_tags(org: &OrgConfig, names: &[String], rows: &Rows) -> HashMap<String, Vec<(String, String)>> {
     let mut m: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for r in rows {
         let (Some(col), Some(tag)) = (opt(names, r, "column_name"), opt(names, r, "tag_name")) else { continue };
-        // Valor fora de `values` não vira chip: fica aqui para não sumir.
+        // A value outside `values` does not become a chip: it stays here so it doesn't vanish.
         if is_class(org, names, r) && field(names, r, "tag_value").and_then(|v| org.tag_level(v)).is_some() {
             continue;
         }
@@ -130,7 +130,7 @@ pub fn policies_sql(db: &str, schema: &str, table: &str) -> String {
     )
 }
 
-/// Coluna → masking policy (inclusive as ligadas por tag).
+/// Column → masking policy (including those attached by tag).
 pub fn parse_masking(names: &[String], rows: &Rows) -> HashMap<String, String> {
     rows.iter()
         .filter(|r| field(names, r, "policy_kind") == Some("MASKING_POLICY"))
@@ -156,7 +156,7 @@ pub struct DefRow {
     pub tests: Vec<String>,
 }
 
-/// Colunas do Snowflake mandam; dbt entra pela descrição (preferida) e pelos testes.
+/// Snowflake columns rule; dbt comes in through the description (preferred) and the tests.
 pub fn merge(
     cols: &[ColInfo],
     dbt_cols: &[(String, String)],
@@ -222,14 +222,14 @@ pub struct LinNode {
     pub distance: u32,
 }
 
-/// Da origem mais distante até a mais próxima; sem repetir e sem a aresta da coluna para ela mesma
+/// From the farthest source to the nearest; no repeats and no edge from the column to itself
 /// (MERGE incremental).
 pub fn parse_column_lineage(names: &[String], rows: &Rows) -> Vec<LinNode> {
     let mut out: Vec<LinNode> = Vec::new();
     for r in rows {
         let (Some(object), Some(column)) = (opt(names, r, "source_object_name"), opt(names, r, "source_column_name")) else { continue };
         let (db, schema) = (opt(names, r, "source_object_database").unwrap_or_default(), opt(names, r, "source_object_schema").unwrap_or_default());
-        // Autoaresta só se for o mesmo objeto de verdade (database e schema também).
+        // Self-edge only if it is truly the same object (database and schema too).
         let same = |c: &str, v: &str| opt(names, r, c).is_none_or(|x| x == v);
         if same("target_object_database", &db) && same("target_object_schema", &schema) && Some(&object) == opt(names, r, "target_object_name").as_ref() && Some(&column) == opt(names, r, "target_column_name").as_ref() {
             continue;
@@ -286,10 +286,10 @@ mod tests {
         let mut tests = HashMap::new();
         tests.insert("USAGE_DATE".to_string(), vec!["not_null".to_string()]);
         let rows = merge(&cols(), &dbt, &tags, &masks, &tests);
-        assert_eq!(rows.len(), 4, "coluna só do dbt fica de fora");
+        assert_eq!(rows.len(), 4, "dbt-only column is left out");
         assert_eq!((rows[0].desc.as_deref(), rows[0].source), (Some("Day of cost"), DescSource::Dbt));
         assert_eq!((rows[1].desc.as_deref(), rows[1].source), (Some("Region code"), DescSource::Comment));
-        assert_eq!((rows[2].desc.as_deref(), rows[2].source), (Some("acct"), DescSource::Comment), "descrição dbt vazia cai no comentário");
+        assert_eq!((rows[2].desc.as_deref(), rows[2].source), (Some("acct"), DescSource::Comment), "empty dbt description falls back to the comment");
         assert_eq!((rows[2].level, rows[2].masked_by.as_deref()), (Some(3), Some("P.MASK")));
         assert_eq!(rows[3].source, DescSource::None);
         assert_eq!(rows[0].tests, vec!["not_null"]);
@@ -303,7 +303,7 @@ mod tests {
             &[&[Some("A"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("GOVERNANCE"), Some("TAGS")], &[Some("B"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("OTHER"), Some("TAGS")]],
         );
         let tg = parse_class_tags(&crate::org_config::acme(), &n, &r);
-        assert_eq!(tg.len(), 1, "mesmo nome em outro database não é a tag do org");
+        assert_eq!(tg.len(), 1, "same name in another database is not the org's tag");
         assert_eq!(tg["A"], (3, "GOVERNANCE.TAGS.DATA_CLASSIFICATION".to_string()));
         assert!(parse_class_tags(&crate::org_config::OrgConfig::none(), &n, &r).is_empty());
         let (n, r) = t(
@@ -342,7 +342,7 @@ mod tests {
             ],
         );
         let l = parse_column_lineage(&n, &r);
-        assert_eq!(l.iter().map(|x| x.db.as_str()).collect::<Vec<_>>(), vec!["RAW", "STG"], "mesmo nome em outro database não é autoaresta nem duplicata");
+        assert_eq!(l.iter().map(|x| x.db.as_str()).collect::<Vec<_>>(), vec!["RAW", "STG"], "same name in another database is neither a self-edge nor a duplicate");
     }
 
     #[test]
@@ -358,10 +358,10 @@ mod tests {
         let a = crate::org_config::acme();
         let all = parse_all_tags(&a, &n, &r);
         assert_eq!(all["A"], vec![("OWNER_TEAM".to_string(), "SALES".to_string()), ("PII".to_string(), "False".to_string())]);
-        assert!(!all.contains_key("B"), "a de classificação já aparece no chip");
-        assert!(!parse_class_tags(&a, &n, &r).contains_key("A"), "as outras tags não são classificação");
-        assert!(parse_all_tags(&crate::org_config::OrgConfig::none(), &n, &r).contains_key("B"), "sem org toda tag é só tag");
+        assert!(!all.contains_key("B"), "the classification one already shows in the chip");
+        assert!(!parse_class_tags(&a, &n, &r).contains_key("A"), "the other tags are not classification");
+        assert!(parse_all_tags(&crate::org_config::OrgConfig::none(), &n, &r).contains_key("B"), "without an org every tag is just a tag");
         let (n, r) = t(&["COLUMN_NAME", "TAG_NAME", "TAG_VALUE", "TAG_DATABASE", "TAG_SCHEMA"], &[&[Some("C"), Some("DATA_CLASSIFICATION"), Some("C-9 Secret"), Some("GOVERNANCE"), Some("TAGS")]]);
-        assert_eq!(parse_all_tags(&a, &n, &r)["C"], vec![("DATA_CLASSIFICATION".to_string(), "C-9 Secret".to_string())], "valor desconhecido continua visível");
+        assert_eq!(parse_all_tags(&a, &n, &r)["C"], vec![("DATA_CLASSIFICATION".to_string(), "C-9 Secret".to_string())], "unknown value stays visible");
     }
 }

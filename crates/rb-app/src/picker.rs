@@ -1,4 +1,4 @@
-//! Seletor rápido de role/warehouse/database/schema: abre na hora com os recentes e filtra ao digitar.
+//! Quick picker for role/warehouse/database/schema: opens instantly with recents and filters as you type.
 
 use rust_i18n::t;
 use std::rc::Rc;
@@ -27,7 +27,7 @@ impl Picker {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("picker.search").to_string()));
         let subs = vec![cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, window, cx| match ev {
             InputEvent::Change => cx.notify(),
-            // Enter escolhe o primeiro da lista visível.
+            // Enter picks the first of the visible list.
             InputEvent::PressEnter { .. } => {
                 if let Some(first) = this.visible(cx).first().cloned() {
                     this.pick(first, window, cx);
@@ -42,7 +42,7 @@ impl Picker {
         self.input.clone()
     }
 
-    /// A lista completa chegou (ou foi atualizada) em segundo plano.
+    /// The full list arrived (or was refreshed) in the background.
     pub fn set_list(&mut self, all: Load<Vec<String>>, cx: &mut Context<Self>) {
         self.all = all;
         cx.notify();
@@ -52,7 +52,7 @@ impl Picker {
         self.input.read(cx).value().trim().to_string()
     }
 
-    /// Sem busca: os recentes primeiro. Com busca: o ranking da lista inteira.
+    /// No search: recents first. With search: ranking over the whole list.
     fn visible(&self, cx: &App) -> Vec<String> {
         let q = self.query(cx);
         match &self.all {
@@ -109,7 +109,7 @@ impl Render for Picker {
                     out = out.child(div().px_2().text_sm().text_color(theme.muted_foreground).child(t!("picker.none").to_string()));
                 } else {
                     let current = self.current.clone();
-                    // Virtualizada: a conta pode ter milhares de roles.
+                    // Virtualized: the account may have thousands of roles.
                     out = out.child(
                         uniform_list("picker-list", items.len(), cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
                             let theme = cx.theme().clone();

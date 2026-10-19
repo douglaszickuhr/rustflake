@@ -13,9 +13,9 @@ use rb_core::session::Session;
 use rb_core::table::PendingEdits;
 
 pub const MAX_CELL_CHARS: usize = 200;
-/// Limite do texto no tooltip de detalhe; o valor inteiro continua no ⌘C.
+/// Text limit in the detail tooltip; the full value remains in ⌘C.
 const MAX_DETAIL_CHARS: usize = 6_000;
-/// Query mais rápida que isso não mostra o skeleton: o resultado antigo fica até o novo chegar.
+/// A query faster than this doesn't show the skeleton: the old result stays until the new one arrives.
 const BUSY_DELAY: Duration = Duration::from_millis(150);
 
 type OnSort = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
@@ -26,15 +26,15 @@ pub struct ResultGrid {
     pub sortable: bool,
     pub on_sort: Option<OnSort>,
     pub error: Option<String>,
-    /// Gravação em andamento: bloqueia novas gravações, edições e paginação.
+    /// Save in progress: blocks new saves, edits and paging.
     pub saving: bool,
     session: Option<Arc<Session>>,
     exec_id: u64,
     widths: Vec<f32>,
     loading_more: bool,
-    /// Query em andamento: o `DataTable` troca as linhas pelo skeleton animado.
+    /// Query in progress: the `DataTable` swaps the rows for the animated skeleton.
     busy: bool,
-    /// Muda a cada resultado novo; descarta lotes que chegam de um resultado antigo.
+    /// Changes with each new result; discards batches arriving from an old result.
     generation: u64,
 }
 
@@ -76,18 +76,18 @@ impl ResultGrid {
         self.loading_more
     }
 
-    /// O cursor da sessão vai fechar (outro comando vai rodar): para de paginar. Devolve se havia mais.
+    /// The session cursor is about to close (another command will run): stops paging. Returns whether there was more.
     pub fn close_cursor(&mut self) -> bool {
         self.rs.as_mut().is_some_and(|rs| std::mem::replace(&mut rs.more, false))
     }
 
-    /// Pode buscar mais linhas? Não enquanto houver linhas inseridas (elas são endereçadas
-    /// logo depois das carregadas e mudariam de índice) nem durante uma gravação.
+    /// Can it fetch more rows? Not while there are inserted rows (they are addressed
+    /// right after the loaded ones and would change index) nor during a save.
     pub fn can_page(&self) -> bool {
         self.rs.as_ref().is_some_and(|r| r.more) && !self.saving && self.edits.as_ref().is_none_or(|e| e.inserted_rows() == 0)
     }
 
-    /// Começa uma gravação se houver edições e nenhuma outra em andamento.
+    /// Starts a save if there are edits and none other in progress.
     pub fn start_save(&mut self) -> bool {
         if self.saving || self.edits.as_ref().is_none_or(PendingEdits::is_empty) {
             return false;
@@ -96,7 +96,7 @@ impl ResultGrid {
         true
     }
 
-    /// Termina a gravação; só com sucesso as edições pendentes são limpas.
+    /// Ends the save; pending edits are cleared only on success.
     pub fn finish_save(&mut self, ok: bool) {
         self.saving = false;
         if ok {
@@ -108,7 +108,7 @@ impl ResultGrid {
         self.rs.as_ref().map_or(0, ResultSet::rows)
     }
 
-    /// (texto, é NULL, foi editada, linha marcada para excluir)
+    /// (text, is NULL, was edited, row marked for deletion)
     fn cell(&self, row: usize, col: usize) -> (SharedString, bool, bool, bool) {
         let loaded = self.loaded_rows();
         let deleted = self.edits.as_ref().is_some_and(|e| e.is_deleted(row));
@@ -127,7 +127,7 @@ impl ResultGrid {
         }
     }
 
-    /// Valor completo de uma célula carregada (para cópia e edição).
+    /// Full value of a loaded cell (for copy and edit).
     pub fn full_text(&self, row: usize, col: usize) -> Option<String> {
         let loaded = self.loaded_rows();
         if let Some(v) = self.edits.as_ref().and_then(|e| e.get(row, col, loaded)) {
@@ -172,7 +172,7 @@ impl TableDelegate for ResultGrid {
 
     fn render_td(&mut self, row: usize, col: usize, _window: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
         let (text, null, edited, deleted) = self.cell(row, col);
-        // ponytail: largura estimada em ~7px por caractere; medir o texto se o palpite errar muito.
+        // ponytail: width estimated at ~7px per character; measure the text if the guess is way off.
         let width = self.widths.get(col).copied().unwrap_or(120.);
         let clipped = text.chars().count() as f32 * 7. > width - 12.;
         let detail = (!null && clipped).then(|| self.full_text(row, col)).flatten().map(|full| detail_text(&full, MAX_DETAIL_CHARS));
@@ -289,28 +289,28 @@ mod tests {
     #[::core::prelude::v1::test]
     fn closing_the_cursor_stops_paging_and_reports_it() {
         let mut g = grid_with_more();
-        assert!(g.close_cursor(), "tinha mais linhas");
+        assert!(g.close_cursor(), "had more rows");
         assert!(!g.can_page());
-        assert!(!g.close_cursor(), "já estava fechado");
+        assert!(!g.close_cursor(), "was already closed");
     }
 
     #[::core::prelude::v1::test]
     fn save_is_single_flight() {
         let mut g = grid_with_more();
-        assert!(!g.start_save(), "nada pendente");
+        assert!(!g.start_save(), "nothing pending");
         g.edits.as_mut().unwrap().set(0, 0, Some("2".into()), 1);
         assert!(g.start_save());
-        assert!(!g.start_save(), "segundo ⌘S durante a gravação");
+        assert!(!g.start_save(), "second ⌘S during the save");
         assert!(!g.can_page());
         g.finish_save(false);
-        assert!(!g.edits.as_ref().unwrap().is_empty(), "erro mantém as edições");
+        assert!(!g.edits.as_ref().unwrap().is_empty(), "error keeps the edits");
         assert!(g.start_save());
         g.finish_save(true);
         assert!(g.edits.as_ref().unwrap().is_empty());
     }
 }
 
-/// Liga o skeleton da grade depois de `BUSY_DELAY`. Guarde a task: soltá-la cancela o timer.
+/// Turns on the grid skeleton after `BUSY_DELAY`. Keep the task: dropping it cancels the timer.
 pub fn busy_later<T: 'static>(grid: &Entity<TableState<ResultGrid>>, cx: &mut Context<T>) -> Task<()> {
     let grid = grid.downgrade();
     cx.spawn(async move |_, cx| {

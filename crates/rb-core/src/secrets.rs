@@ -5,17 +5,17 @@ use crate::DbError;
 const SERVICE: &str = "dev.rustbeaver";
 const NOT_FOUND: i32 = -25300; // errSecItemNotFound
 
-/// Conta do Keychain que guarda a passphrase da chave SSH de uma conexão.
+/// Keychain account that holds the SSH key passphrase of a connection.
 pub fn ssh_account(id: &str) -> String {
     format!("ssh:{id}")
 }
 
-/// Conta do Keychain com a passphrase da chave privada Snowflake de uma conexão.
+/// Keychain account with the Snowflake private key passphrase of a connection.
 pub fn key_account(id: &str) -> String {
     format!("key:{id}")
 }
 
-/// Conta do Keychain com o ID token do SSO (reabrir sem navegador enquanto valer, ~4 h).
+/// Keychain account with the SSO ID token (reopen without a browser while valid, ~4 h).
 pub fn id_token_account(id: &str) -> String {
     format!("idtoken:{id}")
 }
@@ -47,14 +47,14 @@ pub fn delete_password(id: &str) -> Result<(), DbError> {
 mod tests {
     use super::*;
 
-    /// Mexe no Keychain real; rode manualmente: `cargo test -p rb-core keychain -- --ignored`.
+    /// Touches the real Keychain; run manually: `cargo test -p rb-core keychain -- --ignored`.
     #[test]
     #[ignore]
     fn keychain_round_trip() {
         let id = format!("rb-test-{}", std::process::id());
         assert_eq!(get_password(&id).unwrap(), None);
-        set_password(&id, "s3nha").unwrap();
-        assert_eq!(get_password(&id).unwrap().as_deref(), Some("s3nha"));
+        set_password(&id, "s3cret").unwrap();
+        assert_eq!(get_password(&id).unwrap().as_deref(), Some("s3cret"));
         delete_password(&id).unwrap();
         assert_eq!(get_password(&id).unwrap(), None);
     }

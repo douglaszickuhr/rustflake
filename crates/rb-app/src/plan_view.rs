@@ -1,4 +1,4 @@
-//! Plano de execução desenhado como diagrama: caixas por nó, setas filho → pai, zoom e detalhes.
+//! Execution plan drawn as a diagram: a box per node, child → parent arrows, zoom and details.
 
 use rust_i18n::t;
 use std::cell::Cell;
@@ -14,12 +14,12 @@ use crate::{PlanFit, PlanZoomIn, PlanZoomOut};
 
 const BOX_W: f32 = 220.0;
 const BOX_H: f32 = 84.0;
-/// Margem interna da área do diagrama (`p_4`), descontada no ajustar à tela.
+/// Inner margin of the diagram area (`p_4`), subtracted when fitting to screen.
 const PAD: f32 = 16.0;
 const GAP_X: f32 = 32.0;
 const GAP_Y: f32 = 56.0;
 
-/// 0 = neutro, 1 = vermelho forte; satura em 50%.
+/// 0 = neutral, 1 = strong red; saturates at 50%.
 fn heat(pct: f64) -> f32 {
     (pct / 50.0).clamp(0.0, 1.0) as f32
 }
@@ -28,18 +28,18 @@ fn step_zoom(z: f32, up: bool) -> f32 {
     (if up { z * 1.25 } else { z / 1.25 }).clamp(0.25, 2.0)
 }
 
-/// Zoom que cabe o diagrama inteiro na área (sem ampliar além de 1).
+/// Zoom at which the whole diagram fits the area (never enlarging beyond 1).
 fn fit_zoom(content: (f32, f32), view: (f32, f32)) -> f32 {
     (view.0 / content.0).min(view.1 / content.1).clamp(0.25, 1.0)
 }
 
-/// ⌘ + scroll: zoom contínuo (trackpad manda muitos eventos pequenos); para cima aproxima.
+/// ⌘ + scroll: continuous zoom (trackpad sends many small events); scrolling up zooms in.
 fn wheel_zoom(z: f32, dy: f32) -> f32 {
     (z * (dy / 200.0).exp()).clamp(0.25, 2.0)
 }
 
-/// Nova rolagem (≤ 0) de um eixo para que o ponto sob o ponteiro continue sob ele ao trocar o zoom.
-/// `pointer` é relativo à borda da área; o conteúdo começa depois da margem `PAD`, que não escala.
+/// New scroll offset (≤ 0) of an axis so the point under the pointer stays under it when zoom changes.
+/// `pointer` is relative to the area's edge; content starts after the `PAD` margin, which doesn't scale.
 fn zoom_anchor(offset: f32, pointer: f32, z0: f32, z1: f32) -> f32 {
     let content = (pointer - offset - PAD) / z0;
     (pointer - PAD - content * z1).min(0.0)
@@ -53,7 +53,7 @@ fn human(ms: f64) -> String {
     if ms < 1000.0 { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.0) }
 }
 
-/// Categorias do EXECUTION_TIME_BREAKDOWN, com os nomes do Query Profile.
+/// EXECUTION_TIME_BREAKDOWN categories, with the Query Profile's names.
 fn cat_label(cat: &str) -> String {
     match cat {
         "processing" => t!("plan.cat_processing").to_string(),
@@ -81,11 +81,11 @@ pub struct PlanView {
     plan: Plan,
     placed: Vec<Placed>,
     selected: Vec<usize>,
-    /// Painel da direita no resumo do Query Profile (nada selecionado). Só no plano real do Snowflake.
+    /// Right panel in the Query Profile summary (nothing selected). Only on Snowflake's real plan.
     overview: bool,
     zoom: f32,
     fitted: bool,
-    /// Área visível, medida no último quadro (ajustar à tela e zoom pelo ponteiro).
+    /// Visible area, measured in the last frame (fit to screen and zoom at pointer).
     viewport: Rc<Cell<Option<Bounds<Pixels>>>>,
     scroll: ScrollHandle,
     focus: FocusHandle,
@@ -123,7 +123,7 @@ impl PlanView {
         }
     }
 
-    /// ⌘ + scroll: muda o zoom mantendo parado o ponto sob o ponteiro.
+    /// ⌘ + scroll: changes zoom keeping the point under the pointer fixed.
     fn wheel(&mut self, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let Some(area) = self.viewport.get() else { return };
         let dy = f32::from(ev.delta.pixel_delta(px(16.0)).y);
@@ -140,7 +140,7 @@ impl PlanView {
         cx.notify();
     }
 
-    /// Como o painel do Query Profile: nós mais caros, onde o tempo foi e o que foi lido.
+    /// Like the Query Profile panel: most expensive nodes, where the time went and what was read.
     fn render_overview(&self, p: &Profile, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let head = |s: String| div().pt_2().font_weight(FontWeight::SEMIBOLD).child(s);
@@ -273,16 +273,16 @@ impl Render for PlanView {
         if !self.fitted {
             self.fit();
             if !self.fitted {
-                // A área ainda não foi medida: ajusta no próximo quadro.
+                // The area hasn't been measured yet: fits on the next frame.
                 window.request_animation_frame();
             }
         }
         let z = self.zoom;
         let theme = cx.theme();
         let (w, h) = self.content_size();
-        let nodes: Vec<&PlanNode> = self.placed.iter().map(|p| node_at(&self.plan.root, &p.path).expect("layout só tem caminhos válidos")).collect();
+        let nodes: Vec<&PlanNode> = self.placed.iter().map(|p| node_at(&self.plan.root, &p.path).expect("layout only has valid paths")).collect();
 
-        // Setas filho (topo) → pai (base), em coordenadas do conteúdo já com zoom.
+        // Child (top) → parent (bottom) arrows, in content coordinates already zoomed.
         let edges: Vec<((f32, f32), (f32, f32), f32)> = self
             .placed
             .iter()
@@ -351,11 +351,11 @@ impl Render for PlanView {
                             Some(id) => format!("{} [{id}]", n.op),
                             None => n.op.clone(),
                         }))
-                        // Sem dado nenhum, "0%" em tudo engana: o aviso no topo explica.
+                        // With no data at all, "0%" everywhere is misleading: the notice at the top explains.
                         .when(no_pct.is_none(), |d| d.child(format!("{:.0}%", n.pct))),
                 )
                 .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(theme.muted_foreground).child(n.summary.clone().or_else(|| n.object.clone()).unwrap_or_default()))
-                // Barra do % como no Query Profile (só quando há números).
+                // % bar as in the Query Profile (only when there are numbers).
                 .when(no_pct.is_none() && self.plan.analyzed, |d| {
                     d.child(div().h(px(3.0 * z)).w_full().rounded_full().bg(theme.secondary).child(div().h_full().rounded_full().bg(theme.primary).w(relative((n.pct / 100.0) as f32))))
                 })
@@ -410,7 +410,7 @@ impl Render for PlanView {
                             .track_scroll(&self.scroll)
                             .p(px(PAD))
                             .child(canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
-                            // ⌘ + scroll dá zoom; registrado num filho para rodar antes da rolagem da área.
+                            // ⌘ + scroll zooms; registered on a child to run before the area's scrolling.
                             .child(div().min_w_full().min_h_full().on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
                                 if ev.modifiers.platform {
                                     cx.stop_propagation();
@@ -429,7 +429,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn wheel_zoom_is_smooth_and_clamped() {
-        assert!(wheel_zoom(1.0, 10.0) > 1.0, "rolar para cima aproxima");
+        assert!(wheel_zoom(1.0, 10.0) > 1.0, "scrolling up zooms in");
         assert!(wheel_zoom(1.0, -10.0) < 1.0);
         assert_eq!(wheel_zoom(1.0, 0.0), 1.0);
         assert_eq!(wheel_zoom(2.0, 1000.0), 2.0);
@@ -438,11 +438,11 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn zoom_keeps_the_point_under_the_pointer() {
-        // Sem rolagem, ponteiro a 116 px (16 de margem + 100 de conteúdo): ponto de conteúdo 100 no zoom 1.
+        // No scroll, pointer at 116 px (16 margin + 100 content): content point 100 at zoom 1.
         let off = zoom_anchor(0.0, 116.0, 1.0, 2.0);
-        assert_eq!(off, -100.0, "no zoom 2 o ponto 100 vira 200; rola 100 para continuar sob o ponteiro");
-        assert_eq!(zoom_anchor(-100.0, 116.0, 2.0, 1.0), 0.0, "volta");
-        assert_eq!(zoom_anchor(0.0, 500.0, 1.0, 0.25), 0.0, "afastando no início: nunca rola para antes do começo");
+        assert_eq!(off, -100.0, "at zoom 2 point 100 becomes 200; scroll 100 to stay under the pointer");
+        assert_eq!(zoom_anchor(-100.0, 116.0, 2.0, 1.0), 0.0, "back");
+        assert_eq!(zoom_anchor(0.0, 500.0, 1.0, 0.25), 0.0, "zooming out at the start: never scrolls before the beginning");
     }
 
     #[::core::prelude::v1::test]
@@ -454,7 +454,7 @@ mod tests {
         assert_eq!(step_zoom(0.25, false), 0.25);
         assert_eq!(step_zoom(1.0, true), 1.25);
         assert_eq!(fit_zoom((1000.0, 400.0), (500.0, 400.0)), 0.5);
-        assert_eq!(fit_zoom((100.0, 100.0), (500.0, 400.0)), 1.0, "não amplia além de 1");
-        assert_eq!(fit_zoom((10_000.0, 100.0), (500.0, 400.0)), 0.25, "mínimo");
+        assert_eq!(fit_zoom((100.0, 100.0), (500.0, 400.0)), 1.0, "never enlarges beyond 1");
+        assert_eq!(fit_zoom((10_000.0, 100.0), (500.0, 400.0)), 0.25, "minimum");
     }
 }

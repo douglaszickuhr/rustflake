@@ -1,9 +1,9 @@
-//! Idioma da interface: resolve a escolha (ou o do macOS), aplica no `rust-i18n` e avisa a UI.
+//! Interface language: resolves the choice (or macOS's), applies it to `rust-i18n` and notifies the UI.
 
 use gpui_kit::*;
 use rb_core::config::{self, Language};
 
-/// Idioma escolhido; trocar o global avisa quem observa (`cx.observe_global::<Lang>`).
+/// Chosen language; changing the global notifies observers (`cx.observe_global::<Lang>`).
 pub struct Lang(pub Language);
 
 impl Global for Lang {}
@@ -26,12 +26,12 @@ fn apply(choice: Language, cx: &mut App) {
     cx.set_global(Lang(choice));
 }
 
-/// Na partida, antes de abrir a janela.
+/// At startup, before opening the window.
 pub fn init(cx: &mut App) {
     apply(config::load_settings(&config::settings_path()).language, cx);
 }
 
-/// Troca já, salva em segundo plano e redesenha tudo.
+/// Switches now, saves in the background and redraws everything.
 pub fn set(choice: Language, cx: &mut App) {
     apply(choice, cx);
     let path = config::settings_path();
@@ -44,7 +44,7 @@ pub fn set(choice: Language, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// Rótulo do seletor: nome do idioma na própria língua; `Auto` mostra o que resolveu.
+/// Picker label: language name in its own language; `Auto` shows what it resolved to.
 pub fn label(choice: Language) -> String {
     let name = |code: &str| match code {
         "pt" => "Português",
@@ -81,7 +81,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn nested_toml_keys_resolve_per_locale() {
-        // Locale explícito: o global é compartilhado entre testes paralelos.
+        // Explicit locale: the global is shared between parallel tests.
         assert_eq!(rust_i18n::t!("tree.loading", locale = "pt"), "carregando…");
         assert_eq!(rust_i18n::t!("tree.loading", locale = "es"), "cargando…");
         assert_eq!(rust_i18n::t!("tree.loading", locale = "de"), "loading…");

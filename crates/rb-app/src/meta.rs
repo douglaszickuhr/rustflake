@@ -13,11 +13,11 @@ use rb_core::session::{Credentials, Session};
 pub struct ConnTarget {
     pub cfg: ConnectionConfig,
     pub creds: Credentials,
-    /// Convenções da empresa (configuração escolhida na conexão); sem configuração, `OrgConfig::none()`.
+    /// Company conventions (configuration chosen on the connection); with no configuration, `OrgConfig::none()`.
     pub org: Arc<OrgConfig>,
 }
 
-/// Sessão dedicada a metadados + cache compartilhado por árvore e autocomplete.
+/// Dedicated session for metadata + cache shared by the tree and autocomplete.
 pub struct MetaStore {
     pub session: Arc<Session>,
     pub cache: MetaCache,
@@ -40,7 +40,7 @@ impl MetaStore {
         this
     }
 
-    /// Recarrega a raiz da árvore (schemas no Postgres, databases no Snowflake) e o contexto.
+    /// Reloads the tree root (schemas on Postgres, databases on Snowflake) and the context.
     pub fn reload_roots(&mut self, cx: &mut Context<Self>) {
         let s = self.session.clone();
         cx.spawn(async move |this, cx| {
@@ -54,7 +54,7 @@ impl MetaStore {
             this.update(cx, |m, cx| {
                 match res {
                     Ok((schemas, dbs, ctx)) => {
-                        // No Snowflake os schemas chegam por database (MetaRequest::Schemas).
+                        // On Snowflake the schemas arrive per database (MetaRequest::Schemas).
                         if let Some(schemas) = schemas {
                             m.cache.schemas = schemas;
                         }
@@ -71,8 +71,8 @@ impl MetaStore {
         .detach();
     }
 
-    /// Corrige o cache com o diff do índice: refaz por cima o que a árvore já carregou (sem apagar
-    /// antes, para colunas e nós abertos continuarem) e tira os schemas que sumiram.
+    /// Fixes the cache with the index diff: redoes on top whatever the tree already loaded (without clearing
+    /// first, so columns and open nodes persist) and removes the schemas that disappeared.
     pub fn apply_index_diff(&mut self, d: IndexDiff, cx: &mut Context<Self>) {
         let plan = refresh_plan(&d, &self.cache);
         for s in plan.drop_schemas {
@@ -87,19 +87,19 @@ impl MetaStore {
         cx.notify();
     }
 
-    /// Algum pedaço do catálogo ainda a caminho.
+    /// Some piece of the catalog is still on its way.
     pub fn loading(&self) -> bool {
         !self.inflight.is_empty()
     }
 
-    /// Carrega um pedaço do catálogo se ainda não estiver em cache nem a caminho.
+    /// Loads a piece of the catalog if it is not already cached or on its way.
     pub fn request(&mut self, req: MetaRequest, cx: &mut Context<Self>) {
         if !self.cache.has(&req) {
             self.fetch(req, cx);
         }
     }
 
-    /// Busca no banco mesmo com o pedaço em cache; a resposta substitui o que havia.
+    /// Fetches from the database even when the piece is cached; the response replaces what was there.
     fn fetch(&mut self, req: MetaRequest, cx: &mut Context<Self>) {
         if !self.inflight.insert(req.clone()) {
             return;
@@ -132,7 +132,7 @@ impl MetaStore {
                         m.cache.loaded_dbs.insert(db);
                     }
                     (Err(e), _) => m.error = Some(e.to_string()),
-                    _ => unreachable!("resposta sempre corresponde ao pedido"),
+                    _ => unreachable!("response always matches the request"),
                 }
                 cx.notify();
             })

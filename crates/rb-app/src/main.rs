@@ -28,19 +28,19 @@ use rb_core::session::Engine;
 
 gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment]);
 
-/// Runtime de banco compartilhado pela aplicação.
+/// Database runtime shared by the application.
 pub struct Db(pub Engine);
 
 impl Global for Db {}
 
-// Ícones fora do conjunto padrão do gpui-kit; só estes entram no binário.
+// Icons outside gpui-kit's default set; only these go into the binary.
 gpui_kit::assets::icon_assets!(ExtraIcons, [Database, Layers, Table, Sheet, SquareFunction, Columns3, Hash, KeyRound, ListTree, CircleUser, Funnel, Users, RotateCcwClock, Warehouse, SunMoon, Lock]);
 
 struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        // Logos (simple-icons, CC0) monocromáticos; a cor vem de quem desenha.
+        // Logos (simple-icons, CC0) monochrome; the color comes from whoever draws them.
         match path {
             "icons/postgresql.svg" => return Ok(Some(include_bytes!("../assets/icons/postgresql.svg").as_slice().into())),
             "icons/snowflake-logo.svg" => return Ok(Some(include_bytes!("../assets/icons/snowflake.svg").as_slice().into())),
@@ -59,7 +59,7 @@ impl AssetSource for AppAssets {
     }
 }
 
-/// Ícone do Dock: o binário roda sem pacote .app, então o macOS não acha um .icns.
+/// Dock icon: the binary runs without an .app bundle, so macOS can't find an .icns.
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
     use objc2::AnyThread as _;
@@ -75,11 +75,11 @@ fn set_dock_icon() {
 fn main() {
     let started = Instant::now();
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
-    let engine = Engine::new().expect("criar runtime de banco");
+    let engine = Engine::new().expect("create database runtime");
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
-        // Geist (OFL) no binário: o visual do canvas não depende do que está instalado.
+        // Geist (OFL) in the binary: the canvas look doesn't depend on what's installed.
         let fonts: Vec<std::borrow::Cow<'static, [u8]>> = vec![
             include_bytes!("../assets/fonts/Geist-Regular.ttf").as_slice().into(),
             include_bytes!("../assets/fonts/Geist-Medium.ttf").as_slice().into(),
@@ -100,11 +100,11 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("cmd-enter", RunStatement, Some("SqlTab > Input")),
             KeyBinding::new("cmd-shift-enter", RunScript, Some("SqlTab > Input")),
-            // O editor não liga nada a ShowCompletions por padrão.
+            // The editor binds nothing to ShowCompletions by default.
             KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
-            // Tab aceita a sugestão do autocomplete como o Enter; sem menu aberto, indenta.
+            // Tab accepts the autocomplete suggestion like Enter; with no menu open, it indents.
             KeyBinding::new("tab", TabKey, Some("SqlTab > Input")),
-            // ⌘⇧F formata (como no DBeaver); o localizar e substituir do editor, que usava ⌘⇧F, vai para ⌘⌥F.
+            // ⌘⇧F formats (like DBeaver); the editor's find and replace, which used ⌘⇧F, moves to ⌘⌥F.
             KeyBinding::new("cmd-shift-f", FormatSql, Some("SqlTab > Input")),
             KeyBinding::new("cmd-/", ToggleComment, Some("SqlTab > Input")),
             KeyBinding::new("cmd-alt-f", gpui_kit::component::input::Replace, Some("SqlTab > Input")),
@@ -119,7 +119,7 @@ fn main() {
             KeyBinding::new("cmd--", PlanZoomOut, Some("SqlTab")),
             KeyBinding::new("cmd-0", PlanFit, Some("SqlTab")),
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab")),
-            // O editor liga cmd-. a ToggleCodeActions; a ligação mais profunda vence.
+            // The editor binds cmd-. to ToggleCodeActions; the deeper binding wins.
             KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab > Input")),
             KeyBinding::new("cmd-.", CancelQuery, Some("TableTab")),
             KeyBinding::new("cmd-s", SaveEdits, Some("TableTab")),
@@ -131,7 +131,7 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-k", QuickOpen, Some("Workspace")),
             KeyBinding::new("cmd-y", ShowHistory, Some("Workspace")),
-            // O campo usa ↑↓ para mover o cursor; a ligação mais profunda vence.
+            // The field uses ↑↓ to move the cursor; the deeper binding wins.
             KeyBinding::new("up", QuickPrev, Some("QuickOpen > Input")),
             KeyBinding::new("down", QuickNext, Some("QuickOpen > Input")),
         ]);
@@ -141,13 +141,13 @@ fn main() {
         let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), titlebar: Some(TitlebarOptions {
                 title: None,
                 appears_transparent: true,
-                // Centro vertical da linha do título (44px + faixa de 2px).
+                // Vertical center of the title row (44px + 2px strip).
                 traffic_light_position: Some(point(px(16.), px(17.))),
             }),
             ..gpui_kit::component::TitleBar::window_options()
         };
         gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| workspace::Workspace::new(window, cx)))
-            .expect("abrir janela");
+            .expect("open window");
         cx.activate(true);
         tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "window opened");
     });

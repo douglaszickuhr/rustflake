@@ -31,10 +31,10 @@ pub fn qualified(schema: &str, table: &str) -> String {
     format!("{}.{}", quote_always(schema), quote_always(table))
 }
 
-/// SELECT da aba de tabela. O filtro é uma expressão WHERE crua digitada pelo usuário;
-/// vai entre parênteses e com quebra de linha para que um `--` não engula o ORDER BY.
-/// Linhas que a aba de tabela traz no Snowflake: lá um SELECT sem limite processa a tabela inteira.
-/// No Postgres não há limite: o portal entrega `FETCH_ROWS` por vez conforme a grade rola.
+/// SELECT for the table tab. The filter is a raw WHERE expression typed by the user;
+/// it goes in parentheses and with a line break so that a `--` does not swallow the ORDER BY.
+/// Rows the table tab fetches on Snowflake: there an unlimited SELECT processes the whole table.
+/// On Postgres there is no limit: the portal delivers `FETCH_ROWS` at a time as the grid scrolls.
 pub const TABLE_LIMIT: usize = 1000;
 
 pub fn select_sql(from: &str, filter: Option<&str>, order: Option<(&str, bool)>, limit: Option<usize>) -> String {
@@ -51,7 +51,7 @@ pub fn select_sql(from: &str, filter: Option<&str>, order: Option<(&str, bool)>,
     }
 }
 
-/// As colunas do resultado ainda são as do alvo de edição? (A tabela pode ter mudado.)
+/// Are the result columns still those of the edit target? (The table may have changed.)
 pub fn columns_match(target: &EditTarget, cols: &[crate::batch::ColumnInfo]) -> bool {
     target.columns.len() == cols.len() && target.columns.iter().zip(cols).all(|(t, c)| t.name == c.name)
 }
@@ -92,8 +92,8 @@ fn writable(t: &EditTarget, cols: &[(usize, Option<String>)]) -> Result<(), DbEr
     }
 }
 
-/// Gera os statements parametrizados. Valores vão como texto e o Postgres converte
-/// com `($n::text)::<tipo>`, o que cobre enum, json, array, uuid etc.
+/// Generates the parameterized statements. Values go as text and Postgres converts
+/// with `($n::text)::<type>`, which covers enum, json, array, uuid etc.
 pub fn build_sql(t: &EditTarget, edits: &[RowEdit]) -> Result<Vec<SqlWithParams>, DbError> {
     let pk_cols = t.pk();
     if pk_cols.is_empty() {
@@ -149,7 +149,7 @@ impl PendingEdits {
         self.inserted.len()
     }
 
-    /// `loaded` = linhas vindas do banco; índices a partir dele são linhas inseridas.
+    /// `loaded` = rows coming from the database; indexes from it onward are inserted rows.
     pub fn set(&mut self, row: usize, col: usize, value: Option<String>, loaded: usize) {
         if row >= loaded {
             if let Some(r) = self.inserted.get_mut(row - loaded) {
@@ -168,7 +168,7 @@ impl PendingEdits {
         self.inserted.push(BTreeMap::new());
     }
 
-    /// Marca/desmarca exclusão; numa linha inserida, simplesmente a remove.
+    /// Marks/unmarks deletion; on an inserted row, simply removes it.
     pub fn toggle_delete(&mut self, row: usize, loaded: usize) {
         if row >= loaded {
             if row - loaded < self.inserted.len() {
@@ -183,7 +183,7 @@ impl PendingEdits {
         self.deleted.contains(&row)
     }
 
-    /// Ordem: exclusões, alterações, inserções. A PK vem do valor original (`original(row, col)`).
+    /// Order: deletions, updates, inserts. The PK comes from the original value (`original(row, col)`).
     pub fn to_row_edits(&self, target: &EditTarget, original: impl Fn(usize, usize) -> Option<String>) -> Vec<RowEdit> {
         let pk = target.pk();
         let pk_of = |row: usize| pk.iter().map(|&c| original(row, c)).collect::<Vec<_>>();
@@ -304,7 +304,7 @@ mod tests {
         use tokio_postgres::types::Type;
         let info = |names: &[&str]| names.iter().map(|n| ColumnInfo { name: n.to_string(), type_: Type::TEXT }).collect::<Vec<_>>();
         assert!(columns_match(&target(), &info(&["id", "Name", "twice", "mood"])));
-        assert!(!columns_match(&target(), &info(&["id", "Name", "twice", "mood", "nova"])));
+        assert!(!columns_match(&target(), &info(&["id", "Name", "twice", "mood", "new"])));
         assert!(!columns_match(&target(), &info(&["Name", "twice", "mood"])));
     }
 
@@ -312,15 +312,15 @@ mod tests {
     fn pending_edits_produce_deletes_updates_inserts() {
         let mut p = PendingEdits::default();
         assert!(p.is_empty());
-        p.set(0, 1, s("novo"), 2);
+        p.set(0, 1, s("new"), 2);
         p.set(1, 1, s("vai sumir"), 2);
         p.toggle_delete(1, 2);
         p.add_row();
-        p.set(2, 0, s("10"), 2); // linha 2 = primeira inserida
+        p.set(2, 0, s("10"), 2); // row 2 = first inserted
         p.add_row();
-        p.toggle_delete(3, 2); // remove a segunda inserida
+        p.toggle_delete(3, 2); // removes the second inserted
         assert_eq!(p.inserted_rows(), 1);
-        assert_eq!(p.get(0, 1, 2), Some(&s("novo")));
+        assert_eq!(p.get(0, 1, 2), Some(&s("new")));
         assert!(p.is_deleted(1));
 
         let original = |row: usize, _col: usize| s(&format!("pk{row}"));
@@ -328,7 +328,7 @@ mod tests {
             p.to_row_edits(&target(), original),
             vec![
                 RowEdit::Delete { pk: vec![s("pk1")] },
-                RowEdit::Update { pk: vec![s("pk0")], changes: vec![(1, s("novo"))] },
+                RowEdit::Update { pk: vec![s("pk0")], changes: vec![(1, s("new"))] },
                 RowEdit::Insert { values: vec![(0, s("10"))] },
             ]
         );

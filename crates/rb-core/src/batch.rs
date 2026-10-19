@@ -14,7 +14,7 @@ pub struct ColumnInfo {
 
 const NULL: u32 = u32::MAX;
 
-/// Lote de linhas em formato binário cru: um buffer contíguo + (offset, len) por célula.
+/// Batch of rows in raw binary format: one contiguous buffer + (offset, len) per cell.
 #[derive(Debug, Default)]
 pub struct Batch {
     data: Vec<u8>,
@@ -30,7 +30,7 @@ pub struct ResultSet {
     ends: Vec<usize>,
 }
 
-/// Aceita qualquer tipo e guarda os bytes crus, sem decodificar.
+/// Accepts any type and keeps the raw bytes, without decoding.
 struct Raw<'a>(&'a [u8]);
 
 impl<'a> FromSql<'a> for Raw<'a> {
@@ -52,7 +52,7 @@ impl Batch {
         let mut b = Batch { data: Vec::new(), cells: Vec::with_capacity(rows.len() * ncols), ncols };
         for row in rows {
             for i in 0..ncols {
-                // Raw aceita todos os tipos; erro aqui só seria coluna inexistente.
+                // Raw accepts all types; an error here could only be a nonexistent column.
                 let v = row.try_get::<_, Option<Raw>>(i).ok().flatten();
                 b.push_cell(v.map(|r| r.0));
             }
@@ -81,7 +81,7 @@ impl Batch {
         if self.ncols == 0 { 0 } else { self.cells.len() / self.ncols }
     }
 
-    /// Bytes crus da célula; `None` = NULL.
+    /// Raw cell bytes; `None` = NULL.
     pub fn cell(&self, row: usize, col: usize) -> Option<&[u8]> {
         let (off, len) = self.cells[row * self.ncols + col];
         (len != NULL).then(|| &self.data[off as usize..(off + len) as usize])
@@ -108,7 +108,7 @@ impl ResultSet {
         self.ends.last().copied().unwrap_or(0)
     }
 
-    /// Bytes crus da célula; `None` = NULL ou fora do intervalo (seleção antiga na UI).
+    /// Raw cell bytes; `None` = NULL or out of range (stale selection in the UI).
     pub fn raw(&self, row: usize, col: usize) -> Option<&[u8]> {
         if row >= self.rows() || col >= self.columns.len() {
             return None;
@@ -118,17 +118,17 @@ impl ResultSet {
         self.batches[b].cell(row - start, col)
     }
 
-    /// Valor completo como texto; `None` = NULL.
+    /// Full value as text; `None` = NULL.
     pub fn text(&self, row: usize, col: usize) -> Option<String> {
         self.raw(row, col).map(|r| decode::cell_text(&self.columns[col].type_, r))
     }
 
-    /// Valor para exibição (uma linha, truncado); `None` = NULL.
+    /// Value for display (one line, truncated); `None` = NULL.
     pub fn display(&self, row: usize, col: usize, max_chars: usize) -> Option<String> {
         self.raw(row, col).map(|r| decode::display_text(&self.columns[col].type_, r, max_chars))
     }
 
-    /// TSV no formato que planilhas aceitam: NULL vira vazio, campos especiais vão entre aspas.
+    /// TSV in the format spreadsheets accept: NULL becomes empty, special fields are quoted.
     pub fn to_tsv(&self, rows: Range<usize>, cols: &[usize]) -> String {
         let mut out = String::new();
         for row in rows {

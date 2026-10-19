@@ -1,5 +1,5 @@
-//! Projeto dbt local (clone): manifest.json, run_results.json e git, para a visão de tabela.
-//! Só leitura; o único processo que roda é `dbt parse` (e `git` para o link do GitHub).
+//! Local dbt project (clone): manifest.json, run_results.json and git, for the table view.
+//! Read-only; the only process that runs is `dbt parse` (and `git` for the GitHub link).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ pub struct Node {
     pub file: String,
     pub fqn: Vec<String>,
     pub description: String,
-    /// (nome, descrição) na ordem do schema.yml.
+    /// (name, description) in schema.yml order.
     pub columns: Vec<(String, String)>,
     pub materialized: Option<String>,
     pub strategy: Option<String>,
@@ -41,7 +41,7 @@ pub struct TestDef {
     pub kind: String,
     pub attached: String,
     pub column: Option<String>,
-    /// relationships: "col → modelo"; accepted_values: quantos valores.
+    /// relationships: "col → model"; accepted_values: how many values.
     pub detail: Option<String>,
 }
 
@@ -66,7 +66,7 @@ struct RawManifest {
     parent_map: HashMap<String, Vec<String>>,
 }
 
-/// Só os campos usados: o manifest pode ter dezenas de MB.
+/// Only the fields used: the manifest can be tens of MB.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct RawNode {
@@ -105,7 +105,7 @@ struct RawTestMeta {
     kwargs: serde_json::Map<String, Value>,
 }
 
-/// Texto ou lista de textos (unique_key, tags).
+/// Text or list of texts (unique_key, tags).
 fn strings(v: &Value) -> Vec<String> {
     match v {
         Value::String(s) => vec![s.clone()],
@@ -121,7 +121,7 @@ fn text(v: &Value) -> String {
     }
 }
 
-/// Objeto aninhado vira `a.b.c: valor`; lista de textos vira "x, y".
+/// Nested object becomes `a.b.c: value`; list of texts becomes "x, y".
 fn flatten_meta(prefix: &str, v: &Value, out: &mut Vec<(String, String)>) {
     match v {
         Value::Object(o) => o.iter().for_each(|(k, v)| flatten_meta(&format!("{prefix}.{k}"), v, out)),
@@ -145,7 +145,7 @@ fn ref_target(v: &str) -> String {
 pub fn parse_manifest(json: &str) -> Result<Manifest, DbError> {
     let raw: RawManifest = serde_json::from_str(json).map_err(|e| DbError::Config(t!("err.dbt_manifest", error = e).to_string()))?;
     let mut m = Manifest { child_map: raw.child_map, parent_map: raw.parent_map, ..Default::default() };
-    // Sources antes: se um modelo tem a mesma relation, o modelo vence (sempre, não ao acaso do HashMap).
+    // Sources first: if a model has the same relation, the model wins (always, not by HashMap luck).
     for (id, n) in raw.sources.into_iter().chain(raw.nodes) {
         if n.resource_type == "test" {
             if let (Some(tm), Some(att)) = (n.test_metadata, n.attached_node) {
@@ -159,7 +159,7 @@ pub fn parse_manifest(json: &str) -> Result<Manifest, DbError> {
             }
             continue;
         }
-        // dbt copia `meta` para `config.meta`: junta, achata e tira as repetições.
+        // dbt copies `meta` to `config.meta`: merge, flatten and drop the repeats.
         let mut meta: Vec<(String, String)> = Vec::new();
         for (k, v) in n.config.meta.iter().chain(n.meta.iter()) {
             flatten_meta(k, v, &mut meta);
@@ -200,8 +200,8 @@ impl Manifest {
         self.by_relation.get(&key).and_then(|id| self.nodes.get(id))
     }
 
-    /// Exato pela relation; senão, um único nó com o mesmo nome de tabela (manifest gerado com
-    /// outro target, ex. dev: database/schema diferentes). `bool` = casou exato.
+    /// Exact by relation; otherwise a single node with the same table name (manifest generated with
+    /// another target, e.g. dev: different database/schema). `bool` = matched exactly.
     pub fn find_table(&self, db: &str, schema: &str, name: &str) -> Option<(&Node, bool)> {
         if let Some(n) = self.by_table(db, schema, name) {
             return Some((n, true));
@@ -218,7 +218,7 @@ impl Manifest {
         self.tests.iter().filter(|t| t.attached == uid).collect()
     }
 
-    /// Camada para a linhagem: primeira pasta sob `models/`; sources e seeds são "Sources".
+    /// Layer for lineage: first folder under `models/`; sources and seeds are "Sources".
     pub fn layer(&self, uid: &str) -> String {
         let Some(n) = self.nodes.get(uid) else { return "Sources".into() };
         if n.resource_type != "model" && n.resource_type != "snapshot" {
@@ -235,7 +235,7 @@ impl Manifest {
     }
 }
 
-/// `unique_id` → (status, completed_at) da última execução; só se veio do mesmo target.
+/// `unique_id` → (status, completed_at) of the last run; only if it came from the same target.
 pub fn parse_run_results(json: &str, target: &str) -> HashMap<String, (String, String)> {
     let Ok(v) = serde_json::from_str::<Value>(json) else { return HashMap::new() };
     if v.pointer("/args/target").and_then(Value::as_str) != Some(target) {
@@ -254,7 +254,7 @@ pub fn parse_run_results(json: &str, target: &str) -> HashMap<String, (String, S
         .collect()
 }
 
-/// Remote do git → página do repo no GitHub (SSH, HTTPS ou ssh://).
+/// Git remote → GitHub repo page (SSH, HTTPS or ssh://).
 pub fn github_url(remote: &str) -> Option<String> {
     let r = remote.trim().trim_end_matches(".git");
     let path = r
@@ -293,20 +293,20 @@ pub fn commit_url(g: &GitInfo, sha: &str) -> Option<String> {
     Some(format!("{}/commit/{sha}", g.repo.as_ref()?))
 }
 
-/// Uma linha do `git blame`: quem mexeu por último e em qual commit.
+/// One `git blame` line: who touched it last and in which commit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlameLine {
-    /// 7 caracteres.
+    /// 7 characters.
     pub sha: String,
     pub author: String,
     pub time: i64,
     pub summary: String,
     pub text: String,
-    /// Mudança local ainda não commitada.
+    /// Local change not yet committed.
     pub uncommitted: bool,
 }
 
-/// `git blame --porcelain`: os dados do commit vêm só na primeira linha dele; depois só o sha.
+/// `git blame --porcelain`: commit data comes only on its first line; afterwards only the sha.
 pub fn parse_blame(out: &str) -> Vec<BlameLine> {
     let mut info: HashMap<String, (String, i64, String)> = HashMap::new();
     let mut lines = Vec::new();
@@ -336,7 +336,7 @@ pub fn parse_blame(out: &str) -> Vec<BlameLine> {
     lines
 }
 
-/// `git blame` do arquivo do modelo (rodar fora da thread de UI).
+/// `git blame` of the model file (run off the UI thread).
 pub fn blame(dir: &Path, file: &str) -> Result<Vec<BlameLine>, DbError> {
     let out = std::process::Command::new("git").arg("-C").arg(dir).args(["blame", "--porcelain", "--", file]).output().map_err(|e| DbError::Io(e.to_string()))?;
     if !out.status.success() {
@@ -345,7 +345,7 @@ pub fn blame(dir: &Path, file: &str) -> Result<Vec<BlameLine>, DbError> {
     Ok(parse_blame(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// `~/x` → caminho absoluto.
+/// `~/x` → absolute path.
 pub fn expand_dir(dir: &str) -> PathBuf {
     match dir.strip_prefix("~/") {
         Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
@@ -363,7 +363,7 @@ pub struct DbtProject {
     pub parsed_at: Option<SystemTime>,
 }
 
-/// Lê `target/manifest.json` (+ run_results e git). Rodar fora da thread de UI: arquivo grande.
+/// Reads `target/manifest.json` (+ run_results and git). Run off the UI thread: large file.
 pub fn load(cfg: &DbtConfig) -> Result<DbtProject, DbError> {
     let dir = expand_dir(&cfg.project_dir);
     let path = dir.join("target").join("manifest.json");
@@ -374,7 +374,7 @@ pub fn load(cfg: &DbtConfig) -> Result<DbtProject, DbError> {
     Ok(DbtProject { git: git_info(&dir), dir, target: cfg.target.clone(), manifest, results, parsed_at })
 }
 
-/// Tira as cores do terminal (`ESC[…m`) da saída do dbt.
+/// Strips terminal colors (`ESC[…m`) from dbt output.
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars().peekable();
@@ -393,19 +393,19 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// `env -0`: pares `CHAVE=valor` separados por NUL (valores podem ter `=` e quebras de linha).
+/// `env -0`: `KEY=value` pairs separated by NUL (values may contain `=` and line breaks).
 pub fn parse_env(out: &str) -> Vec<(String, String)> {
     out.split('\0').filter_map(|kv| kv.split_once('=')).filter(|(k, _)| !k.is_empty()).map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-/// Ambiente do shell de login do usuário: aberto pelo Dock/Finder, o app herda só
-/// `/usr/bin:/bin:…`, sem o dbt do brew/pipx nem as variáveis que o profiles.yml lê (`env_var`).
+/// The user's login shell environment: when opened from the Dock/Finder, the app inherits only
+/// `/usr/bin:/bin:…`, without brew/pipx dbt or the variables profiles.yml reads (`env_var`).
 fn login_env() -> Vec<(String, String)> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     std::process::Command::new(shell).args(["-lc", "env -0"]).output().ok().filter(|o| o.status.success()).map(|o| parse_env(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
 }
 
-/// Perfis do `~/.aws/config` (`[default]`, `[profile x]`), na ordem do arquivo.
+/// Profiles from `~/.aws/config` (`[default]`, `[profile x]`), in file order.
 pub fn aws_profiles(config: &str) -> Vec<String> {
     config
         .lines()
@@ -418,18 +418,18 @@ pub fn read_aws_profiles() -> Vec<String> {
     std::fs::read_to_string(expand_dir("~/.aws/config")).map(|c| aws_profiles(&c)).unwrap_or_default()
 }
 
-/// O `dbt parse` caiu porque a sessão SSO da AWS (dbt-loom → S3) venceu.
+/// `dbt parse` failed because the AWS SSO session (dbt-loom → S3) expired.
 pub fn needs_aws_login(output: &str) -> bool {
     let o = output.to_lowercase();
     o.contains("aws sso login") || (o.contains("sso") && o.contains("token") && o.contains("expired"))
 }
 
-/// O `AWS_PROFILE` do shell de login (o que o dbt usaria sem configuração).
+/// The login shell's `AWS_PROFILE` (what dbt would use with no configuration).
 pub fn shell_aws_profile() -> Option<String> {
     login_env().into_iter().find(|(k, _)| k == "AWS_PROFILE").map(|(_, v)| v).filter(|v| !v.is_empty())
 }
 
-/// `aws sso login --profile <p>`: abre o navegador e espera o login (até 5 min).
+/// `aws sso login --profile <p>`: opens the browser and waits for the login (up to 5 min).
 pub fn aws_login(profile: &str) -> Result<(), DbError> {
     let out = std::process::Command::new("aws")
         .args(["sso", "login", "--profile", profile])
@@ -443,80 +443,80 @@ pub fn aws_login(profile: &str) -> Result<(), DbError> {
     }
 }
 
-/// O dbt do virtualenv do projeto, se houver: é o que o projeto espera.
+/// The project virtualenv's dbt, if any: it is what the project expects.
 pub fn venv_dbt(dir: &Path) -> Option<PathBuf> {
     let p = dir.join(".venv").join("bin").join("dbt");
     p.is_file().then_some(p)
 }
 
-/// Ordem de tentativa: o dbt do venv do projeto, o dbt Fusion (motor em Rust, `dbtf`) e o dbt-core.
+/// Order of attempts: the project venv's dbt, dbt Fusion (Rust engine, `dbtf`) and dbt-core.
 pub fn dbt_candidates(dir: &Path) -> Vec<PathBuf> {
     venv_dbt(dir).into_iter().chain([PathBuf::from("dbtf"), PathBuf::from("dbt")]).collect()
 }
 
-/// Últimas `n` linhas do log (sem cores), para acompanhar o `dbt parse` ao vivo.
+/// Last `n` lines of the log (no colors), to follow `dbt parse` live.
 pub fn log_tail(log: &Path, n: usize) -> Vec<String> {
     let text = strip_ansi(&std::fs::read_to_string(log).unwrap_or_default());
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].iter().map(|l| l.to_string()).collect()
 }
 
-/// Um log por execução: duas conexões podem rodar Refresh ao mesmo tempo.
+/// One log per run: two connections may Refresh at the same time.
 pub fn log_path() -> PathBuf {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!("rb-dbt-parse-{}-{n}.log", std::process::id()))
 }
 
-/// `dbt parse --target <t>` na pasta: só lê arquivos, não consulta o warehouse. Teto de 120 s.
+/// `dbt parse --target <t>` in the folder: only reads files, does not query the warehouse. 120 s cap.
 pub fn refresh(cfg: &DbtConfig) -> Result<(), DbError> {
     refresh_logged(cfg, &log_path())
 }
 
-/// Igual ao `refresh`, com o log num caminho conhecido: a tela lê enquanto o dbt roda.
+/// Same as `refresh`, with the log at a known path: the screen reads it while dbt runs.
 pub fn refresh_logged(cfg: &DbtConfig, log: &Path) -> Result<(), DbError> {
     run_dbt(cfg, &["parse", "--target", &cfg.target], log)
 }
 
-/// `dbt compile` só do modelo: pode consultar o warehouse (macros com run_query), diferente do parse.
+/// `dbt compile` for the model only: may query the warehouse (macros with run_query), unlike parse.
 pub fn compile_args<'a>(model: &'a str, target: &'a str) -> Vec<&'a str> {
     vec!["compile", "--select", model, "--target", target]
 }
 
-/// Onde o dbt grava o SQL compilado: `target/compiled/<projeto>/<arquivo do modelo>`.
+/// Where dbt writes the compiled SQL: `target/compiled/<project>/<model file>`.
 pub fn compiled_path(dir: &Path, unique_id: &str, file: &str) -> Option<PathBuf> {
     let project = unique_id.split('.').nth(1)?;
     Some(dir.join("target").join("compiled").join(project).join(file))
 }
 
-/// Compila só este modelo e devolve o SQL compilado.
+/// Compiles only this model and returns the compiled SQL.
 pub fn compile_model(cfg: &DbtConfig, node: &Node, log: &Path) -> Result<String, DbError> {
     run_dbt(cfg, &compile_args(&node.name, &cfg.target), log)?;
     let path = compiled_path(&expand_dir(&cfg.project_dir), &node.unique_id, &node.file).ok_or_else(|| DbError::Config(node.unique_id.clone()))?;
     std::fs::read_to_string(&path).map_err(|e| DbError::Io(format!("{}: {e}", path.display())))
 }
 
-/// SQL compilado já existente em disco (de um compile/run anterior) e quando foi gerado.
+/// Already existing compiled SQL on disk (from a previous compile/run) and when it was generated.
 pub fn compiled_on_disk(dir: &Path, node: &Node) -> Option<(String, SystemTime)> {
     let p = compiled_path(dir, &node.unique_id, &node.file)?;
     let sql = std::fs::read_to_string(&p).ok()?;
     Some((sql, std::fs::metadata(&p).and_then(|m| m.modified()).ok()?))
 }
 
-/// Roda o dbt na pasta do projeto com o ambiente do shell de login; teto de 120 s; saída em `log`.
+/// Runs dbt in the project folder with the login shell environment; 120 s cap; output in `log`.
 fn run_dbt(cfg: &DbtConfig, args: &[&str], log: &Path) -> Result<(), DbError> {
     let dir = expand_dir(&cfg.project_dir);
     let log = log.to_path_buf();
     let file = std::fs::File::create(&log).map_err(|e| DbError::Io(e.to_string()))?;
     let err_file = file.try_clone().map_err(|e| DbError::Io(e.to_string()))?;
     let env = login_env();
-    // O primeiro executável que existir (o PATH do shell resolve pipx/brew/Fusion).
+    // The first executable that exists (the shell PATH resolves pipx/brew/Fusion).
     let mut spawned = None;
     for program in dbt_candidates(&dir) {
         let (out, err) = (file.try_clone().map_err(|e| DbError::Io(e.to_string()))?, err_file.try_clone().map_err(|e| DbError::Io(e.to_string()))?);
         let mut cmd = std::process::Command::new(&program);
         cmd.envs(env.iter().cloned()).env("DBT_USE_COLORS", "false");
-        // Perfil escolhido na conexão vence o do shell (dbt-loom/S3).
+        // Profile chosen on the connection wins over the shell's (dbt-loom/S3).
         if let Some(p) = &cfg.aws_profile {
             cmd.env("AWS_PROFILE", p);
         }
@@ -538,7 +538,7 @@ fn run_dbt(cfg: &DbtConfig, args: &[&str], log: &Path) -> Result<(), DbError> {
         }
         if started.elapsed() > Duration::from_secs(120) {
             let _ = child.kill();
-            // Sem o wait o processo morto fica como zumbi.
+            // Without wait the dead process stays as a zombie.
             let _ = child.wait();
             break None;
         }
@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn manifest_nodes_are_found_by_relation_regardless_of_quotes_and_case() {
         let m = parse_manifest(MANIFEST).unwrap();
-        let n = m.by_table("sales_prod", "MART_CRM", "cost_daily").expect("modelo");
+        let n = m.by_table("sales_prod", "MART_CRM", "cost_daily").expect("model");
         assert_eq!(n.unique_id, "model.proj.cost_daily");
         assert_eq!((n.materialized.as_deref(), n.strategy.as_deref()), (Some("incremental"), Some("merge")));
         assert_eq!(n.unique_key, vec!["usage_date", "account_id"]);
@@ -601,8 +601,8 @@ mod tests {
         assert!(n.meta.contains(&("tier".to_string(), "gold".to_string())));
         assert_eq!(n.compiled_code.as_deref(), Some("select 2"));
         assert_eq!(m.by_table("STAGING_PROD", "STG_AWS", "STG_AWS__ACCOUNTS").unwrap().owner.as_deref(), Some("ingest"), "meta.owner");
-        assert_eq!(m.by_table("STAGING_PROD", "STG_AWS", "STG_AWS__ACCOUNTS").unwrap().unique_key, vec!["account_id"], "unique_key texto");
-        assert!(m.by_table("RAW_PROD", "AWS_ORG", "ACCOUNTS").is_some(), "source também");
+        assert_eq!(m.by_table("STAGING_PROD", "STG_AWS", "STG_AWS__ACCOUNTS").unwrap().unique_key, vec!["account_id"], "unique_key text");
+        assert!(m.by_table("RAW_PROD", "AWS_ORG", "ACCOUNTS").is_some(), "source too");
     }
 
     #[test]
@@ -632,7 +632,7 @@ mod tests {
         let r = parse_run_results(rr, "prod");
         assert_eq!(r["test.proj.nn"], ("pass".to_string(), "2026-10-16T09:00:00Z".to_string()));
         assert!(parse_run_results(rr, "dev").is_empty());
-        assert!(parse_run_results(r#"{"results": []}"#, "prod").is_empty(), "sem target: não dá para confirmar");
+        assert!(parse_run_results(r#"{"results": []}"#, "prod").is_empty(), "no target: cannot confirm");
     }
 
     #[test]
@@ -660,7 +660,7 @@ mod tests {
     fn project_venv_dbt_wins() {
         let dir = std::env::temp_dir().join(format!("rb-dbt-venv-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(".venv/bin")).unwrap();
-        assert_eq!(venv_dbt(&dir), None, "sem o arquivo, nada");
+        assert_eq!(venv_dbt(&dir), None, "no file, nothing");
         std::fs::write(dir.join(".venv/bin/dbt"), "").unwrap();
         assert_eq!(venv_dbt(&dir), Some(dir.join(".venv/bin/dbt")));
         let _ = std::fs::remove_dir_all(&dir);
@@ -689,7 +689,7 @@ mod tests {
         }}"#).unwrap();
         let (n, exact) = m.find_table("SALES_PROD", "MART_CX", "DIM_PRODUCT_GROUPS").unwrap();
         assert_eq!((n.unique_id.as_str(), exact), ("model.p.a", false));
-        assert!(m.find_table("SALES_PROD", "X", "DUP").is_none(), "nome ambíguo: não chuta");
+        assert!(m.find_table("SALES_PROD", "X", "DUP").is_none(), "ambiguous name: no guessing");
         assert_eq!(m.find_table("DEV_JD", "S1", "DUP").map(|(n, e)| (n.unique_id.as_str(), e)), Some(("model.p.b", true)));
     }
 

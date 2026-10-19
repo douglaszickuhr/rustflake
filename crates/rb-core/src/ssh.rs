@@ -1,4 +1,4 @@
-//! Túnel SSH em processo: resolução do `~/.ssh/config`, autenticação e known_hosts.
+//! In-process SSH tunnel: `~/.ssh/config` resolution, authentication and known_hosts.
 
 use rust_i18n::t;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use crate::DbError;
 use crate::config::SshConfig;
 
-/// De onde vem a configuração SSH do usuário. Injetável para os testes não tocarem o `~/.ssh` real.
+/// Where the user's SSH config comes from. Injectable so tests don't touch the real `~/.ssh`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshEnv {
     pub home: PathBuf,
@@ -38,14 +38,14 @@ impl SshEnv {
     }
 }
 
-/// Valores efetivos depois de aplicar TOML > `~/.ssh/config` > padrões do OpenSSH.
+/// Effective values after applying TOML > `~/.ssh/config` > OpenSSH defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshTarget {
     pub hostname: String,
     pub port: u16,
     pub user: String,
     pub identity_files: Vec<PathBuf>,
-    /// As chaves vieram do TOML ou de `IdentityFile`, não dos padrões.
+    /// The keys came from the TOML or `IdentityFile`, not from the defaults.
     pub identities_explicit: bool,
     pub agent: Option<PathBuf>,
     pub known_hosts: PathBuf,
@@ -60,7 +60,7 @@ fn expand(path: &str, home: &Path) -> PathBuf {
     }
 }
 
-/// Palavra-chave de uma linha do ssh_config (`Host x` ou `Host=x`), em minúsculas, e o resto.
+/// Keyword of an ssh_config line (`Host x` or `Host=x`), lowercased, and the rest.
 fn keyword(line: &str) -> Option<(String, &str)> {
     let l = line.trim_start();
     let end = l.find(|c: char| c.is_whitespace() || c == '=').unwrap_or(l.len());
@@ -69,7 +69,7 @@ fn keyword(line: &str) -> Option<(String, &str)> {
         .then(|| (k.to_ascii_lowercase(), rest.trim_start_matches(|c: char| c.is_whitespace() || c == '=').trim_end()))
 }
 
-/// Curinga do ssh_config (`*` e `?`) num nome de arquivo.
+/// ssh_config wildcard (`*` and `?`) in a file name.
 fn wildcard(p: &[u8], n: &[u8]) -> bool {
     match (p.first(), n.first()) {
         (None, None) => true,
@@ -80,8 +80,8 @@ fn wildcard(p: &[u8], n: &[u8]) -> bool {
     }
 }
 
-/// Arquivos de um `Include`; caminho relativo é relativo a `~/.ssh`, como no OpenSSH.
-/// ponytail: curinga só no nome do arquivo, não em diretórios.
+/// Files of an `Include`; a relative path is relative to `~/.ssh`, as in OpenSSH.
+/// ponytail: wildcard only in the file name, not in directories.
 fn include_paths(pattern: &str, home: &Path) -> Vec<PathBuf> {
     let path = if pattern.starts_with('~') || pattern.starts_with('/') { expand(pattern, home) } else { home.join(".ssh").join(pattern) };
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -100,9 +100,9 @@ fn include_paths(pattern: &str, home: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Junta os `Include` no texto e descarta blocos `Match`. O ssh2-config não avalia `Match` (aplicaria
-/// o bloco a todos os hosts) e resolveria os `Include` pelo HOME real, sem tirar o `Match` deles.
-/// ponytail: um Include dentro de um bloco Host é inlinado sem restaurar o bloco depois.
+/// Merges the `Include`s into the text and drops `Match` blocks. ssh2-config does not evaluate `Match` (it would apply
+/// the block to every host) and would resolve `Include`s via the real HOME, without removing their `Match`.
+/// ponytail: an Include inside a Host block is inlined without restoring the block afterwards.
 fn preprocess(text: &str, home: &Path, depth: u8, out: &mut String) {
     let mut skipping = false;
     for line in text.lines() {
@@ -142,7 +142,7 @@ fn read_config(env: &SshEnv) -> Result<ssh2_config::SshConfig, DbError> {
         .map_err(|e| DbError::Ssh(format!("{}: {e}", env.config_file.display())))
 }
 
-/// Nomes dos blocos `Host` do `~/.ssh/config` (com os `Include`), sem curingas nem negações, na ordem do arquivo.
+/// Names of the `Host` blocks in `~/.ssh/config` (with the `Include`s), without wildcards or negations, in file order.
 pub fn host_aliases(env: &SshEnv) -> Vec<String> {
     let Ok(raw) = std::fs::read_to_string(&env.config_file) else { return Vec::new() };
     let mut text = String::new();
@@ -191,7 +191,7 @@ impl From<russh::Error> for DbError {
     }
 }
 
-/// Confere a chave do host contra o known_hosts durante o handshake.
+/// Checks the host key against known_hosts during the handshake.
 struct Checker {
     host: String,
     port: u16,
@@ -221,8 +221,8 @@ impl client::Handler for Checker {
     }
 }
 
-/// Sessão SSH até o bastion. Cada conexão Postgres usa um canal `direct-tcpip` próprio;
-/// se a sessão SSH cair, o próximo canal a reabre.
+/// SSH session to the bastion. Each Postgres connection uses its own `direct-tcpip` channel;
+/// if the SSH session drops, the next channel reopens it.
 pub struct Tunnel {
     target: SshTarget,
     passphrase: Option<String>,
@@ -235,8 +235,8 @@ impl Tunnel {
         Ok(Tunnel { target, passphrase, handle: Mutex::new(Arc::new(handle)) })
     }
 
-    /// Canal até `host:port`, resolvidos pelo bastion.
-    /// A trava cobre só a reconexão: um destino que demora a responder não segura os outros canais.
+    /// Channel to `host:port`, resolved by the bastion.
+    /// The lock covers only the reconnect: a destination that is slow to answer does not hold up other channels.
     pub async fn open_stream(&self, host: &str, port: u16) -> Result<ChannelStream<Msg>, DbError> {
         let h = {
             let mut h = self.handle.lock().await;
@@ -275,8 +275,8 @@ async fn open_session(t: &SshTarget, passphrase: Option<&str>) -> Result<Handle<
     Ok(h)
 }
 
-/// Pede primeiro os tipos de chave de host já gravados no known_hosts, como o OpenSSH. Sem isso,
-/// um host conhecido só por ECDSA ou RSA apresentaria ed25519 e pareceria desconhecido.
+/// Asks first for the host key types already recorded in known_hosts, like OpenSSH. Without this,
+/// a host known only by ECDSA or RSA would present ed25519 and look unknown.
 fn prefer_known_key_types(config: &mut client::Config, t: &SshTarget) {
     let family = |a: &Algorithm| match a {
         Algorithm::Rsa { .. } => Algorithm::Rsa { hash: None },
@@ -295,7 +295,7 @@ fn prefer_known_key_types(config: &mut client::Config, t: &SshTarget) {
     config.preferred.key = first.into();
 }
 
-/// Pública de uma chave privada: `<arquivo>.pub` ou, sem passphrase, derivada do privado.
+/// Public half of a private key: `<file>.pub` or, without a passphrase, derived from the private one.
 fn public_key_of(path: &Path) -> Option<PublicKey> {
     let mut pub_path = path.as_os_str().to_owned();
     pub_path.push(".pub");
@@ -317,9 +317,9 @@ fn load_key(path: &Path, passphrase: Option<&str>) -> Result<PrivateKey, DbError
     }
 }
 
-/// Agente primeiro (só as chaves configuradas, ou todas se nenhuma foi configurada), depois arquivos.
-/// ponytail: sem chave configurada, um agente com muitas chaves pode esgotar o MaxAuthTries do
-/// servidor, como no OpenSSH; a saída é configurar a chave.
+/// Agent first (only the configured keys, or all if none was configured), then files.
+/// ponytail: with no configured key, an agent with many keys may exhaust the server's MaxAuthTries,
+/// as in OpenSSH; the way out is to configure the key.
 async fn authenticate(h: &mut Handle<Checker>, t: &SshTarget, passphrase: Option<&str>) -> Result<(), DbError> {
     let mut agent = match &t.agent {
         Some(sock) => AgentClient::connect_uds(sock).await.ok(),
@@ -375,7 +375,7 @@ async fn authenticate(h: &mut Handle<Checker>, t: &SshTarget, passphrase: Option
     Err(DbError::Ssh(t!("err.ssh.no_key_accepted", user = t.user, host = t.hostname, agent = via_agent.len(), files = files).to_string()))
 }
 
-/// Grava a chave do host no known_hosts, depois que o usuário confirmou o fingerprint.
+/// Writes the host key to known_hosts, after the user confirmed the fingerprint.
 pub fn trust_host(known_hosts: &Path, host: &str, port: u16, key: &str) -> Result<(), DbError> {
     let key = PublicKey::from_openssh(key).map_err(|e| DbError::Ssh(e.to_string()))?;
     russh::keys::known_hosts::learn_known_hosts_path(host, port, &key, known_hosts)
@@ -440,13 +440,13 @@ mod tests {
         let env = env_with(Some(CONFIG));
         let cfg = SshConfig {
             host: "prod-bastion".into(),
-            user: Some("outro".into()),
+            user: Some("other".into()),
             port: Some(22),
-            identity_file: Some("~/.ssh/outra".into()),
+            identity_file: Some("~/.ssh/other".into()),
         };
         let t = cfg.resolve(&env).unwrap();
-        assert_eq!((t.hostname.as_str(), t.port, t.user.as_str()), ("10.0.0.5", 22, "outro"));
-        assert_eq!(t.identity_files, vec![env.home.join(".ssh/outra")]);
+        assert_eq!((t.hostname.as_str(), t.port, t.user.as_str()), ("10.0.0.5", 22, "other"));
+        assert_eq!(t.identity_files, vec![env.home.join(".ssh/other")]);
     }
 
     #[test]

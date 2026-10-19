@@ -1,4 +1,4 @@
-//! Busca rápida (⌘K): Snowflake procura no índice local; Postgres consulta o catálogo ao vivo.
+//! Quick open (⌘K): Snowflake searches the local index; Postgres queries the live catalog.
 
 use rust_i18n::t;
 use std::rc::Rc;
@@ -19,15 +19,15 @@ use crate::{QuickNext, QuickPrev};
 type OnPick = Rc<dyn Fn(Hit, &mut Window, &mut App)>;
 type OnTab = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
-/// Aba aberta oferecida no ⌘K: índice, título e (scripts) o texto, para achar pelo conteúdo.
+/// Open tab offered in ⌘K: index, title and (scripts) the text, so it can be found by content.
 pub struct OpenTab {
     pub ix: usize,
     pub title: String,
     pub body: Option<String>,
 }
 
-/// Abas que casam: (índice, título, detalhe). Texto vazio = todas; senão o título ou uma linha do
-/// script contém o texto (sem caixa) — o detalhe é a primeira linha que casou.
+/// Matching tabs: (index, title, detail). Empty text = all; otherwise the title or a line of the
+/// script contains the text (case-insensitive) — the detail is the first line that matched.
 fn match_tabs(tabs: &[OpenTab], text: &str) -> Vec<(usize, String, String)> {
     let q = text.to_lowercase();
     tabs.iter()
@@ -50,11 +50,11 @@ pub struct QuickOpen {
     indexer: Option<Entity<Indexer>>,
     on_pick: OnPick,
     tabs: Vec<OpenTab>,
-    /// Abas que casam com o texto; vêm antes dos objetos na lista.
+    /// Tabs matching the text; they come before the objects in the list.
     tab_hits: Vec<(usize, String, String)>,
     on_tab: OnTab,
     scroll: ScrollHandle,
-    /// Versão do índice da última busca.
+    /// Index version of the last search.
     seen: Option<Instant>,
     _search: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -68,8 +68,8 @@ impl QuickOpen {
             InputEvent::PressEnter { .. } => this.pick(this.selected, window, cx),
             _ => {}
         })];
-        // Índice chegou ou foi atualizado: refaz a busca com o mesmo texto. Só quando muda de fato
-        // (o indexador também avisa ao começar um snapshot), para não voltar a seleção ao topo à toa.
+        // Index arrived or was updated: redo the search with the same text. Only when it actually changes
+        // (the indexer also signals when a snapshot starts), so the selection does not jump back to the top for nothing.
         if let Some(ix) = &indexer {
             subs.push(cx.observe(ix, |this, ix, cx| {
                 let refreshed = ix.read(cx).index.as_ref().and_then(|i| i.refreshed);
@@ -77,7 +77,7 @@ impl QuickOpen {
                     this.seen = refreshed;
                     this.search(cx);
                 }
-                // Início/fim de snapshot ou erro: o rodapé muda mesmo sem índice novo.
+                // Snapshot start/end or error: the footer changes even without a new index.
                 cx.notify();
             }));
         }
@@ -131,7 +131,7 @@ impl QuickOpen {
             None => {
                 self.status = t!("quick.searching").to_string().into();
                 let session = self.meta.read(cx).session.clone();
-                // Trocar a task cancela a busca anterior (e a espera de 250 ms).
+                // Replacing the task cancels the previous search (and the 250 ms wait).
                 self._search = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(Duration::from_millis(250)).await;
                     let res = pg_search(&session, &text).await;
@@ -197,7 +197,7 @@ fn kind_label(h: &Hit) -> String {
     .to_string()
 }
 
-/// Onde o objeto está: `DB.SCHEMA` (o que existir).
+/// Where the object lives: `DB.SCHEMA` (whichever exist).
 fn location(h: &Hit) -> String {
     match h.kind {
         HitKind::Database => String::new(),
@@ -263,7 +263,7 @@ impl Render for QuickOpen {
             .on_action(cx.listener(|q, _: &QuickPrev, _, cx| q.step(false, cx)))
             .on_action(cx.listener(|q, _: &QuickNext, _, cx| q.step(true, cx)))
             .child(Input::new(&self.input))
-            // As linhas são filhas diretas do contêiner rolável: `scroll_to_item` conta por elas.
+            // The rows are direct children of the scrollable container: `scroll_to_item` counts by them.
             .child(div().id("qo-list").flex().flex_col().max_h(px(420.)).overflow_y_scroll().track_scroll(&self.scroll).children(rows))
             .child(
                 h_flex()
@@ -284,8 +284,8 @@ impl Render for QuickOpen {
     }
 }
 
-/// Abre o popup; `on_pick` recebe o objeto escolhido (o popup já fechou).
-/// `tabs`: as abas abertas; escolher uma chama `on_tab` com o índice dela.
+/// Opens the popup; `on_pick` receives the chosen object (the popup has already closed).
+/// `tabs`: the open tabs; choosing one calls `on_tab` with its index.
 pub fn open(
     meta: Entity<MetaStore>,
     indexer: Option<Entity<Indexer>>,
@@ -298,7 +298,7 @@ pub fn open(
     let view = cx.new(|cx| QuickOpen::new(meta, indexer, Rc::new(on_pick), tabs, Rc::new(on_tab), window, cx));
     let input = view.read(cx).input.clone();
     window.open_dialog(cx, move |dialog, _, _| dialog.title(t!("quick.title").to_string()).w(px(640.)).child(view.clone()));
-    // Depois de abrir: o diálogo foca um handle próprio e guarda o foco anterior para devolver ao fechar.
+    // After opening: the dialog focuses its own handle and stores the previous focus to restore on close.
     input.update(cx, |s, cx| s.focus(window, cx));
 }
 
@@ -310,7 +310,7 @@ mod tests {
     fn open_tabs_match_by_title_or_script_text() {
         let tab = |ix, title: &str, body: Option<&str>| OpenTab { ix, title: title.into(), body: body.map(Into::into) };
         let tabs = vec![tab(0, "Prod · daily checks", Some("select 1;\n  update ORDERS set x = 1;")), tab(1, "Prod · USERS", None)];
-        assert_eq!(match_tabs(&tabs, "").len(), 2, "vazio: todas");
+        assert_eq!(match_tabs(&tabs, "").len(), 2, "empty: all");
         assert_eq!(match_tabs(&tabs, "DAILY"), vec![(0, "Prod · daily checks".into(), String::new())]);
         assert_eq!(match_tabs(&tabs, "orders"), vec![(0, "Prod · daily checks".into(), "update ORDERS set x = 1;".into())]);
         assert_eq!(match_tabs(&tabs, "users").len(), 1);

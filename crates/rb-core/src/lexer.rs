@@ -36,7 +36,7 @@ pub fn tokenize(src: &str) -> Vec<Token> {
                 TokKind::Comment
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
-                // Postgres aceita comentários de bloco aninhados.
+                // Postgres accepts nested block comments.
                 let mut depth = 0usize;
                 while i < b.len() {
                     if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
@@ -121,8 +121,8 @@ fn is_ident_char(c: u8) -> bool {
     is_ident_start(c) || c.is_ascii_digit() || c == b'$'
 }
 
-/// Fim (exclusivo) de um literal que começa em `open` com a aspa `q`.
-/// Aspa dobrada é escape; com `backslash`, `\x` também é. Sem fechamento, vai até o fim.
+/// End (exclusive) of a literal that starts at `open` with quote `q`.
+/// A doubled quote is an escape; with `backslash`, `\x` is too. Without a closing quote, runs to the end.
 fn quoted_end(b: &[u8], open: usize, q: u8, backslash: bool) -> usize {
     let mut i = open + 1;
     while i < b.len() {
@@ -142,7 +142,7 @@ fn quoted_end(b: &[u8], open: usize, q: u8, backslash: bool) -> usize {
     b.len()
 }
 
-/// Se `$` em `i` abre um dollar-quote (`$$` ou `$tag$`), devolve o fim da tag de abertura.
+/// If `$` at `i` opens a dollar-quote (`$$` or `$tag$`), returns the end of the opening tag.
 fn dollar_tag_end(b: &[u8], i: usize) -> Option<usize> {
     let mut j = i + 1;
     if j < b.len() && !b[j].is_ascii_digit() {
@@ -153,14 +153,14 @@ fn dollar_tag_end(b: &[u8], i: usize) -> Option<usize> {
     (b.get(j) == Some(&b'$')).then_some(j + 1)
 }
 
-/// Literal sem fechamento (string, identificador entre aspas, dollar-quote, comentário)?
-/// Re-tokeniza o trecho com um espaço no fim: se o token engolir o espaço, não fechou.
+/// Unterminated literal (string, quoted identifier, dollar-quote, comment)?
+/// Re-tokenizes the snippet with a trailing space: if the token swallows the space, it was not closed.
 pub fn is_unterminated(src: &str, t: &Token) -> bool {
     let probe = format!("{} ", &src[t.start..t.end]);
     tokenize(&probe).first().is_some_and(|p| p.end == probe.len())
 }
 
-/// Nome de um identificador como o Postgres enxerga: sem aspas fica minúsculo.
+/// Name of an identifier as Postgres sees it: unquoted becomes lowercase.
 pub fn ident_text(tok: &str) -> String {
     match tok.strip_prefix('"') {
         Some(rest) => rest.strip_suffix('"').unwrap_or(rest).replace("\"\"", "\""),
@@ -168,7 +168,7 @@ pub fn ident_text(tok: &str) -> String {
     }
 }
 
-/// Palavras reservadas do Postgres (inclusive as que só podem ser função ou tipo).
+/// Postgres reserved words (including those that can only be function or type).
 const RESERVED: &[&str] = &[
     "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "authorization",
     "binary", "both", "case", "cast", "check", "collate", "collation", "column", "concurrently",
@@ -184,7 +184,7 @@ const RESERVED: &[&str] = &[
     "where", "window", "with",
 ];
 
-/// Cita o identificador só quando o Postgres exigiria.
+/// Quotes the identifier only when Postgres would require it.
 pub fn quote_ident(name: &str) -> String {
     let plain = name.bytes().next().is_some_and(|c| c.is_ascii_lowercase() || c == b'_')
         && name.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'$')
@@ -192,12 +192,12 @@ pub fn quote_ident(name: &str) -> String {
     if plain { name.to_string() } else { quote_always(name) }
 }
 
-/// Sempre entre aspas: usado no SQL gerado, onde legibilidade não importa e segurança sim.
+/// Always quoted: used in generated SQL, where readability does not matter and safety does.
 pub fn quote_always(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-/// Palavras reservadas do Snowflake (não podem ser identificador sem aspas).
+/// Snowflake reserved words (cannot be an unquoted identifier).
 const RESERVED_SNOWFLAKE: &[&str] = &[
     "ALL", "ALTER", "AND", "ANY", "AS", "BETWEEN", "BY", "CASE", "CAST", "CHECK", "COLUMN", "CONNECT",
     "CONNECTION", "CONSTRAINT", "CREATE", "CROSS", "CURRENT", "CURRENT_DATE", "CURRENT_TIME",
@@ -210,7 +210,7 @@ const RESERVED_SNOWFLAKE: &[&str] = &[
     "UNION", "UNIQUE", "UPDATE", "USING", "VALUES", "VIEW", "WHEN", "WHENEVER", "WHERE", "WINDOW", "WITH",
 ];
 
-/// Cita só quando o Snowflake mudaria o nome sem aspas (ele dobra para maiúsculas).
+/// Quotes only when Snowflake would change the unquoted name (it folds to uppercase).
 pub fn quote_ident_snowflake(name: &str) -> String {
     let plain = name.bytes().next().is_some_and(|c| c.is_ascii_uppercase() || c == b'_')
         && name.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_' || c == b'$')

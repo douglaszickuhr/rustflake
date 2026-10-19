@@ -1,5 +1,5 @@
-//! Escopo das roles de classificação nas masking policies por tag. As regras (nomes das roles,
-//! tag) vêm da configuração da conexão; aqui ficam os tipos e a consulta.
+//! Scope of the classification roles in tag-based masking policies. The rules (role names,
+//! tag) come from the connection config; here live the types and the query.
 
 use crate::DbError;
 use crate::org_config::OrgConfig;
@@ -7,19 +7,19 @@ use crate::session::Session;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Scope {
-    /// `masking.global`: todo o account.
+    /// `masking.global`: the whole account.
     Global,
-    /// `masking.group`: os databases do glob da configuração.
+    /// `masking.group`: the databases matching the config glob.
     Group,
     /// `<DB>` + `scoped_suffix`.
     Database(String),
     /// `<DB>_<SCHEMA>` + `scoped_suffix`.
     Schema(String, String),
-    /// Não casou com nenhum database conhecido (ou não segue o padrão).
+    /// Matched no known database (or does not follow the pattern).
     Unresolved(String),
 }
 
-/// Colunas com a tag de classificação, agregadas por schema e valor.
+/// Columns with the classification tag, aggregated by schema and value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TagCount {
     pub database: String,
@@ -28,7 +28,7 @@ pub struct TagCount {
     pub columns: u64,
 }
 
-/// Sem tag de classificação na configuração: nada a contar.
+/// No classification tag in the config: nothing to count.
 pub async fn tag_counts(s: &Session, org: &OrgConfig) -> Result<Vec<TagCount>, DbError> {
     let Some(sql) = org.tag_counts_sql() else { return Ok(Vec::new()) };
     let (names, rows) = s.query_named(&sql).await?;

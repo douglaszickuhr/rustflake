@@ -1,7 +1,7 @@
-# Assina o app antes do cargo run: o Keychain lembra o "Permitir Sempre" entre builds.
+# Signs the app before cargo run, so the Keychain remembers "Always Allow" across builds.
 [target.'cfg(target_os = "macos")']
 runner = "scripts/dev-run.sh"
 
-# O aviso "future version of Rust" vem do crate `block` 0.1.6 (cocoa/metal via gpui-kit), não do nosso código.
+# The "future version of Rust" warning comes from the `block` 0.1.6 crate (cocoa/metal via gpui-kit), not from our code.
 [future-incompat-report]
 frequency = "never"

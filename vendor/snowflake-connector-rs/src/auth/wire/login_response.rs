@@ -6,7 +6,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoginSession {
     pub(crate) token: String,
-    /// rustbeaver: emitido quando o login pede CLIENT_STORE_TEMPORARY_CREDENTIAL (SSO).
+    /// rustbeaver: issued when the login requests CLIENT_STORE_TEMPORARY_CREDENTIAL (SSO).
     pub(crate) id_token: Option<String>,
 }
 
@@ -97,7 +97,7 @@ mod tests {
         assert_eq!(err.to_string(), "authentication rejected");
     }
 
-    // rustbeaver: cache de ID token.
+    // rustbeaver: ID token cache.
     #[test]
     fn parse_login_response_keeps_the_id_token() {
         let s = parse_login_response(r#"{"success":true,"data":{"token":"t","idToken":"id-123"}}"#).unwrap();

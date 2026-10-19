@@ -30,7 +30,7 @@ fn pending_edits_round_trip_through_postgres() {
             ResultSet::new(out.columns, out.batch, out.more)
         };
 
-        // inserir
+        // insert
         let mut p = PendingEdits::default();
         p.add_row();
         for (col, v) in [(0, "1"), (1, "Ana"), (2, "{a,\"b c\"}"), (3, "sad")] {
@@ -43,17 +43,17 @@ fn pending_edits_round_trip_through_postgres() {
         assert_eq!(rs.text(0, 2).as_deref(), Some("{a,\"b c\"}"));
         assert_eq!(rs.text(0, 3).as_deref(), Some("sad"));
 
-        // alterar para NULL usando o texto decodificado como PK
+        // update to NULL using the decoded text as the PK
         let mut p = PendingEdits::default();
         p.set(0, 1, None, rs.rows());
         s.run_in_transaction(build_sql(&target, &p.to_row_edits(&target, |r, c| rs.text(r, c))).unwrap()).await.unwrap();
         assert_eq!(read().await.text(0, 1), None);
 
-        // linha inexistente: erro e nada muda
+        // nonexistent row: error and nothing changes
         let ghost = [RowEdit::Update { pk: vec![Some("999".into())], changes: vec![(1, Some("x".into()))] }];
         assert!(matches!(s.run_in_transaction(build_sql(&target, &ghost).unwrap()).await, Err(DbError::Edit(_))));
 
-        // excluir
+        // delete
         let mut p = PendingEdits::default();
         let rs = read().await;
         p.toggle_delete(0, rs.rows());

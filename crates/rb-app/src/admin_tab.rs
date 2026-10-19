@@ -1,4 +1,4 @@
-//! Aba "Usuários & Roles" do Snowflake (somente leitura).
+//! Snowflake "Users & Roles" tab (read-only).
 
 use rust_i18n::t;
 use std::collections::{HashMap, HashSet};
@@ -35,60 +35,60 @@ pub enum Load<T> {
 #[derive(Clone, PartialEq)]
 pub enum Target {
     User(String),
-    /// Todas as roles do usuário (Usuários / NOME / Roles).
+    /// All the user's roles (Users / NAME / Roles).
     UserRoles(String),
     Role(String),
 }
 
-/// SHOW devolve no máximo 10.000 linhas.
+/// SHOW returns at most 10,000 rows.
 const SHOW_LIMIT: usize = 10_000;
 
 pub struct AdminTab {
     conn: ConnTarget,
-    /// SHOWs (rápidos).
+    /// SHOWs (fast).
     session: Option<Arc<Session>>,
-    /// ACCOUNT_USAGE (lento): o ator do Snowflake é serial, então fica em outra sessão.
+    /// ACCOUNT_USAGE (slow): the Snowflake actor is serial, so it lives in another session.
     activity_session: Option<Arc<Session>>,
     show_roles: bool,
-    /// Desabilitados ficam fora da lista até pedir.
+    /// Disabled ones stay out of the list until requested.
     show_disabled: bool,
     filter: Entity<InputState>,
     users: Load<Vec<UserInfo>>,
     roles: Load<Vec<RoleInfo>>,
     stack: Vec<Target>,
-    /// Roles diretas + efetivas por usuário.
+    /// Direct + effective roles per user.
     user_roles: HashMap<String, Load<(Vec<String>, Load<Vec<EffectiveRole>>)>>,
     role_details: HashMap<String, Load<(Vec<Grant>, Vec<Grantee>)>>,
-    /// `SHOW GRANTS TO ROLE` por role: herança e tela de role usam o mesmo.
+    /// `SHOW GRANTS TO ROLE` per role: inheritance and the role screen use the same one.
     grants_cache: HashMap<String, Vec<Grant>>,
-    /// `SHOW GRANTS TO USER`: quem concedeu cada role direta (SCIM ou à mão).
+    /// `SHOW GRANTS TO USER`: who granted each direct role (SCIM or by hand).
     direct_grants: HashMap<String, Vec<DirectGrant>>,
-    /// role → databases com USAGE (ACCOUNT_USAGE); agrupa as roles de acesso.
+    /// role → databases with USAGE (ACCOUNT_USAGE); groups the access roles.
     databases: Arc<RoleGraph>,
     roles_search: Entity<InputState>,
     unlock_filter: Option<ItemKind>,
     unused_only: bool,
-    /// Role selecionada na tela de roles (mostra os caminhos).
+    /// Role selected on the roles screen (shows the paths).
     selected: Option<String>,
-    /// Itens abertos (mostram as roles membro), por "tipo:nome".
+    /// Open items (show their member roles), by "kind:name".
     item_open: HashSet<String>,
-    /// Grupos com mais de 6 itens mostrando todos.
+    /// Groups with more than 6 items showing all of them.
     group_more: HashSet<ItemKind>,
-    /// Databases da conta: separa `<DB>_<SCHEMA>` nos nomes das roles de classificação.
+    /// Account databases: splits `<DB>_<SCHEMA>` in classification role names.
     db_names: Vec<String>,
-    /// Colunas com tag de classificação por schema; buscado só quando alguém olha a classificação.
+    /// Columns with a classification tag per schema; fetched only when someone looks at the classification.
     tag_counts: Option<Load<Arc<Vec<TagCount>>>>,
     activity: HashMap<String, Load<Activity>>,
-    /// Hierarquia de roles via ACCOUNT_USAGE; falhou → herança volta ao SHOW por role.
+    /// Role hierarchy via ACCOUNT_USAGE; failed → inheritance falls back to SHOW per role.
     graph: Load<Arc<RoleGraph>>,
-    /// Destino pedido de fora (aba Warehouses) antes de as listas carregarem.
+    /// Target requested from outside (Warehouses tab) before the lists load.
     pending: Option<Target>,
-    /// Sobe a cada ↻: resultado de task anterior ao reload é descartado.
+    /// Bumps on every ↻: results of tasks from before the reload are discarded.
     generation: u64,
     _subs: Vec<Subscription>,
 }
 
-/// Mensagem do erro + dica quando é falta de permissão.
+/// Error message + hint when it's a permission issue.
 pub fn explain(e: &rb_core::DbError, hint_key: &str) -> String {
     let msg = e.to_string();
     if admin::privilege_hint(&msg) { format!("{msg}\n{}", t!(hint_key)) } else { msg }
@@ -155,12 +155,12 @@ impl AdminTab {
         t!("admin.title").to_string().into()
     }
 
-    /// Conecta (mesmo login: o engine reaproveita a sessão Snowflake) e carrega as listas.
+    /// Connects (same login: the engine reuses the Snowflake session) and loads the lists.
     fn reload(&mut self, cx: &mut Context<Self>) {
         let (conn, existing, engine) = (self.conn.clone(), self.session.clone(), cx.global::<Db>().0.clone());
         self.users = Load::Loading;
         self.roles = Load::Loading;
-        // ↻ traz tudo de novo, não só as listas.
+        // ↻ brings everything back, not just the lists.
         self.user_roles.clear();
         self.role_details.clear();
         self.grants_cache.clear();
@@ -194,7 +194,7 @@ impl AdminTab {
                     return;
                 }
             };
-            // Cada lista aparece assim que chega: não espera a outra.
+            // Each list appears as soon as it arrives: doesn't wait for the other.
             let users = admin::users(&s).await;
             tracing::info!("admin: SHOW USERS in {:?} ({:?} rows)", t0.elapsed(), users.as_ref().map(Vec::len));
             this.update(cx, |tab, cx| {
@@ -206,7 +206,7 @@ impl AdminTab {
                     Ok(u) => Load::Ready(u),
                     Err(e) => Load::Failed(explain(&e, "admin.hint_grants")),
                 };
-                // O que estava aberto antes do ↻ volta a carregar.
+                // What was open before the ↻ loads again.
                 tab.ensure_loaded(cx);
                 if let Some(t) = tab.pending.take() {
                     tab.stack.clear();
@@ -230,10 +230,10 @@ impl AdminTab {
                 cx.notify();
             })
             .ok();
-            // Sessão própria (mesmo login): o ator é serial e cliques não devem esperar o ACCOUNT_USAGE.
+            // Own session (same login): the actor is serial and clicks shouldn't wait for ACCOUNT_USAGE.
             let graph = match engine.connect(&conn.cfg, conn.creds.clone()).await {
                 Ok(gs) => match admin::role_graph(&gs).await {
-                    // Databases são complemento: falhou, as roles de acesso ficam em "database desconhecido".
+                    // Databases are a complement: if it fails, access roles stay under "unknown database".
                     Ok(g) => Ok((g, admin::role_databases(&gs).await.unwrap_or_default())),
                     Err(e) => Err(e),
                 },
@@ -248,7 +248,7 @@ impl AdminTab {
                     Ok((g, dbs)) => {
                         let g = Arc::new(g);
                         tab.databases = Arc::new(dbs);
-                        // Quem estava esperando o grafo resolve agora, localmente.
+                        // Whoever was waiting for the graph resolves now, locally.
                         for v in tab.user_roles.values_mut() {
                             if let Load::Ready((d, eff @ Load::Loading)) = v {
                                 *eff = Load::Ready(admin::effective_from_graph(d, &g));
@@ -259,7 +259,7 @@ impl AdminTab {
                     Err(e) => {
                         tracing::info!("admin: no role graph ({e}); inheritance via SHOW per role");
                         tab.graph = Load::Failed(e.to_string());
-                        // Quem esperava o grafo recomeça pelo caminho lento.
+                        // Whoever was waiting for the graph restarts via the slow path.
                         tab.user_roles.retain(|_, v| !matches!(v, Load::Ready((_, Load::Loading))));
                         tab.ensure_loaded(cx);
                     }
@@ -271,7 +271,7 @@ impl AdminTab {
         .detach();
     }
 
-    /// Navegação vinda de outra aba: com a sessão pronta abre já; senão, quando as listas chegarem.
+    /// Navigation from another tab: with the session ready it opens now; otherwise, when the lists arrive.
     pub fn goto(&mut self, t: Target, cx: &mut Context<Self>) {
         if self.session.is_some() {
             self.stack.clear();
@@ -289,7 +289,7 @@ impl AdminTab {
         cx.notify();
     }
 
-    /// Busca o que falta para o alvo do topo da pilha; o resultado fica em cache na aba.
+    /// Fetches what's missing for the target at the top of the stack; the result is cached in the tab.
     fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         if let Some(Target::User(u) | Target::UserRoles(u)) = self.stack.last().cloned()
             && !self.activity.contains_key(&u)
@@ -320,7 +320,7 @@ impl AdminTab {
                         }
                         Err(e) => {
                             let msg = e.to_string();
-                            // Sem warehouse ativo, ACCOUNT_USAGE não roda: dica própria.
+                            // No active warehouse, ACCOUNT_USAGE can't run: dedicated hint.
                             let hint = if msg.to_ascii_lowercase().contains("warehouse") { "admin.hint_warehouse" } else { "admin.hint_activity" };
                             Load::Failed(if admin::privilege_hint(&msg) || hint == "admin.hint_warehouse" { format!("{msg}\n{}", t!(hint)) } else { msg })
                         }
@@ -336,7 +336,7 @@ impl AdminTab {
         match self.stack.last().cloned() {
             Some(Target::User(u) | Target::UserRoles(u)) if !self.user_roles.contains_key(&u) => {
                 self.user_roles.insert(u.clone(), Load::Loading);
-                // Só a herança já conhecida (nomes), não os grants inteiros: SYSADMIN tem milhares.
+                // Only the already-known inheritance (names), not whole grants: SYSADMIN has thousands.
                 let mut known: HashMap<String, Vec<String>> = self.grants_cache.iter().map(|(k, g)| (k.clone(), admin::inherited_roles(g))).collect();
                 let generation = self.generation;
                 cx.spawn(async move |this, cx| {
@@ -354,8 +354,8 @@ impl AdminTab {
                             return;
                         }
                     };
-                    // Roles diretas aparecem já. Com o grafo, a herança sai na hora; carregando, sai
-                    // quando ele chegar; sem grafo, uma consulta por role (lento) logo abaixo.
+                    // Direct roles show up right away. With the graph, inheritance appears instantly; while loading, it appears
+                    // when it arrives; without the graph, one query per role (slow) just below.
                     let d = direct.clone();
                     let uu = u.clone();
                     let walk = this
@@ -442,13 +442,13 @@ impl AdminTab {
 
     fn back(&mut self, cx: &mut Context<Self>) {
         self.stack.pop();
-        // O cache pode ter sido limpo por um ↻ depois que este alvo abriu.
+        // The cache may have been cleared by a ↻ after this target opened.
         self.ensure_loaded(cx);
         cx.notify();
     }
 
-    /// Nomes da lista atual que casam com o filtro (contém, sem caixa).
-    /// (nome, linha de baixo, destaque, apagado) dos itens que casam com o filtro, e o total da lista.
+    /// Names in the current list that match the filter (contains, case-insensitive).
+    /// (name, bottom line, highlight, dimmed) of the items matching the filter, and the list total.
     fn visible(&self, cx: &App) -> Result<(Vec<(String, String, bool, bool)>, usize), String> {
         let q = self.filter.read(cx).value().trim().to_lowercase();
         let keep = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
@@ -554,7 +554,7 @@ impl AdminTab {
                                             .child(div().text_xs().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(if warn { theme.warning } else { theme.muted_foreground }).child(meta)),
                                     )
                                     .on_click(cx.listener(move |t, _, _, cx| {
-                                        // Clicar na lista recomeça a navegação.
+                                        // Clicking the list restarts navigation.
                                         t.stack.clear();
                                         t.open(target.clone(), cx);
                                     }))
@@ -604,7 +604,7 @@ impl AdminTab {
         };
         let recent = act.as_ref().map(|a| a.logins.recent.clone()).unwrap_or_default();
 
-        // Cabeçalho: quem, de relance.
+        // Header: who, at a glance.
         let shown = u.display_name.clone().unwrap_or_else(|| u.name.clone());
         let initials: String = shown.split([' ', '_', '.']).filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
         let status = if u.disabled {
@@ -638,7 +638,7 @@ impl AdminTab {
             )
             .when_some(scim, |d, owner| d.child(div().text_xs().text_color(theme.muted_foreground).child(t!("admin.scim_note", owner = owner).to_string())));
 
-        // Esquerda: padrões, atividade, logins.
+        // Left: defaults, activity, logins.
         let created = u.created_on.as_deref().map(|c| match user_view::parse_ts(c) {
             Some(t) => format!("{} · {}", &c[..10.min(c.len())], t!("admin.ago", ago = span_label(user_view::span(now - t)))),
             None => c.to_string(),
@@ -651,13 +651,13 @@ impl AdminTab {
             .child(kv(t!("admin.created").to_string(), created, &theme));
         let left = v_flex().flex_grow(1.).flex_basis(px(460.)).min_w_0().gap_6().child(defaults).child(self.render_activity(name, now, cx));
 
-        // Direita: acesso unificado e o que mais usa.
+        // Right: unified access and what else it uses.
         let right = v_flex().flex_grow(1.).flex_basis(px(320.)).min_w_0().gap_6().child(self.render_access_summary(name, cx));
 
         v_flex().gap_6().pt_2().child(header).child(h_flex().items_start().flex_wrap().gap_10().child(left).child(right)).into_any_element()
     }
 
-    /// Atividade dos 30 dias: 4 números, faixa de dias (mais legível que barras quase todas vazias) e logins.
+    /// 30-day activity: 4 numbers, day strip (more readable than mostly empty bars) and logins.
     fn render_activity(&mut self, name: &str, now: i64, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let head = h_flex()
@@ -731,9 +731,9 @@ impl AdminTab {
         out.child(tiles).child(v_flex().gap_1().child(strip).child(labels)).child(signins).into_any_element()
     }
 
-    /// TAG_REFERENCES agregado (alguns segundos no warehouse): só na primeira vez que a classificação é aberta.
+    /// Aggregated TAG_REFERENCES (a few seconds on the warehouse): only the first time classification is opened.
     fn ensure_tag_counts(&mut self, cx: &mut Context<Self>) {
-        // Sem tag na configuração não há o que contar (nem sessão a abrir).
+        // With no tag in the configuration there's nothing to count (nor a session to open).
         if self.tag_counts.is_some() || !self.conn.org.has_classification() {
             return;
         }
@@ -758,7 +758,7 @@ impl AdminTab {
         .detach();
     }
 
-    /// Resumo de onde um item de classificação desmascara: "em todo lugar" ou "N schemas · M databases".
+    /// Summary of where a classification item unmasks: "everywhere" or "N schemas · M databases".
     fn class_scope_summary(&self, it: &UnlockItem) -> String {
         let Detail::Level(l) = it.detail else { return detail_text(it) };
         if !self.conn.org.has_masking() {
@@ -777,10 +777,10 @@ impl AdminTab {
         }
     }
 
-    /// "Desmascara": onde cada role do nível vale e quantas colunas isso cobre (lidas ou não por ela).
+    /// "Unmasks": where each role of the level applies and how many columns that covers (read by it or not).
     fn render_unmasks(&mut self, it: &UnlockItem, level: u8, items: &[UnlockItem], held: &[String], cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        // Ler = ter USAGE no database por alguma role de acesso.
+        // Read = having USAGE on the database through some access role.
         let readable: HashSet<&str> = items.iter().filter(|i| i.kind == ItemKind::Data && !i.name.is_empty()).map(|i| i.name.as_str()).collect();
         let mut out = v_flex().gap_1().child(div().pt_2().text_xs().text_color(theme.muted_foreground).child(t!("admin.unmasks", level = level_text(&self.conn.org, level)).to_string()));
         let org = self.conn.org.clone();
@@ -824,7 +824,7 @@ impl AdminTab {
         out.child(div().pt_1().text_xs().text_color(theme.muted_foreground).child(t!("admin.policy_note", config = org.name()).to_string()))
     }
 
-    /// Roles do usuário (diretas e herdadas) e o grafo de herança/databases para os caminhos.
+    /// User's roles (direct and inherited) and the inheritance/databases graph for the paths.
     fn access_data(&self, name: &str) -> Option<(Vec<String>, Vec<EffectiveRole>, bool)> {
         match self.user_roles.get(name) {
             Some(Load::Ready((d, e))) => {
@@ -836,8 +836,8 @@ impl AdminTab {
         }
     }
 
-    /// Herança e databases por role: do ACCOUNT_USAGE quando veio, senão dos SHOW GRANTS já feitos.
-    /// `Arc`: redesenhar não pode clonar a hierarquia da conta inteira a cada quadro.
+    /// Inheritance and databases per role: from ACCOUNT_USAGE when it came, otherwise from the SHOW GRANTS already done.
+    /// `Arc`: redrawing must not clone the whole account hierarchy every frame.
     fn inherits_and_databases(&self) -> (Arc<RoleGraph>, Arc<RoleGraph>) {
         match &self.graph {
             Load::Ready(g) => (g.clone(), self.databases.clone()),
@@ -853,7 +853,7 @@ impl AdminTab {
         }
     }
 
-    /// Resumo do acesso na página do usuário; a lista completa abre em "Todas as roles →".
+    /// Access summary on the user's page; the full list opens at "All roles →".
     fn render_access_summary(&mut self, name: &str, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let out = v_flex().gap_3().child(section(t!("admin.access").to_string(), cx));
@@ -871,7 +871,7 @@ impl AdminTab {
             .into_any_element()
     }
 
-    /// "N diretas → M herdadas" e os fatos que respondem "o que essa pessoa alcança".
+    /// "N direct → M inherited" and the facts that answer "what can this person reach".
     fn render_access_facts(&mut self, name: &str, direct: &[String], eff: &[EffectiveRole], loading: bool, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let (_, dbs) = self.inherits_and_databases();
@@ -885,7 +885,7 @@ impl AdminTab {
         if let Some(l) = top {
             facts.push(t!("admin.fact_level", level = level_text(&self.conn.org, l)).to_string());
         }
-        // Só o que a configuração sabe reconhecer; sem regra, "0 warehouses" seria falso.
+        // Only what the configuration can recognize; without a rule, "0 warehouses" would be false.
         let org = &self.conn.org;
         if org.has_kind(RoleKind::Warehouse) {
             facts.push(t!("admin.fact_warehouses", n = count(ItemKind::Warehouse)).to_string());
@@ -907,17 +907,17 @@ impl AdminTab {
                     .gap_2()
                     .child(div().text_xl().child(t!("admin.direct_n", n = direct.len()).to_string()))
                     .child(if loading {
-                        // "0 herdadas" enquanto carrega parecia a resposta final.
+                        // "0 inherited" while loading looked like the final answer.
                         h_flex().gap_1().items_center().text_base().text_color(theme.muted_foreground).child(Spinner::new().small()).child(t!("admin.inherited_loading").to_string())
                     } else {
                         h_flex().text_base().text_color(theme.muted_foreground).child(t!("admin.inherited_n", n = eff.len()).to_string())
                     }),
             )
-            // Contagens só com as diretas sairiam erradas: esperam as herdadas.
+            // Counts with only the direct ones would be wrong: they wait for the inherited.
             .when(!loading, |d| d.child(h_flex().flex_wrap().gap_x_4().gap_y_1().text_sm().text_color(theme.muted_foreground).children(facts)))
     }
 
-    /// Tela "Usuários / NOME / Roles": busca, grupos pelo que a role desbloqueia e o caminho da selecionada.
+    /// "Users / NAME / Roles" screen: search, groups by what the role unlocks and the selected one's path.
     fn render_user_roles(&mut self, name: &str, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let Some((direct, eff, loading)) = self.access_data(name) else {
@@ -940,7 +940,7 @@ impl AdminTab {
             _ => None,
         };
         let grants = self.direct_grants.get(name).cloned().unwrap_or_default();
-        // Uso medível: warehouse pelo nome, role só quando foi a primária da query.
+        // Measurable usage: warehouse by name, role only when it was the query's primary.
         let used_of = |it: &UnlockItem| -> Option<Option<i64>> {
             let u = usage.as_ref()?;
             let last = match it.kind {
@@ -953,7 +953,7 @@ impl AdminTab {
         let toks = unlocks::tokens(self.roles_search.read(cx).value().as_ref());
         let searching = !toks.is_empty();
 
-        // Cabeçalho + busca + filtros.
+        // Header + search + filters.
         let mut chips = h_flex().flex_wrap().gap_1().child(Button::new("uf-all").label(t!("admin.all_types").to_string()).xsmall().outline().selected(self.unlock_filter.is_none()).on_click(cx.listener(|t, _, _, cx| {
             t.unlock_filter = None;
             cx.notify();
@@ -981,7 +981,7 @@ impl AdminTab {
         })));
         let head = v_flex().gap_3().child(self.render_access_facts(name, &direct, &eff, loading, cx)).child(Input::new(&self.roles_search)).child(chips);
 
-        // Lista.
+        // List.
         let mut list = v_flex().gap_4().flex_grow(1.).flex_basis(px(420.)).min_w_0();
         let used_text = |u: Option<Option<i64>>| -> (String, bool) {
             match u {
@@ -1134,7 +1134,7 @@ impl AdminTab {
             list = list.child(div().text_sm().text_color(theme.muted_foreground).child(t!("admin.loading_inherited").to_string()));
         }
 
-        // Painel: o porquê da selecionada (todos os caminhos).
+        // Panel: the why of the selected one (all paths).
         let aside = self.selected.clone().filter(|s| all.contains(s)).map(|sel| {
             let paths = unlocks::all_paths(&direct, &inherits, &sel, 5);
             let item = items.iter().find(|it| it.roles.contains(&sel));
@@ -1184,7 +1184,7 @@ impl AdminTab {
             if scim {
                 a = a.child(div().text_xs().text_color(theme.muted_foreground).child(t!("admin.scim_path").to_string()));
             }
-            // Sem regras de masking na configuração, "onde desmascara" seria inventado.
+            // Without masking rules in the configuration, "where it unmasks" would be made up.
             if let Some(it) = item.filter(|it| it.kind == ItemKind::Classification && self.conn.org.has_masking())
                 && let Detail::Level(l) = it.detail
             {
@@ -1234,7 +1234,7 @@ impl AdminTab {
                     .child(section(t!("admin.inherits").to_string(), cx))
                     .child(tags("inh", &admin::inherited_roles(&grants), cx))
                     .child(section(t!("admin.privileges", n = n).to_string(), cx))
-                    // Virtualizada: SYSADMIN pode ter milhares de grants.
+                    // Virtualized: SYSADMIN may have thousands of grants.
                     .child(
                         uniform_list("adm-privs", n, move |range, _, cx| {
                             let muted = cx.theme().muted_foreground;
@@ -1266,7 +1266,7 @@ impl Render for AdminTab {
     }
 }
 
-/// Linha "chave · valor" das seções; vazio vira "não definido".
+/// "key · value" row of the sections; empty becomes "not defined".
 pub(crate) fn kv(label: String, value: Option<String>, theme: &Theme) -> Div {
     h_flex()
         .min_h(px(40.))
@@ -1303,7 +1303,7 @@ fn span_label(s: Span) -> String {
     .to_string()
 }
 
-/// Linha de baixo do usuário na lista; `true` = destacar (parado há muito tempo).
+/// User's bottom line in the list; `true` = highlight (idle for a long time).
 fn meta_text(m: UserMeta) -> (String, bool) {
     match m {
         UserMeta::Disabled => (t!("admin.disabled").to_string(), false),
@@ -1337,7 +1337,7 @@ fn item_kind_label(k: ItemKind) -> String {
     .to_string()
 }
 
-/// Uma cor por tipo, a mesma no chip, no grupo e no painel.
+/// One color per kind, the same on the chip, the group and the panel.
 fn kind_color(k: ItemKind, theme: &Theme) -> Hsla {
     match k {
         ItemKind::Warehouse => theme.primary,
@@ -1349,7 +1349,7 @@ fn kind_color(k: ItemKind, theme: &Theme) -> Hsla {
     }
 }
 
-/// `C4 · Restricted` (rótulos da configuração).
+/// `C4 · Restricted` (labels from the configuration).
 fn level_text(org: &OrgConfig, l: u8) -> String {
     match org.level_label(l) {
         Some(n) => format!("C{l} · {n}"),
@@ -1380,15 +1380,15 @@ fn detail_text(it: &UnlockItem) -> String {
     }
 }
 
-/// Texto com os trechos da busca em destaque.
+/// Text with the search matches highlighted.
 fn highlighted(text: &str, toks: &[String], theme: &Theme) -> StyledText {
     let style = HighlightStyle { color: Some(theme.primary), font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() };
     StyledText::new(text.to_string()).with_highlights(unlocks::match_ranges(text, toks).into_iter().map(|r| (r, style)))
 }
 
 
-/// Uma linha só, com reticências: nomes de role longos não invadem a coluna ao lado (o painel
-/// mostra o nome inteiro).
+/// A single line, with ellipsis: long role names don't invade the neighboring column (the panel
+/// shows the full name).
 fn one_line(el: impl IntoElement) -> Div {
     div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(el)
 }
@@ -1397,7 +1397,7 @@ fn section(title: String, cx: &App) -> Div {
     div().pt_3().pb_1().text_xs().text_color(cx.theme().muted_foreground).child(title.to_uppercase())
 }
 
-/// Tag clicável que navega para a role.
+/// Clickable tag that navigates to the role.
 fn role_tag(id: impl Into<ElementId>, name: &str, cx: &mut Context<AdminTab>) -> Stateful<Div> {
     let target = Target::Role(name.to_string());
     div().id(id).cursor_pointer().child(Tag::secondary().small().child(name.to_string())).on_click(cx.listener(move |t, _, _, cx| t.open(target.clone(), cx)))
@@ -1412,7 +1412,7 @@ fn user_tag(id: impl Into<ElementId>, name: &str, cx: &mut Context<AdminTab>) ->
         .on_click(cx.listener(move |t, _, _, cx| t.open(target.clone(), cx)))
 }
 
-/// Linha de tags de role; `prefix` deixa os ids únicos por seção.
+/// Role tag row; `prefix` makes ids unique per section.
 fn tags(prefix: &'static str, roles: &[String], cx: &mut Context<AdminTab>) -> AnyElement {
     if roles.is_empty() {
         return div().text_color(cx.theme().muted_foreground).child(t!("admin.none").to_string()).into_any_element();

@@ -25,7 +25,7 @@ fn cancel_interrupts_running_query() {
 fn reconnects_after_backend_is_killed() {
     let Some((_e, s)) = common::open() else { return common::skip() };
     assert!(block_on(s.execute("select pg_terminate_backend(pg_backend_pid())".into())).is_err());
-    std::thread::sleep(Duration::from_millis(200)); // o client percebe o socket fechado
+    std::thread::sleep(Duration::from_millis(200)); // the client notices the closed socket
     let out = block_on(s.execute("select 1".into())).unwrap();
     assert_eq!(out.batch.rows(), 1);
 }
@@ -37,7 +37,7 @@ fn abandoning_a_partial_result_closes_its_transaction() {
         let out = s.execute("select g from generate_series(1, 5000) g".into()).await.unwrap();
         assert!(out.more);
         std::thread::sleep(Duration::from_millis(300));
-        // Se a transação do portal continuasse aberta, xact_start seria de ~300 ms atrás.
+        // If the portal's transaction were still open, xact_start would be ~300 ms ago.
         let r = s
             .query_text(
                 "select (clock_timestamp() - xact_start < interval '200 ms')::text from pg_stat_activity where pid = pg_backend_pid()",
@@ -59,7 +59,7 @@ fn manual_transactions_are_refused() {
             let res = s.execute(sql.into()).await;
             assert!(matches!(res, Err(DbError::Unsupported(_))), "{sql}: {res:?}");
         }
-        // nada ficou aberto: a sessão segue em autocommit
+        // nothing was left open: the session stays in autocommit
         let r = s.query_text("select (pg_current_xact_id_if_assigned() is null)::text", &[]).await.unwrap();
         assert_eq!(r[0][0].as_deref(), Some("true"));
     });
@@ -70,7 +70,7 @@ fn stale_fetch_more_does_not_consume_the_next_result() {
     let Some((_e, s)) = common::open() else { return common::skip() };
     block_on(async {
         let a = s.execute("select g from generate_series(1, 5000) g".into()).await.unwrap();
-        // um FetchMore do resultado A chega depois do Execute de B
+        // a FetchMore for result A arrives after B's Execute
         let (b, stale) = tokio::join!(s.execute("select g from generate_series(1, 5000) g".into()), s.fetch_more(a.exec_id));
         let b = b.unwrap();
         assert_eq!(stale.unwrap().batch.rows(), 0);

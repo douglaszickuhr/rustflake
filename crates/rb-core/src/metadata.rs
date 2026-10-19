@@ -11,7 +11,7 @@ pub struct SchemaObjects {
     pub tables: Vec<String>,
     pub views: Vec<String>,
     pub matviews: Vec<String>,
-    /// `nome(argumentos)`.
+    /// `name(arguments)`.
     pub functions: Vec<String>,
 }
 
@@ -24,10 +24,10 @@ impl SchemaObjects {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnMeta {
     pub name: String,
-    /// Saída de `format_type`, pronta para cast (`character varying(20)`, `"Sales".mood`).
+    /// Output of `format_type`, ready for cast (`character varying(20)`, `"Sales".mood`).
     pub type_name: String,
-    /// Tipo sem typmod (`character varying`), usado nos casts de edição: o cast explícito para
-    /// `varchar(5)` truncaria em silêncio; sem typmod, a atribuição à coluna valida o tamanho.
+    /// Type without typmod (`character varying`), used in edit casts: an explicit cast to
+    /// `varchar(5)` would truncate silently; without typmod, the assignment to the column validates the size.
     pub cast_type: String,
     pub nullable: bool,
     pub default: Option<String>,
@@ -46,7 +46,7 @@ pub enum MetaRequest {
     Objects(String),
     Columns(String, String),
     Indexes(String, String),
-    /// Schemas de uma database Snowflake.
+    /// Schemas of a Snowflake database.
     Schemas(String),
 }
 
@@ -58,18 +58,18 @@ pub struct MetaCache {
     pub columns: HashMap<(String, String), Vec<ColumnMeta>>,
     pub indexes: HashMap<(String, String), Vec<IndexMeta>>,
     pub dialect: Dialect,
-    /// Snowflake: databases da conta e quais já tiveram os schemas carregados.
+    /// Snowflake: account databases and which ones already had their schemas loaded.
     pub databases: Vec<String>,
     pub loaded_dbs: HashSet<String>,
-    /// Padrões da conexão (`SnowflakeConfig::db_filter`); vazio = todas as databases.
+    /// Connection patterns (`SnowflakeConfig::db_filter`); empty = all databases.
     pub db_filter: Vec<String>,
     pub warehouse: Option<String>,
     pub role: Option<String>,
 }
 
 impl MetaCache {
-    /// Databases que passam no filtro da conexão (árvore e autocomplete): casam com algum padrão
-    /// de inclusão (sem nenhum, todas casam) e com nenhum `!padrão` de exclusão.
+    /// Databases that pass the connection filter (tree and autocomplete): they match some include
+    /// pattern (with none, all match) and no `!pattern` exclusion.
     pub fn visible_databases(&self) -> impl Iterator<Item = &String> {
         let (exclude, include): (Vec<_>, Vec<_>) = self.db_filter.iter().partition(|p| p.starts_with('!'));
         self.databases.iter().filter(move |d| {
@@ -86,12 +86,12 @@ impl MetaCache {
         }
     }
 
-    /// Database atual no Snowflake (início do search_path `DB.SCHEMA`).
+    /// Current database on Snowflake (start of the `DB.SCHEMA` search_path).
     pub fn current_db(&self) -> Option<&str> {
         self.search_path.first().and_then(|s| s.split_once('.')).map(|(db, _)| db)
     }
 
-    /// Chave de schema como está no cache: no Snowflake, `SCHEMA` vira `DB_ATUAL.SCHEMA`.
+    /// Schema key as it is in the cache: on Snowflake, `SCHEMA` becomes `CURRENT_DB.SCHEMA`.
     pub fn schema_key(&self, s: &str) -> String {
         match (self.dialect, self.current_db()) {
             (Dialect::Snowflake, Some(db)) if !s.contains('.') => format!("{db}.{s}"),
@@ -164,7 +164,7 @@ pub struct Context {
     pub role: Option<String>,
 }
 
-/// `*` casa qualquer sequência; o resto é literal, sem diferenciar caixa. `DEV_*` = começa com DEV_.
+/// `*` matches any sequence; the rest is literal, case-insensitive. `DEV_*` = starts with DEV_.
 pub fn glob_match(pattern: &str, name: &str) -> bool {
     let (p, s) = (pattern.to_uppercase(), name.to_uppercase());
     let parts: Vec<&str> = p.split('*').collect();
@@ -182,7 +182,7 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
     true
 }
 
-/// `"DEV_*, !*_TMP"` → `["DEV_*", "!*_TMP"]`; vírgulas e espaços separam, vazios somem.
+/// `"DEV_*, !*_TMP"` → `["DEV_*", "!*_TMP"]`; commas and spaces separate, empty ones vanish.
 pub fn parse_db_filter(text: &str) -> Vec<String> {
     text.split([',', ' ', '\n']).map(str::trim).filter(|p| !p.is_empty() && *p != "!").map(String::from).collect()
 }
@@ -214,7 +214,7 @@ pub async fn context(s: &Session) -> Result<Context, DbError> {
 }
 
 pub async fn schemas(s: &Session) -> Result<Vec<String>, DbError> {
-    // No Snowflake a árvore parte das databases.
+    // On Snowflake the tree starts from the databases.
     if s.dialect() == Dialect::Snowflake {
         return Ok(Vec::new());
     }
@@ -251,7 +251,7 @@ pub async fn columns(s: &Session, schema: &str, table: &str) -> Result<Vec<Colum
         let name = format!("{}.{}", sf_schema(schema), quote_always(table));
         let (n, rows) = match s.query_named(&format!("describe table {name}")).await {
             Ok(r) => r,
-            // DESCRIBE TABLE recusa views; a view tem o próprio DESCRIBE.
+            // DESCRIBE TABLE rejects views; the view has its own DESCRIBE.
             Err(_) => s.query_named(&format!("describe view {name}")).await?,
         };
         return Ok(parse_describe(&n, &rows));
@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(c.visible_databases().count(), 3);
         c.db_filter = vec!["DEV_*".into(), "*_PROD".into()];
         assert_eq!(c.visible_databases().collect::<Vec<_>>(), ["AI_PROD", "DEV_A"]);
-        // `!` exclui; só exclusões = todas menos essas.
+        // `!` excludes; only exclusions = all but those.
         c.db_filter = vec!["!dev_*".into()];
         assert_eq!(c.visible_databases().collect::<Vec<_>>(), ["AI_PROD", "CX_OPS"]);
         c.db_filter = vec!["*_*".into(), "!*_PROD".into()];

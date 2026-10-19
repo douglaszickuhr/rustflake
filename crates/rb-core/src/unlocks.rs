@@ -1,5 +1,5 @@
-//! "O que a pessoa desbloqueia": roles agrupadas por warehouse, classificação, departamento e
-//! database, com todos os caminhos até cada uma.
+//! "What the person unlocks": roles grouped by warehouse, classification, department and
+//! database, with all the paths to each one.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -24,17 +24,17 @@ pub enum Detail {
     Data { write: bool },
 }
 
-/// Uma linha da lista: o que é desbloqueado e as roles que dão isso.
+/// A list row: what is unlocked and the roles that grant it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnlockItem {
     pub kind: ItemKind,
-    /// Warehouse sem sufixo, `C4`, departamento, database (`""` = desconhecido) ou a própria role.
+    /// Warehouse without suffix, `C4`, department, database (`""` = unknown) or the role itself.
     pub name: String,
     pub detail: Detail,
     pub roles: Vec<String>,
 }
 
-/// `databases`: role → databases em que ela tem USAGE (do ACCOUNT_USAGE ou dos SHOW GRANTS).
+/// `databases`: role → databases where it has USAGE (from ACCOUNT_USAGE or SHOW GRANTS).
 pub fn unlock_items(org: &OrgConfig, roles: &[String], databases: &HashMap<String, Vec<String>>) -> Vec<UnlockItem> {
     let mut items: BTreeMap<(ItemKind, std::cmp::Reverse<u8>, String), UnlockItem> = BTreeMap::new();
     let mut add = |kind: ItemKind, order: u8, name: String, detail: Detail, role: &str| {
@@ -57,7 +57,7 @@ pub fn unlock_items(org: &OrgConfig, roles: &[String], databases: &HashMap<Strin
             RoleKind::Access => {
                 let write = org.writes(r);
                 match databases.get(r).filter(|d| !d.is_empty()) {
-                    // Desconhecido por último: "~" ordena depois das letras.
+                    // Unknown last: "~" sorts after the letters.
                     None => add(ItemKind::Data, 0, "~".into(), Detail::Data { write }, r),
                     Some(dbs) => dbs.iter().for_each(|db| add(ItemKind::Data, 0, db.clone(), Detail::Data { write }, r)),
                 }
@@ -78,11 +78,11 @@ pub fn unlock_items(org: &OrgConfig, roles: &[String], databases: &HashMap<Strin
         .collect()
 }
 
-/// Todos os caminhos (até `limit`, mais curtos primeiro) de alguma role direta até `target`.
+/// All paths (up to `limit`, shortest first) from some direct role to `target`.
 pub fn all_paths(direct: &[String], inherits: &HashMap<String, Vec<String>>, target: &str, limit: usize) -> Vec<Vec<String>> {
     let mut out = Vec::new();
     let mut queue: VecDeque<Vec<String>> = direct.iter().map(|d| vec![d.clone()]).collect();
-    // ponytail: busca em largura com teto de passos; hierarquias enormes param no limite.
+    // ponytail: breadth-first search with a step cap; huge hierarchies stop at the limit.
     let mut steps = 0;
     while let Some(path) = queue.pop_front() {
         steps += 1;
@@ -105,7 +105,7 @@ pub fn all_paths(direct: &[String], inherits: &HashMap<String, Vec<String>>, tar
     out
 }
 
-/// Tokens da busca (minúsculas, separados por espaço).
+/// Search tokens (lowercase, space-separated).
 pub fn tokens(q: &str) -> Vec<String> {
     q.split_whitespace().map(str::to_lowercase).collect()
 }
@@ -115,10 +115,10 @@ pub fn matches_all(text: &str, tokens: &[String]) -> bool {
     tokens.iter().all(|k| t.contains(k.as_str()))
 }
 
-/// Trechos de `text` a destacar (cada ocorrência de cada token), ordenados e sem sobreposição.
+/// Spans of `text` to highlight (each occurrence of each token), sorted and non-overlapping.
 pub fn match_ranges(text: &str, tokens: &[String]) -> Vec<std::ops::Range<usize>> {
     let lower = text.to_lowercase();
-    // Só ASCII nos nomes do Snowflake: índices do minúsculo valem no original.
+    // ASCII only in Snowflake names: indexes of the lowercase version hold in the original.
     if lower.len() != text.len() {
         return Vec::new();
     }
@@ -145,7 +145,7 @@ pub fn match_ranges(text: &str, tokens: &[String]) -> Vec<std::ops::Range<usize>
     out
 }
 
-/// Para o cabeçalho: roles herdadas que são de dados e em quantos databases distintos.
+/// For the header: inherited roles that are data roles and in how many distinct databases.
 pub fn data_spread(items: &[UnlockItem]) -> (usize, usize) {
     let data: Vec<&UnlockItem> = items.iter().filter(|i| i.kind == ItemKind::Data).collect();
     let roles: HashSet<&str> = data.iter().flat_map(|i| i.roles.iter().map(String::as_str)).collect();
@@ -194,7 +194,7 @@ mod tests {
                 (ItemKind::Functional, "FINANCE_GENERAL_AREA_FR", Detail::None, 1),
                 (ItemKind::Other, "PUBLIC", Detail::None, 1),
             ],
-            "classificação da mais alta para a mais baixa; database desconhecido por último"
+            "classification from highest to lowest; unknown database last"
         );
     }
 
@@ -207,7 +207,7 @@ mod tests {
         let p: Vec<String> = all_paths(&s(&["IDP"]), &g, "X", 10).into_iter().map(|p| p.join(">")).collect();
         assert_eq!(p, vec!["IDP>AREA>X", "IDP>SB>X", "IDP>AREA>BASE>X"], "mais curtos primeiro; ciclo X→IDP ignorado");
         assert_eq!(all_paths(&s(&["IDP"]), &g, "X", 1).len(), 1);
-        assert_eq!(all_paths(&s(&["IDP"]), &g, "IDP", 5), vec![s(&["IDP"])], "direta: o caminho é ela mesma");
+        assert_eq!(all_paths(&s(&["IDP"]), &g, "IDP", 5), vec![s(&["IDP"])], "direct: the path is the role itself");
     }
 
     #[test]

@@ -74,7 +74,7 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
         return Completion { replace: cursor..cursor, ..Default::default() };
     }
 
-    // Tokens do statement atual (entre o `;` anterior e o próximo).
+    // Tokens of the current statement (between the previous `;` and the next).
     let begin = toks.iter().rposition(|t| t.kind == TokKind::Semicolon && t.end <= cursor).map_or(0, |i| i + 1);
     let end = toks[begin..].iter().position(|t| t.kind == TokKind::Semicolon).map_or(toks.len(), |i| begin + i);
     let stmt: Vec<Token> = toks[begin..end].iter().copied().filter(|t| t.kind != TokKind::Comment).collect();
@@ -86,8 +86,8 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
     let before: Vec<&Token> = stmt.iter().filter(|t| t.end <= replace.start).collect();
     let refs = table_refs(src, &stmt, cache.dialect);
     let mut out = Completion { replace: replace.clone(), ..Default::default() };
-    // Snowflake: os schemas chegam por database; sem os do database atual, `SCHEMA.` e a lista
-    // de schemas ficariam vazias até alguém expandir a árvore.
+    // Snowflake: schemas arrive per database; without those of the current database, `SCHEMA.` and the schema list
+    // would stay empty until someone expands the tree.
     if let (Dialect::Snowflake, Some(db)) = (cache.dialect, cache.current_db())
         && !cache.loaded_dbs.contains(db)
     {
@@ -133,7 +133,7 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
             push_objects(&mut out, cache, s);
         }
         for s in &cache.schemas {
-            // No Snowflake, só os schemas do database atual, sem o prefixo `DB.`.
+            // On Snowflake, only the schemas of the current database, without the `DB.` prefix.
             let label = match (cache.dialect, cache.current_db()) {
                 (Dialect::Snowflake, Some(db)) => match s.strip_prefix(db).and_then(|r| r.strip_prefix('.')) {
                     Some(rest) => rest.to_string(),
@@ -168,13 +168,13 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
     out
 }
 
-/// Tabela/view sob o cursor (⌘-clique no editor): (trecho do nome, chave do schema no cache,
-/// nome). Nome com 1 ou 2 partes só vale se o catálogo conhece (senão `alias.coluna` viraria
-/// link); `DB.SCHEMA.TABELA` no Snowflake vale sempre.
+/// Table/view under the cursor (⌘-click in the editor): (name snippet, schema key in the cache,
+/// name). A name with 1 or 2 parts only counts if the catalog knows it (otherwise `alias.column` would become
+/// link); `DB.SCHEMA.TABLE` on Snowflake always counts.
 pub fn relation_at(src: &str, cursor: usize, cache: &MetaCache) -> Option<(Range<usize>, String, String)> {
     let toks = tokenize(src);
     let is_name = |t: &Token| matches!(t.kind, TokKind::Word | TokKind::QuotedIdent);
-    // Ponto colado nos dois nomes: `a.b`, não `a . b` solto.
+    // Dot attached to both names: `a.b`, not a loose `a . b`.
     let joined = |l: &Token, dot: &Token, r: &Token| dot.kind == TokKind::Punct && &src[dot.start..dot.end] == "." && l.end == dot.start && dot.end == r.start;
     let i = toks.iter().position(|t| is_name(t) && t.start <= cursor && cursor < t.end)?;
     let (mut a, mut b) = (i, i);
@@ -218,7 +218,7 @@ fn push_columns(out: &mut Completion, cache: &MetaCache, r: &TableRef) {
     }
 }
 
-/// Schemas de um database do Snowflake (sem o prefixo `DB.`), ou o pedido deles.
+/// Schemas of a Snowflake database (without the `DB.` prefix), or the request for them.
 fn push_db_schemas(out: &mut Completion, cache: &MetaCache, db: &str) {
     if !cache.loaded_dbs.contains(db) {
         out.missing.push(MetaRequest::Schemas(db.to_string()));
@@ -245,7 +245,7 @@ fn push_objects(out: &mut Completion, cache: &MetaCache, schema: &str) {
     }));
 }
 
-/// Mantém só quem contém o prefixo; quem começa com ele vem antes; depois por tipo.
+/// Keeps only those containing the prefix; those starting with it come first; then by type.
 fn filter_and_rank(c: &mut Vec<Candidate>, prefix: &str) {
     let mut seen = HashSet::new();
     c.retain(|x| seen.insert((x.label.clone(), x.kind)));
@@ -254,7 +254,7 @@ fn filter_and_rank(c: &mut Vec<Candidate>, prefix: &str) {
     c.truncate(200);
 }
 
-/// Palavras-chave são comparadas em minúsculas (`word`); nomes guardados seguem o dialeto (`name`).
+/// Keywords are compared in lowercase (`word`); stored names follow the dialect (`name`).
 fn table_refs(src: &str, toks: &[Token], d: Dialect) -> Vec<TableRef> {
     let raw = |t: &Token| matches!(t.kind, TokKind::Word | TokKind::QuotedIdent).then(|| &src[t.start..t.end]);
     let word = |t: &Token| raw(t).map(ident_text);
@@ -280,7 +280,7 @@ fn table_refs(src: &str, toks: &[Token], d: Dialect) -> Vec<TableRef> {
             {
                 r.schema = Some(std::mem::replace(&mut r.table, n));
                 i += 2;
-                // `DB.SCHEMA.TABELA` (Snowflake): o schema vira a chave `DB.SCHEMA` do cache.
+                // `DB.SCHEMA.TABLE` (Snowflake): the schema becomes the cache key `DB.SCHEMA`.
                 if toks.get(i).is_some_and(|t| punct(t, "."))
                     && let Some(n) = toks.get(i + 1).and_then(name)
                 {
@@ -389,12 +389,12 @@ mod tests {
         let src = "select o.id from orders o join raw.events e on 1=1 join X.Y.Z;";
         let at = |needle: &str| relation_at(src, src.find(needle).unwrap(), &c).map(|(r, s, t)| (src[r].to_string(), s, t));
         assert_eq!(at("orders"), Some(("orders".into(), "DB.PUBLIC".into(), "ORDERS".into())));
-        assert_eq!(at("events"), Some(("raw.events".into(), "DB.RAW".into(), "EVENTS".into())), "nome inteiro sublinhado");
+        assert_eq!(at("events"), Some(("raw.events".into(), "DB.RAW".into(), "EVENTS".into())), "whole name underlined");
         assert_eq!(at("raw."), Some(("raw.events".into(), "DB.RAW".into(), "EVENTS".into())));
-        assert_eq!(at("X.Y"), Some(("X.Y.Z".into(), "X.Y".into(), "Z".into())), "3 partes valem sem catálogo");
-        assert_eq!(at("o.id"), None, "alias.coluna não é tabela");
+        assert_eq!(at("X.Y"), Some(("X.Y.Z".into(), "X.Y".into(), "Z".into())), "3 parts count without a catalog");
+        assert_eq!(at("o.id"), None, "alias.column is not a table");
         assert_eq!(at("select"), None);
-        assert_eq!(relation_at("from orders", 11, &c), None, "fim do texto");
+        assert_eq!(relation_at("from orders", 11, &c), None, "end of text");
     }
 
     #[test]
@@ -440,25 +440,25 @@ mod tests {
         let mut c = snowflake_cache();
         c.databases = vec!["DB".into(), "LEARN".into()];
         c.loaded_dbs.insert("DB".into());
-        // `DB.` de outro database: pede os schemas dele, depois lista.
+        // `DB.` of another database: asks for its schemas, then lists.
         let src = "select * from LEARN.";
         assert!(complete(src, src.len(), &c).missing.contains(&MetaRequest::Schemas("LEARN".into())));
         c.schemas.push("LEARN.STAGE".into());
         c.loaded_dbs.insert("LEARN".into());
         assert_eq!(complete(src, src.len(), &c).candidates.iter().map(|x| x.insert.as_str()).collect::<Vec<_>>(), vec!["STAGE"]);
-        // `DB.SCHEMA.`: objetos do schema.
+        // `DB.SCHEMA.`: schema objects.
         let src = "select * from learn.stage.";
         assert_eq!(complete(src, src.len(), &c).missing, vec![MetaRequest::Objects("LEARN.STAGE".into())]);
         c.objects.insert("LEARN.STAGE".into(), SchemaObjects { tables: vec!["MENU".into()], ..Default::default() });
         assert_eq!(labels(&complete(src, src.len(), &c)), vec!["MENU"]);
-        // Colunas de uma tabela com nome em três partes.
+        // Columns of a table with a three-part name.
         let src = "select m. from LEARN.STAGE.MENU m";
         assert_eq!(complete(src, "select m.".len(), &c).missing, vec![MetaRequest::Columns("LEARN.STAGE".into(), "MENU".into())]);
-        // Depois de `from`, os databases também aparecem.
+        // After `from`, databases also show up.
         let src = "select * from ";
         let dbs: Vec<String> = complete(src, src.len(), &c).candidates.iter().filter(|x| x.kind == CandidateKind::Database).map(|x| x.label.clone()).collect();
         assert_eq!(dbs, vec!["DB".to_string(), "LEARN".to_string()]);
-        // O filtro da conexão esconde databases da lista, mas `LEARN.` qualificado continua valendo.
+        // The connection filter hides databases from the list, but a qualified `LEARN.` still works.
         c.db_filter = vec!["d*".into()];
         let dbs: Vec<String> = complete(src, src.len(), &c).candidates.iter().filter(|x| x.kind == CandidateKind::Database).map(|x| x.label.clone()).collect();
         assert_eq!(dbs, vec!["DB".to_string()]);
@@ -507,7 +507,7 @@ mod tests {
         for src in ["select 'fro", "select * from \"Ord", "select $$ fro", "select /* fro"] {
             assert!(complete(src, src.len(), &cache()).candidates.is_empty(), "{src}");
         }
-        // fechado: completa normalmente depois dele
+        // closed: completes normally after it
         let src = "select 'x' from us";
         assert_eq!(labels(&complete(src, src.len(), &cache()))[0], "users");
     }

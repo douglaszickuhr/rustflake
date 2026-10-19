@@ -1,4 +1,4 @@
-//! Índice da busca rápida no Snowflake: sessão própria, refeito a cada 30 s; o diff corrige a árvore.
+//! Quick-open index on Snowflake: own session, rebuilt every 30 s; the diff fixes the tree.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,8 +33,8 @@ impl Indexer {
                 cx.background_executor().timer(TICK).await;
             }
         });
-        // A primeira carga espera a lista de databases (o fallback por database e o filtro dependem
-        // dela); o tick pode chegar antes e é pulado em `refresh`.
+        // The first load waits for the database list (the per-database fallback and the filter depend on
+        // it); the tick may arrive earlier and is skipped in `refresh`.
         let sub = cx.observe(&meta, |ix, meta, cx| {
             if ix.index.is_none() && ix.error.is_none() && !meta.read(cx).cache.databases.is_empty() {
                 ix.refresh(cx);
@@ -43,7 +43,7 @@ impl Indexer {
         Indexer { index: None, running: false, error: None, conn, session: None, meta, _tick: tick, _meta: sub }
     }
 
-    /// Snapshot novo; pula se o anterior ainda roda.
+    /// New snapshot; skipped if the previous one is still running.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.running || self.meta.read(cx).cache.databases.is_empty() {
             return;
@@ -54,7 +54,7 @@ impl Indexer {
         let dbs: Vec<String> = self.meta.read(cx).cache.visible_databases().cloned().collect();
         cx.spawn(async move |this, cx| {
             let res = async {
-                // Sessão própria (mesmo login): não entra na fila da árvore e do autocomplete.
+                // Own session (same login): does not join the tree and autocomplete queue.
                 let s = match existing {
                     Some(s) => s,
                     None => Arc::new(engine.connect(&conn.cfg, conn.creds.clone()).await?),

@@ -1,5 +1,5 @@
-//! Projeto dbt da conexão: carrega o manifest em segundo plano, roda `dbt parse` sob pedido e
-//! desenha o cartão de estado (diálogo da conexão e seção dbt da tabela).
+//! The connection's dbt project: loads the manifest in the background, runs `dbt parse` on demand and
+//! draws the status card (connection dialog and the table's dbt section).
 
 use rust_i18n::t;
 use std::sync::Arc;
@@ -19,13 +19,13 @@ pub struct DbtStore {
     pub cfg: Option<DbtConfig>,
     pub project: Load<Arc<DbtProject>>,
     pub refreshing: bool,
-    /// Saída do último `dbt parse` que falhou.
+    /// Output of the last `dbt parse` that failed.
     pub refresh_error: Option<String>,
-    /// `aws sso login` em andamento (abre o navegador).
+    /// `aws sso login` in progress (opens the browser).
     pub aws_logging_in: bool,
-    /// Últimas linhas do `dbt parse` em andamento (atualizadas a cada meio segundo).
+    /// Last lines of the running `dbt parse` (updated every half second).
     pub live: Vec<String>,
-    /// Perfis do ~/.aws/config e o do shell, para a recomendação de login.
+    /// Profiles from ~/.aws/config and the shell's, for the login recommendation.
     aws_profiles: Vec<String>,
     shell_profile: Option<String>,
     generation: u64,
@@ -38,7 +38,7 @@ impl DbtStore {
         s
     }
 
-    /// Outra pasta/target (diálogo): recarrega.
+    /// Different folder/target (dialog): reload.
     pub fn set_cfg(&mut self, cfg: Option<DbtConfig>, cx: &mut Context<Self>) {
         if cfg != self.cfg {
             self.cfg = cfg;
@@ -47,7 +47,7 @@ impl DbtStore {
         }
     }
 
-    /// `aws sso login --profile p` e, se der certo, roda o Refresh com esse perfil.
+    /// `aws sso login --profile p` and, if it succeeds, runs Refresh with that profile.
     pub fn aws_login(&mut self, profile: String, cx: &mut Context<Self>) {
         if self.aws_logging_in {
             return;
@@ -73,7 +73,7 @@ impl DbtStore {
         .detach();
     }
 
-    /// Enquanto digita: guarda a pasta/target sem recarregar (o Refresh usa o valor atual).
+    /// While typing: stores the folder/target without reloading (Refresh uses the current value).
     pub fn set_cfg_quiet(&mut self, cfg: Option<DbtConfig>) {
         self.cfg = cfg;
     }
@@ -88,7 +88,7 @@ impl DbtStore {
         };
         self.project = Load::Loading;
         cx.notify();
-        // Manifest grande: lido e desserializado fora da thread de UI.
+        // Large manifest: read and deserialized off the UI thread.
         let task = cx.background_spawn(async move { dbt::load(&cfg) });
         cx.spawn(async move |this, cx| {
             let res = task.await;
@@ -106,7 +106,7 @@ impl DbtStore {
         .detach();
     }
 
-    /// `dbt parse --target …` e depois recarrega.
+    /// `dbt parse --target …` and then reloads.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(cfg) = self.cfg.clone() else { return };
         if self.refreshing {
@@ -119,7 +119,7 @@ impl DbtStore {
         let log = dbt::log_path();
         let log2 = log.clone();
         let task = cx.background_spawn(async move { dbt::refresh_logged(&cfg, &log2) });
-        // Acompanha o log enquanto o dbt roda.
+        // Follows the log while dbt runs.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
@@ -148,7 +148,7 @@ impl DbtStore {
                     Ok(()) => s.reload(cx),
                     Err(e) => {
                         let msg = e.to_string();
-                        // SSO da AWS vencido: carrega os perfis para recomendar o login.
+                        // Expired AWS SSO: loads the profiles to recommend the login.
                         if dbt::needs_aws_login(&msg) && s.aws_profiles.is_empty() {
                             s.aws_profiles = dbt::read_aws_profiles();
                             s.shell_profile = dbt::shell_aws_profile();
@@ -164,7 +164,7 @@ impl DbtStore {
     }
 }
 
-/// "gerado há 3 h".
+/// "generated 3 h ago".
 pub fn parsed_ago(p: &DbtProject) -> String {
     let Some(secs) = p.parsed_at.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64) else { return String::new() };
     let s = user_view::span(user_view::now() - secs);
@@ -179,7 +179,7 @@ pub fn parsed_ago(p: &DbtProject) -> String {
 }
 
 impl Render for DbtStore {
-    /// O cartão de estado do board 10.
+    /// The status card from board 10.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let refresh = Button::new("dbt-refresh")
@@ -200,7 +200,7 @@ impl Render for DbtStore {
             }
             Load::Failed(m) => card.child(h_flex().gap_2().child(div().flex_1().text_color(theme.warning).child(m.clone())).child(refresh)),
         };
-        // Saída ao vivo do dbt parse em andamento.
+        // Live output of the running dbt parse.
         if self.refreshing && !self.live.is_empty() {
             card = card.child(
                 v_flex()
@@ -212,11 +212,11 @@ impl Render for DbtStore {
                     .children(self.live.iter().map(|l| div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(l.clone()))),
             );
         }
-        // Recomendação: logar na AWS com o perfil certo e tentar de novo.
+        // Recommendation: log in to AWS with the right profile and try again.
         if let Some(out) = self.refresh_error.clone().filter(|o| dbt::needs_aws_login(o)) {
             let current = self.cfg.as_ref().and_then(|c| c.aws_profile.clone()).or_else(|| self.shell_profile.clone());
             let mut picks = h_flex().flex_wrap().gap_1();
-            // O atual primeiro, depois todos em ordem alfabética.
+            // The current one first, then all in alphabetical order.
             let mut profiles = self.aws_profiles.clone();
             profiles.sort_by_key(|p| (current.as_deref() != Some(p.as_str()), p.clone()));
             for (i, p) in profiles.into_iter().enumerate() {

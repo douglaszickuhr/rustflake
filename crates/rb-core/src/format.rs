@@ -1,12 +1,12 @@
-//! Formatador de SQL: palavras-chave em MAIÚSCULAS, 2 espaços (estilo fixo).
+//! SQL formatter: UPPERCASE keywords, 2 spaces (fixed style).
 
 use sqlformat::{FormatOptions, Indent, QueryParams};
 
 use crate::lexer::{TokKind, tokenize};
 
-/// Formata statement a statement e só aceita o resultado se os tokens forem os mesmos (palavras
-/// sem diferenciar caixa; strings, identificadores, `$$` e comentários byte a byte). O sqlformat
-/// não conhece `standard_conforming_strings` nem corpos `$tag$`: quando erra, o statement fica como estava.
+/// Formats statement by statement and only accepts the result if the tokens are the same (words
+/// case-insensitive; strings, identifiers, `$$` and comments byte for byte). sqlformat
+/// knows neither `standard_conforming_strings` nor `$tag$` bodies: when it gets it wrong, the statement stays as it was.
 pub fn format_sql(sql: &str) -> String {
     let opts = FormatOptions { indent: Indent::Spaces(2), uppercase: Some(true), lines_between_queries: 2, ..FormatOptions::default() };
     let mut chunks = Vec::new();
@@ -52,8 +52,8 @@ mod tests {
     fn keeps_literals_params_and_comments() {
         for (src, keep) in [
             ("select * from t where a = $1", "$1"),
-            ("select * from t where a = :nome", ":nome"),
-            ("select '-- não é comentário' as x", "'-- não é comentário'"),
+            ("select * from t where a = :name", ":name"),
+            ("select '-- not a comment' as x", "'-- not a comment'"),
             ("select \"Order Items\".id from \"Order Items\"", "\"Order Items\""),
             ("select 1 -- fim\n", "-- fim"),
             ("select /* meio */ 1", "/* meio */"),
@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn backslashes_in_strings_never_change_literals() {
-        // O sqlformat lê `\'` como aspa escapada; no Postgres (standard_conforming_strings) `'\'` é uma string completa.
+        // sqlformat reads `\'` as an escaped quote; on Postgres (standard_conforming_strings) `'\'` is a complete string.
         for src in [
             r"select 'a\' as x, 'b' as y from t",
             r"select * from t where a like 'a\_%' escape '\' and c = 'k'",
@@ -105,7 +105,7 @@ mod tests {
     fn semicolon_inside_a_comment_does_not_split_the_script() {
         let out = format_sql("select 1 -- a;b\n; select $$ x $$");
         assert!(out.contains("-- a;b"), "{out}");
-        assert!(!out.lines().any(|l| l.trim() == "b;"), "comentário virou código: {out}");
+        assert!(!out.lines().any(|l| l.trim() == "b;"), "comment became code: {out}");
     }
 
     #[test]

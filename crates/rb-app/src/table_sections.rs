@@ -1,4 +1,4 @@
-//! Visão de tabela do Snowflake: cabeçalho e seções Definition / dbt (boards 7, 9 e 10 do canvas).
+//! Snowflake table view: header and Definition / dbt sections (canvas boards 7, 9 and 10).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use crate::Db;
 use crate::admin_tab::Load;
 use crate::dbt_store::parsed_ago;
 
-/// Cor do tipo de nó (dbt model / source / seed / fora do dbt), a mesma da linhagem.
+/// Node type color (dbt model / source / seed / outside dbt), same as lineage.
 fn kind_dot(kind: &str, theme: &gpui_kit::component::Theme) -> Hsla {
     match kind {
         "model" | "snapshot" => theme.primary,
@@ -31,7 +31,7 @@ fn kind_dot(kind: &str, theme: &gpui_kit::component::Theme) -> Hsla {
     }
 }
 
-/// "há 3 meses" a partir do segundo Unix do commit.
+/// "3 months ago" from the commit's Unix second.
 fn when_from(secs: i64) -> String {
     let n = match user_view::span(user_view::now() - secs) {
         user_view::Span::Minutes(n) => t!("span.minutes", n = n),
@@ -56,7 +56,7 @@ fn ago(ts: &str) -> Option<String> {
 }
 
 impl TableTab {
-    /// No Snowflake a chave do schema é `DB.SCHEMA`.
+    /// On Snowflake the schema key is `DB.SCHEMA`.
     pub(crate) fn db_schema(&self) -> (String, String) {
         match self.schema.split_once('.') {
             Some((d, s)) => (d.to_string(), s.to_string()),
@@ -71,7 +71,7 @@ impl TableTab {
         }
     }
 
-    /// O modelo/source/seed dbt desta tabela (exato ou, se o manifest é de outro target, pelo nome).
+    /// The dbt model/source/seed for this table (exact or, if the manifest is from another target, by name).
     pub(crate) fn node<'a>(&self, p: &'a DbtProject) -> Option<&'a Node> {
         self.node_match(p).map(|(n, _)| n)
     }
@@ -81,7 +81,7 @@ impl TableTab {
         p.manifest.find_table(&db, &schema, &self.table)
     }
 
-    /// Sessão própria (mesmo login): consultas do INFORMATION_SCHEMA não disputam com a grade.
+    /// Own session (same login): INFORMATION_SCHEMA queries don't compete with the grid.
     fn spawn_query<T: 'static>(
         &mut self,
         cx: &mut Context<Self>,
@@ -133,8 +133,8 @@ impl TableTab {
             async move |s| {
                 let (n, r) = s.query_named(&table_info::columns_sql(&db, &schema, &table)).await?;
                 let cols = table_info::parse_columns(&n, &r);
-                // Tags e policies são complemento: sem permissão, a tabela de colunas continua e o
-                // resumo diz que a classificação não veio (em vez de parecer "nada classificado").
+                // Tags and policies are extras: without permission, the columns table stays and the
+                // summary says classification didn't load (instead of looking like "nothing classified").
                 let mut err = None;
                 let (tags, others) = match s.query_named(&table_info::tags_sql(&db, &schema, &table)).await {
                     Ok((n, r)) => (table_info::parse_class_tags(&org, &n, &r), table_info::parse_all_tags(&org, &n, &r)),
@@ -185,7 +185,7 @@ impl TableTab {
         cx.notify();
     }
 
-    /// Nome, selo dbt, owner, tags, Query, fatos e as abas de seção.
+    /// Name, dbt badge, owner, tags, Query, facts and the section tabs.
     pub(crate) fn render_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let (db, schema) = self.db_schema();
@@ -195,7 +195,7 @@ impl TableTab {
             Some((n, exact)) => (Some(n), !exact),
             None => (None, false),
         };
-        // Mesmo qualificador da grade: aspas para nomes minúsculos/com espaço.
+        // Same qualifier as the grid: quotes for lowercase/spaced names.
         let fq = rb_core::dialect::Dialect::Snowflake.qualified(&self.schema, &self.table);
         let open_query = self.open_query.clone();
         let mut top = h_flex()
@@ -236,7 +236,7 @@ impl TableTab {
         let tab = |id: &'static str, label: String, s: Section, cur: Section, cx: &mut Context<Self>| {
             Button::new(id).label(label).ghost().small().selected(s == cur).on_click(cx.listener(move |t, _, _, cx| t.go(s, cx)))
         };
-        // Comentário longo: linha própria, quebrando, até 3 linhas (a linha de fatos não quebra texto).
+        // Long comment: own line, wrapping, up to 3 lines (the facts line doesn't wrap text).
         let comment = match &self.facts {
             Some(Load::Ready(f)) => f.comment.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(String::from),
             _ => None,
@@ -251,7 +251,7 @@ impl TableTab {
             .child(top)
             .child(h_flex().gap_4().flex_wrap().text_sm().text_color(theme.muted_foreground).children(facts))
             .when_some(comment, |d, c| {
-                // Comentário pode ser um YAML inteiro: fechado, uma linha só; aberto, caixa com rolagem.
+                // Comment can be a whole YAML: closed, a single line; open, a scrollable box.
                 let open = self.comment_open;
                 let flat = c.split_whitespace().collect::<Vec<_>>().join(" ");
                 let long = flat.chars().count() > 220 || c.contains('\n');
@@ -286,7 +286,7 @@ impl TableTab {
             )
     }
 
-    /// Board 7: colunas com descrição (dbt ou comentário), classificação, mascaramento e testes.
+    /// Board 7: columns with description (dbt or comment), classification, masking and tests.
     pub(crate) fn render_definition(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let (cols, tags, masks, others, tag_err) = match &self.def_raw {
@@ -294,7 +294,7 @@ impl TableTab {
             Some(Load::Failed(m)) => return div().p_4().text_color(theme.danger).child(m.clone()).into_any_element(),
             _ => return div().p_4().text_color(theme.muted_foreground).child(t!("tree.loading").to_string()).into_any_element(),
         };
-        // Sem tag de classificação na configuração, "não classificado" seria falso.
+        // Without a classification tag in the config, "not classified" would be false.
         let has_class = self.conn.org.has_classification();
         let project = self.project(cx);
         let node = project.as_deref().and_then(|p| self.node(p));
@@ -328,7 +328,7 @@ impl TableTab {
         for (i, r) in rows.iter().enumerate() {
             let name = r.col.name.clone();
             let selected = self.selected_col.as_deref() == Some(name.as_str());
-            // Texto que quebra dentro da célula; a origem vai no fim do mesmo texto, em cinza.
+            // Text that wraps inside the cell; the source goes at the end of the same text, in gray.
             let desc = match (&r.desc, r.source) {
                 (Some(d), src) => {
                     let tag = if src == DescSource::Dbt { t!("tv.src_dbt") } else { t!("tv.src_comment") }.to_string();
@@ -344,7 +344,7 @@ impl TableTab {
                     tag.small().child(h_flex().gap_1().child(format!("C{l}")).when(r.masked_by.is_some(), |d| d.child(Icon::new(IconName::Lock).xsmall()))).into_any_element()
                 }
                 None if !has_class => div().into_any_element(),
-                // Vazio parecia "ainda carregando".
+                // Empty looked like "still loading".
                 None => div().text_xs().text_color(theme.muted_foreground).child(t!("tv.not_classified").to_string()).into_any_element(),
             };
             table = table.child(
@@ -462,7 +462,7 @@ impl TableTab {
         out
     }
 
-    /// `dbt compile --select <modelo>` com a saída ao vivo; ao terminar, mostra o compilado.
+    /// `dbt compile --select <modelo>` with live output; when done, shows the compiled SQL.
     fn compile(&mut self, node: Node, cx: &mut Context<Self>) {
         let Some(cfg) = self.dbt.as_ref().and_then(|d| d.read(cx).cfg.clone()) else { return };
         if self.compiling {
@@ -533,7 +533,7 @@ impl TableTab {
         cx.notify();
     }
 
-    /// Código com quem mexeu por último em cada trecho; clicar no commit abre no GitHub.
+    /// Code with who last touched each chunk; clicking the commit opens it on GitHub.
     fn render_blame(&mut self, project: &DbtProject, file: &str, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let lines = match &self.blame {
@@ -548,7 +548,7 @@ impl TableTab {
             range
                 .map(|i| {
                     let l = &lines[i];
-                    // Só a primeira linha de cada trecho mostra o commit; as seguintes ficam limpas.
+                    // Only the first line of each chunk shows the commit; the rest stay clean.
                     let first = i == 0 || lines[i - 1].sha != l.sha;
                     let who = if l.uncommitted { t!("tv.uncommitted").to_string() } else { format!("{} · {}", l.author, when_from(l.time)) };
                     let url = commit_url(&git, &l.sha);
@@ -585,14 +585,14 @@ impl TableTab {
         .into_any_element()
     }
 
-    /// Board 9: fatos do modelo à esquerda, SQL (fonte/compilado) à direita.
+    /// Board 9: model facts on the left, SQL (source/compiled) on the right.
     pub(crate) fn render_dbt(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let Some(store) = self.dbt.clone() else { return div().into_any_element() };
         let project = match &store.read(cx).project {
             Load::Ready(p) => p.clone(),
             _ => {
-                // Não configurado / sem manifest / carregando: o cartão de estado do board 10.
+                // Not configured / no manifest / loading: the board 10 state card.
                 return v_flex()
                     .p_4()
                     .gap_3()
@@ -627,7 +627,7 @@ impl TableTab {
             .when(!node.unique_key.is_empty(), |d| d.child(row(t!("tv.unique_key").to_string(), node.unique_key.join(", "))))
             .when_some(node.owner.clone(), |d, o| d.child(row(t!("tv.owner").to_string(), o)))
             .when(node.meta.iter().any(|(k, _)| k != "owner"), |d| {
-                // Uma linha por chave (já achatada: `atlan.attributes.ownerUsers`).
+                // One line per key (already flattened: `atlan.attributes.ownerUsers`).
                 let mut list = v_flex().gap_0p5().min_w_0();
                 for (k, v) in node.meta.iter().filter(|(k, _)| k != "owner") {
                     list = list.child(v_flex().child(div().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(k.clone())).child(div().text_sm().child(v.clone())));
@@ -653,8 +653,8 @@ impl TableTab {
                 .child(Button::new("tv-refresh").label(t!("dbt.refresh").to_string()).outline().xsmall().loading(store.read(cx).refreshing).on_click(move |_, _, cx| refresh_store.update(cx, |s, cx| s.refresh(cx)))),
         );
 
-        // SQL somente leitura; o texto troca entre fonte e compilado.
-        // Compilado: o arquivo em target/compiled (compile/run anterior), senão o do manifest.
+        // Read-only SQL; the text switches between source and compiled.
+        // Compiled: the file in target/compiled (previous compile/run), else the manifest's.
         if self.compiled.as_ref().is_none_or(|(u, _)| *u != node.unique_id) {
             let found = rb_core::dbt::compiled_on_disk(&project.dir, &node).map(|(sql, t)| (sql, Some(t))).or_else(|| node.compiled_code.clone().map(|c| (c, None)));
             self.compiled = found.map(|f| (node.unique_id.clone(), Load::Ready(f)));
@@ -705,7 +705,7 @@ impl TableTab {
                     .child(toggle("tv-cmp", t!("tv.compiled").to_string(), compiled, true, cx).disabled(!has_compiled).when(!has_compiled, |b| b.tooltip(t!("tv.no_compiled").to_string())))
                     .when_some(url, |d, u| d.child(Button::new("tv-gh").label(t!("tv.open_github").to_string()).outline().xsmall().on_click(move |_, _, cx| cx.open_url(&u))))
                     .child(Button::new("tv-ed").label(t!("tv.open_editor").to_string()).outline().xsmall().on_click(move |_, _, cx| {
-                        // `status` em segundo plano: espera o `open` terminar (sem zumbi) sem travar a UI.
+                        // `status` in the background: waits for `open` to finish (no zombie) without blocking the UI.
                         let local = local.clone();
                         cx.background_spawn(async move {
                             let _ = std::process::Command::new("open").arg(&local).status();
@@ -734,7 +734,7 @@ impl TableTab {
     }
 }
 
-/// Um passo do "Vem de": ponto da cor do tipo (dbt model/source/seed/fora do dbt).
+/// A step of "Comes from": dot in the type color (dbt model/source/seed/outside dbt).
 fn lineage_step(n: &LinNode, project: Option<&DbtProject>, theme: &gpui_kit::component::Theme) -> Div {
     let found = project.and_then(|p| p.manifest.find_table(&n.db, &n.schema, &n.object)).map(|(f, _)| f);
     let kind = found.map(|f| f.resource_type.clone()).unwrap_or_default();

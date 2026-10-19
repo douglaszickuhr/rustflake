@@ -28,7 +28,7 @@ use crate::meta::{ConnTarget, MetaStore};
 use crate::plan_view::PlanView;
 use crate::{CancelQuery, CopyCells, Db, ExplainAnalyze, ExplainEstimate, FormatSql, PlanFit, PlanZoomIn, PlanZoomOut, RunScript, RunStatement, TabKey, ToggleComment};
 
-/// Aba visível na área de resultados.
+/// Tab visible in the results area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Result(usize),
@@ -36,40 +36,40 @@ pub enum Pane {
     Plan,
 }
 
-/// Uma linha da aba "Mensagens": um statement executado.
+/// A row of the "Messages" tab: one executed statement.
 pub struct Message {
     pub sql_head: String,
-    /// Linhas do primeiro lote; `more` = havia mais.
+    /// Rows of the first batch; `more` = there were more.
     pub rows: Option<u64>,
     pub more: bool,
     pub affected: Option<u64>,
     pub ms: u64,
     pub error: Option<String>,
-    /// Snowflake: para achar a query no Snowsight / QUERY_HISTORY.
+    /// Snowflake: to find the query in Snowsight / QUERY_HISTORY.
     pub query_id: Option<String>,
 }
 
 struct ResultPane {
     title: SharedString,
     grid: Entity<TableState<ResultGrid>>,
-    /// Havia mais linhas, mas o cursor fechou quando o statement seguinte rodou.
+    /// There were more rows, but the cursor closed when the next statement ran.
     truncated: bool,
     query_id: Option<String>,
 }
 
-/// Índices dos statements que viram aba de resultado (devolveram colunas) e se a aba
-/// "Mensagens" aparece (script com mais de um statement).
+/// Indices of statements that become a result tab (returned columns) and whether the
+/// "Messages" tab shows up (script with more than one statement).
 fn panes(has_columns: &[bool], statements: usize) -> (Vec<usize>, bool) {
     (has_columns.iter().enumerate().filter(|(_, c)| **c).map(|(i, _)| i).collect(), statements > 1)
 }
 
-/// A sessão mantém um cursor só: qualquer statement executado depois (inclusive um que falhou)
-/// fecha o do anterior.
+/// The session keeps a single cursor: any statement executed afterwards (even one that failed)
+/// closes the previous one's.
 fn cursor_closed(i: usize, executed: usize) -> bool {
     i + 1 != executed
 }
 
-/// Texto a inserir do histórico: começa um statement novo se o cursor está depois de um.
+/// Text to insert from history: starts a new statement if the cursor is after one.
 fn text_for_insert(before: &str, sql: &str) -> String {
     let prev = before.trim_end();
     if prev.is_empty() || before.ends_with('\n') {
@@ -81,17 +81,17 @@ fn text_for_insert(before: &str, sql: &str) -> String {
     }
 }
 
-/// O que o ⌘⇧F formata: a seleção, ou o script inteiro se nada estiver selecionado.
+/// What ⌘⇧F formats: the selection, or the whole script if nothing is selected.
 fn format_target(src: &str, selection: Range<usize>) -> Range<usize> {
     if selection.is_empty() { 0..src.len() } else { selection.start.min(selection.end)..selection.start.max(selection.end) }
 }
 
-/// ⌘/: comenta (`-- `) ou descomenta as linhas tocadas pela seleção. Todas as linhas com texto já
-/// comentadas = descomenta; senão comenta todas na menor indentação. Devolve (trecho das linhas,
-/// texto novo, seleção depois).
+/// ⌘/: comments (`-- `) or uncomments the lines touched by the selection. All lines with text already
+/// commented = uncomment; otherwise comment all at the smallest indentation. Returns (line range,
+/// new text, selection after).
 fn toggle_comment(src: &str, sel: Range<usize>) -> (Range<usize>, String, Range<usize>) {
     let (s, mut e) = (sel.start.min(sel.end), sel.start.max(sel.end));
-    // Seleção que termina no começo de uma linha não leva essa linha.
+    // A selection ending at the start of a line doesn't include that line.
     if e > s && src[..e].ends_with('\n') {
         e -= 1;
     }
@@ -117,7 +117,7 @@ fn toggle_comment(src: &str, sel: Range<usize>) -> (Range<usize>, String, Range<
         .collect();
     let text = out.join("\n");
     let after = if s == e {
-        // Só o cursor: fica no mesmo ponto do texto.
+        // Cursor only: stays at the same point in the text.
         let delta = text.len() as isize - (end - start) as isize;
         let c = (s as isize + delta).max(start as isize) as usize;
         c..c
@@ -127,7 +127,7 @@ fn toggle_comment(src: &str, sel: Range<usize>) -> (Range<usize>, String, Range<
     (start..end, text, after)
 }
 
-/// Resumo de uma linha: junta as linhas (SQL formatado começa com "SELECT" sozinho) e corta em 80.
+/// One-line summary: joins the lines (formatted SQL starts with a lone "SELECT") and cuts at 80.
 pub(crate) fn sql_head(sql: &str) -> String {
     let line = sql.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.chars().count() > 80 { line.chars().take(80).collect::<String>() + "…" } else { line }
@@ -148,7 +148,7 @@ pub struct SqlTab {
     meta: Entity<MetaStore>,
     session: Option<Arc<Session>>,
     running: bool,
-    /// O último run teve `USE …`: o contexto (database/schema/warehouse/role) mudou.
+    /// The last run had a `USE …`: the context (database/schema/warehouse/role) changed.
     ran_use: bool,
     status: SharedString,
     _save: Option<Task<()>>,
@@ -166,7 +166,7 @@ impl SqlTab {
             let lsp = ed.lsp_mut();
             lsp.completion_provider = Some(std::rc::Rc::new(SqlCompletion::new(meta.clone())));
             lsp.definition_provider = Some(std::rc::Rc::new(SqlDefinition::new(meta.clone(), target.clone())));
-            // ⌘-clique numa tabela: abre a aba dela em vez de pular dentro do script.
+            // ⌘-click on a table: opens its tab instead of jumping within the script.
             lsp.show_document = Some(std::rc::Rc::new(move |_, window, cx| {
                 if let Some((schema, table)) = target.borrow().clone() {
                     open_table(schema, table, window, cx);
@@ -225,7 +225,7 @@ impl SqlTab {
         self.path.file_stem().map_or("script".into(), |s| s.to_string_lossy().to_string().into())
     }
 
-    /// Insere no cursor (histórico) e devolve o foco ao editor.
+    /// Inserts at the cursor (history) and returns focus to the editor.
     pub fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |e, cx| {
             let value = e.value().to_string();
@@ -235,7 +235,7 @@ impl SqlTab {
         });
     }
 
-    /// Salva 1 s depois da última alteração. Trocar a task cancela a anterior.
+    /// Saves 1 s after the last change. Replacing the task cancels the previous one.
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
         let editor = self.editor.clone();
@@ -249,10 +249,10 @@ impl SqlTab {
         }));
     }
 
-    /// Gravação síncrona ao fechar a aba (arquivo pequeno).
-    /// Salva, renomeia o arquivo e passa a salvar no nome novo.
+    /// Synchronous write on tab close (small file).
+    /// Saves, renames the file and keeps saving under the new name.
     pub fn rename(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), DbError> {
-        // O salvamento agendado escreveria no caminho antigo e recriaria o arquivo.
+        // The scheduled save would write to the old path and recreate the file.
         self._save = None;
         self.save_now(cx);
         self.path = rb_core::config::rename_script(&self.path, name)?;
@@ -277,7 +277,7 @@ impl SqlTab {
         if ranges.is_empty() {
             return;
         }
-        // `EXPLAIN [ANALYZE] …` escrito à mão: mostra o diagrama em vez do texto do banco.
+        // `EXPLAIN [ANALYZE] …` written by hand: shows the diagram instead of the database's text.
         if let [r] = ranges.as_slice()
             && let Some((analyze, inner)) = explain_prefix(&src[r.clone()])
         {
@@ -287,7 +287,7 @@ impl SqlTab {
         self.ran_use = ranges.iter().any(|r| src[r.clone()].trim_start().get(..4).is_some_and(|w| w.eq_ignore_ascii_case("use ")));
         self.running = true;
         self.status = t!("sql.running").to_string().into();
-        // O resultado anterior fica na tela (com skeleton se demorar) até o novo chegar.
+        // The previous result stays on screen (with skeleton if slow) until the new one arrives.
         self._busy = self.active_grid().map(|g| grid::busy_later(g, cx));
         cx.notify();
 
@@ -359,7 +359,7 @@ impl SqlTab {
             .collect();
         self.record_history(&outcomes, src, cx);
 
-        // Uma grade por statement com colunas; só o último executado mantém o cursor para paginar.
+        // One grid per statement with columns; only the last executed keeps the cursor for paging.
         self._grid_subs.clear();
         let executed = outcomes.len();
         let mut results = Vec::new();
@@ -398,7 +398,7 @@ impl SqlTab {
         cx.notify();
     }
 
-    /// ⌘E (estimado) / ⌘⇧E (real) do statement sob o cursor; o diagrama vai para a aba "Plano".
+    /// ⌘E (estimated) / ⌘⇧E (actual) of the statement under the cursor; the diagram goes to the "Plan" tab.
     fn explain(&mut self, analyze: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.running {
             return;
@@ -410,11 +410,11 @@ impl SqlTab {
         self.explain_sql(src, sql, analyze, window, cx);
     }
 
-    /// Plano real de uma query que já rodou: lê as estatísticas pelo query id, sem executar de novo.
+    /// Real plan of a query that already ran: reads the stats by query id, without running again.
     fn actual_plan(&mut self, query_id: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone().filter(|_| !self.running) else { return };
         let ms = self.messages.iter().find(|m| m.query_id.as_deref() == Some(query_id.as_str())).map(|m| m.ms as f64);
-        // Roda na mesma sessão e fecha o cursor da grade aberta, como o ⌘E.
+        // Runs in the same session and closes the open grid's cursor, like ⌘E.
         for p in &mut self.results {
             if p.grid.update(cx, |t, _| t.delegate_mut().close_cursor()) {
                 p.truncated = true;
@@ -435,7 +435,7 @@ impl SqlTab {
                         cx.notify();
                     }
                     Err(e) => {
-                        // Sem plano a aba diria "carregando" para sempre: volta à grade; clicar de novo tenta outra vez.
+                        // Without a plan the tab would say "loading" forever: goes back to the grid; clicking again retries.
                         t.active = Pane::Result(t.results.len().saturating_sub(1));
                         t.show_error("", None, e, window, cx)
                     }
@@ -449,7 +449,7 @@ impl SqlTab {
         if self.running {
             return;
         }
-        // O EXPLAIN roda na mesma sessão e fecha o cursor da grade aberta: ela passa a mostrar "só as primeiras".
+        // EXPLAIN runs in the same session and closes the open grid's cursor: it now shows "only the first".
         for p in &mut self.results {
             if p.grid.update(cx, |t, _| t.delegate_mut().close_cursor()) {
                 p.truncated = true;
@@ -493,7 +493,7 @@ impl SqlTab {
         }
     }
 
-    /// Cada statement executado vai para o histórico da conexão, em segundo plano.
+    /// Each executed statement goes to the connection's history, in the background.
     fn record_history(&self, outcomes: &[Outcome], src: &str, cx: &mut Context<Self>) {
         let path = history::history_path(self.conn_id());
         let ts = history::now_ms();
@@ -549,7 +549,7 @@ impl SqlTab {
         }
     }
 
-    /// Uma edição só (`replace`): um ⌘Z volta ao texto anterior. Texto igual não suja o desfazer.
+    /// A single edit (`replace`): one ⌘Z restores the previous text. Identical text doesn't dirty the undo.
     fn format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (src, sel) = {
             let e = self.editor.read(cx);
@@ -570,7 +570,7 @@ impl SqlTab {
         });
     }
 
-    /// Uma edição só: ⌘Z desfaz o (des)comentário inteiro.
+    /// A single edit: ⌘Z undoes the whole (un)comment.
     fn toggle_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (src, sel) = {
             let e = self.editor.read(cx);
@@ -633,11 +633,11 @@ impl Render for SqlTab {
             _ => None,
         };
 
-        // Snowflake: com query id, a aba Plano existe já depois da execução e busca o plano real ao ser aberta.
+        // Snowflake: with query id, the Plano tab exists right after execution and fetches the real plan when opened.
         let run_qid = self.results.iter().rev().find_map(|p| p.query_id.clone()).or_else(|| self.messages.iter().rev().find_map(|m| m.query_id.clone()));
         let has_plan = self.plan.is_some() || run_qid.is_some();
         let tabs = (self.results.len() > 1 || self.show_messages || has_plan).then(|| {
-            // Ordem das abas: resultados, Mensagens (se houver), Plano (se houver).
+            // Tab order: results, Mensagens (if any), Plano (if any).
             let n = self.results.len();
             let msgs = self.show_messages;
             let selected = match self.active {
@@ -647,7 +647,7 @@ impl Render for SqlTab {
             };
             let bar = self.results.iter().fold(
                 TabBar::new("result-tabs").selected_index(selected).on_click(cx.listener(move |t, ix: &usize, window, cx| {
-                    // O plano é da query da grade que estava aberta (ou da última executada).
+                    // The plan is for the query of the grid that was open (or the last executed).
                     let qid = match t.active {
                         Pane::Result(i) => t.results.get(i).and_then(|p| p.query_id.clone()),
                         _ => None,
@@ -704,12 +704,12 @@ impl Render for SqlTab {
             .on_action(cx.listener(|t, _: &ToggleComment, w, cx| t.toggle_comment(w, cx)))
             .on_action(cx.listener(|t, _: &ExplainEstimate, w, cx| t.explain(false, w, cx)))
             .on_action(cx.listener(|t, _: &ExplainAnalyze, w, cx| t.explain(true, w, cx)))
-            // O foco fica no editor depois do ⌘E: o zoom do diagrama também vale daqui.
+            // Focus stays in the editor after ⌘E: the diagram zoom also works from here.
             .on_action(cx.listener(|t, _: &PlanZoomIn, _, cx| t.with_plan(cx, |p, cx| p.zoom_step(true, cx))))
             .on_action(cx.listener(|t, _: &PlanZoomOut, _, cx| t.with_plan(cx, |p, cx| p.zoom_step(false, cx))))
             .on_action(cx.listener(|t, _: &PlanFit, _, cx| t.with_plan(cx, |p, cx| p.zoom_fit(cx))))
             .on_action(cx.listener(|t, _: &TabKey, window, cx| {
-                // O editor só consulta o menu no Enter; o Tab dele (IndentInline) indentaria.
+                // The editor only consults the menu on Enter; its Tab (IndentInline) would indent.
                 if t.editor.read(cx).completion_menu_state().open {
                     window.dispatch_action(Box::new(Enter { secondary: false, shift: false }), cx);
                 } else {
@@ -741,7 +741,7 @@ impl Render for SqlTab {
     }
 }
 
-/// "Query ID 01b2…" que copia o id inteiro (para colar no Snowsight ou no QUERY_HISTORY).
+/// "Query ID 01b2…" that copies the whole id (to paste into Snowsight or QUERY_HISTORY).
 pub(crate) fn query_id_button(id: impl Into<ElementId>, query_id: String) -> Button {
     let short: String = query_id.chars().take(18).collect();
     Button::new(id)
@@ -758,18 +758,18 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn statements_become_result_tabs_and_messages() {
-        assert_eq!(panes(&[true], 1), (vec![0], false), "um statement: só a grade");
+        assert_eq!(panes(&[true], 1), (vec![0], false), "one statement: grid only");
         assert_eq!(panes(&[true, false, true], 3), (vec![0, 2], true));
-        assert_eq!(panes(&[false, false], 2), (vec![], true), "só DML: só mensagens");
-        assert_eq!(panes(&[true, false], 3), (vec![0], true), "erro no 2º de 3: o 1º fica, mensagens aparecem");
+        assert_eq!(panes(&[false, false], 2), (vec![], true), "DML only: messages only");
+        assert_eq!(panes(&[true, false], 3), (vec![0], true), "error on 2nd of 3: the 1st stays, messages appear");
     }
 
     #[::core::prelude::v1::test]
     fn only_the_last_executed_statement_keeps_its_cursor() {
-        assert!(cursor_closed(0, 2), "SELECT seguido de UPDATE: o UPDATE fechou o cursor");
+        assert!(cursor_closed(0, 2), "SELECT followed by UPDATE: the UPDATE closed the cursor");
         assert!(!cursor_closed(1, 2));
         assert!(!cursor_closed(0, 1));
-        assert!(cursor_closed(0, 2), "erro no 2º: o 1º também perdeu o cursor");
+        assert!(cursor_closed(0, 2), "error on 2nd: the 1st also lost its cursor");
     }
 
     #[::core::prelude::v1::test]
@@ -791,24 +791,24 @@ mod tests {
     #[::core::prelude::v1::test]
     fn cmd_slash_toggles_line_comments() {
         let src = "select 1;\n  select 2\n\n  from t;";
-        // Cursor na 1ª linha: comenta só ela, cursor anda junto.
+        // Cursor on line 1: comments only it, cursor moves along.
         let (r, t, a) = toggle_comment(src, 3..3);
         assert_eq!((r, t.as_str(), a), (0..9, "-- select 1;", 6..6));
-        // Várias linhas: menor indentação, linha vazia intacta.
+        // Multiple lines: smallest indentation, empty line untouched.
         let (r, t, _) = toggle_comment(src, 12..src.len());
         assert_eq!((r, t.as_str()), (10..src.len(), "  -- select 2\n\n  -- from t;"));
-        // Tudo comentado: descomenta.
+        // All commented: uncomments.
         let c = "  -- select 2\n  --from t;";
         assert_eq!(toggle_comment(c, 0..c.len()).1, "  select 2\n  from t;");
-        // Seleção até o começo da linha seguinte não a inclui.
+        // A selection up to the start of the next line doesn't include it.
         assert_eq!(toggle_comment(src, 0..10).0, 0..9);
-        // Misto (uma comentada, outra não): comenta todas.
+        // Mixed (one commented, one not): comments all.
         assert_eq!(toggle_comment("-- a\nb", 0..6).1, "-- -- a\n-- b");
     }
 
     #[::core::prelude::v1::test]
     fn sql_head_joins_lines_and_caps_length() {
-        assert_eq!(sql_head("\n  select *\n from t"), "select * from t", "SQL formatado: junta as linhas");
+        assert_eq!(sql_head("\n  select *\n from t"), "select * from t", "formatted SQL: joins the lines");
         assert_eq!(sql_head("SELECT\n  1 AS a,\n  'x' AS b"), "SELECT 1 AS a, 'x' AS b");
         assert_eq!(sql_head(&"x".repeat(200)).chars().count(), 81);
     }

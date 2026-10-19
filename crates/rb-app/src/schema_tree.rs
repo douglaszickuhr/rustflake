@@ -22,13 +22,13 @@ fn id(parts: &[&str]) -> SharedString {
     parts.join(SEP).into()
 }
 
-/// Ids da árvore a partir das partes de `Hit::tree_path`.
+/// Tree ids from the parts of `Hit::tree_path`.
 pub fn path_ids(path: &[Vec<String>]) -> Vec<SharedString> {
     path.iter().map(|p| id(&p.iter().map(String::as_str).collect::<Vec<_>>())).collect()
 }
 
-/// Nó a selecionar depois de `set_items` (que zera a seleção): o alvo de uma busca pendente,
-/// senão o que já estava selecionado. `true` = é o alvo da busca (rolar até ele).
+/// Node to select after `set_items` (which clears the selection): the target of a pending search,
+/// otherwise whatever was already selected. `true` = it is the search target (scroll to it).
 fn selection_after_rebuild(pending: Option<SharedString>, previous: Option<SharedString>) -> Option<(SharedString, bool)> {
     pending.map(|p| (p, true)).or(previous.map(|p| (p, false)))
 }
@@ -74,7 +74,7 @@ impl Kind {
     }
 }
 
-/// Tipo do nó e detalhe exibido em cinza (tipo da coluna), a partir do id e do cache.
+/// Node kind and the detail shown in gray (column type), from the id and the cache.
 fn describe(node: &str, c: &MetaCache) -> (Kind, Option<String>) {
     let parts: Vec<&str> = node.split(SEP).collect();
     let kind = match parts.as_slice() {
@@ -106,7 +106,7 @@ pub struct SchemaTree {
     meta: Entity<MetaStore>,
     state: Entity<TreeState>,
     expanded: HashSet<SharedString>,
-    /// Nó a selecionar assim que aparecer (busca rápida); os ancestrais podem estar carregando.
+    /// Node to select as soon as it appears (quick search); ancestors may still be loading.
     pending_reveal: Option<SharedString>,
     on_open_table: OpenTable,
     _subs: Vec<Subscription>,
@@ -116,7 +116,7 @@ impl SchemaTree {
     pub fn new(meta: Entity<MetaStore>, on_open_table: OpenTable, cx: &mut Context<Self>) -> Self {
         let state = cx.new(|cx| TreeState::new(cx));
         let subs = vec![
-            // Rótulos ("Tabelas (n)", "carregando…") ficam nos itens: idioma novo, itens novos.
+            // Labels ("Tables (n)", "loading…") live in the items: new language, new items.
             cx.observe_global::<Lang>(|this, cx| this.rebuild(cx)),
             cx.observe(&meta, |this, _, cx| this.rebuild(cx)),
             cx.subscribe(&state, |this, _, ev: &TreeEvent, cx| this.on_tree_event(ev, cx)),
@@ -146,7 +146,7 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// Expande do topo até o alvo (pedindo o que falta carregar) e seleciona o alvo quando ele aparecer.
+    /// Expands from the top down to the target (requesting what is still missing) and selects the target once it appears.
     pub fn reveal(&mut self, path: Vec<Vec<String>>, cx: &mut Context<Self>) {
         let ids = path_ids(&path);
         let Some((target, ancestors)) = ids.split_last() else { return };
@@ -170,7 +170,7 @@ impl SchemaTree {
         }
     }
 
-    /// Pede ao cache os filhos de um nó que acabou de abrir.
+    /// Asks the cache for the children of a node that was just opened.
     fn load_children(&mut self, node: &SharedString, cx: &mut Context<Self>) {
         let parts: Vec<&str> = node.split(SEP).collect();
         self.meta.update(cx, |m, cx| match parts.as_slice() {
@@ -231,7 +231,7 @@ fn build_items(c: &MetaCache, expanded: &HashSet<SharedString>) -> Vec<TreeItem>
     c.schemas.iter().map(|s| schema_item(c, s, s, expanded)).collect()
 }
 
-/// Nó de schema: `key` é a chave do cache (no Snowflake, `DB.SCHEMA`), `label` o que aparece.
+/// Schema node: `key` is the cache key (on Snowflake, `DB.SCHEMA`), `label` is what is shown.
 fn schema_item(c: &MetaCache, s: &str, label: &str, expanded: &HashSet<SharedString>) -> TreeItem {
     let open = |id: &SharedString| expanded.contains(id);
     let sid = id(&["s", s]);
@@ -291,7 +291,7 @@ impl Render for SchemaTree {
             .key_context("SchemaTree")
             .size_full()
             .on_action(cx.listener(|t, _: &RefreshNode, _, cx| t.refresh(cx)))
-            // A árvore não se foca sozinha ao clicar; sem foco o F5 não chega aqui.
+            // The tree does not focus itself on click; without focus F5 never gets here.
             .on_mouse_down(MouseButton::Left, cx.listener(|t, _, window, cx| t.state.update(cx, |s, cx| s.focus(window, cx))))
             .child(tree(
             &self.state,
@@ -301,14 +301,14 @@ impl Render for SchemaTree {
                 let (kind, detail) = describe(&node, &meta.read(cx).cache);
                 let theme = cx.theme();
                 let icon_color = if kind == Kind::PkColumn { theme.warning } else { theme.muted_foreground };
-                // Altura fixa por linha (lista virtualizada): nunca quebrar, cortar com "…".
+                // Fixed height per row (virtualized list): never wrap, truncate with "…".
                 let row = h_flex()
                     .w_full()
                     .gap_1p5()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .when_some(kind.icon(entry.is_expanded()), |r, icon| r.child(Icon::new(icon).small().text_color(icon_color)))
-                    // Com detalhe (tipo da coluna), o nome fica inteiro e o detalhe é que corta.
+                    // With a detail (column type), the name stays whole and the detail is what gets truncated.
                     .child(
                         div()
                             .when(detail.is_some(), |d| d.flex_shrink_0())
@@ -323,8 +323,8 @@ impl Render for SchemaTree {
                     .selected(selected)
                     .pl(px(8. + 14. * entry.depth() as f32))
                     .child(row)
-                    // A árvore expande/recolhe a cada mouse_down: no duplo clique o segundo recolheria
-                    // a tabela que acabou de expandir. Ele fica só para abrir a aba.
+                    // The tree expands/collapses on every mouse_down: on a double click the second one would collapse
+                    // the table that was just expanded. It is left only for opening the tab.
                     .when(is_rel, |li| li.on_mouse_down(MouseButton::Left, |ev, _, cx| if ev.click_count >= 2 { cx.stop_propagation() }))
                     .on_click(
                     move |ev, window, cx| {
@@ -370,17 +370,17 @@ mod tests {
     fn snowflake_tree_starts_at_databases() {
         let mut c = cache();
         c.dialect = rb_core::dialect::Dialect::Snowflake;
-        c.databases = vec!["DB".into(), "OUTRO".into()];
+        c.databases = vec!["DB".into(), "OTHER".into()];
         c.schemas = vec!["DB.PUBLIC".into()];
         c.loaded_dbs.insert("DB".into());
         let items = build_items(&c, &HashSet::new());
-        assert_eq!(items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["DB", "OUTRO"]);
+        assert_eq!(items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["DB", "OTHER"]);
         assert_eq!(items[0].children.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["PUBLIC"]);
         assert_eq!(describe(&id(&["d", "DB"]), &c).0, Kind::Database);
         assert_eq!(items[1].children[0].label.to_string(), t!("tree.loading"));
-        c.db_filter = vec!["out*".into()];
+        c.db_filter = vec!["oth*".into()];
         let items = build_items(&c, &HashSet::new());
-        assert_eq!(items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["OUTRO"]);
+        assert_eq!(items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), vec!["OTHER"]);
     }
 
     #[::core::prelude::v1::test]

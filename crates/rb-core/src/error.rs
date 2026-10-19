@@ -10,7 +10,7 @@ pub enum DbError {
         message: String,
         detail: Option<String>,
         hint: Option<String>,
-        /// Posição 1-based em caracteres dentro do statement enviado.
+        /// 1-based position in characters within the sent statement.
         position: Option<u32>,
     },
     Connection(String),
@@ -19,12 +19,12 @@ pub enum DbError {
     Io(String),
     Edit(String),
     Unsupported(String),
-    /// Falha no túnel SSH (conexão, autenticação, canal, known_hosts).
+    /// SSH tunnel failure (connection, authentication, channel, known_hosts).
     Ssh(String),
-    /// Host SSH fora do known_hosts. `key` é a chave pública em formato OpenSSH, para `ssh::trust_host`.
+    /// SSH host not in known_hosts. `key` is the public key in OpenSSH format, for `ssh::trust_host`.
     HostKeyUnknown { host: String, port: u16, fingerprint: String, key: String },
-    /// Erro devolvido pelo Snowflake (código numérico do Snowflake, ex. 001003).
-    /// `query_id` para achar a query no Snowsight / QUERY_HISTORY.
+    /// Error returned by Snowflake (Snowflake numeric code, e.g. 001003).
+    /// `query_id` to find the query in Snowsight / QUERY_HISTORY.
     Snowflake { code: String, message: String, query_id: Option<String> },
 }
 
@@ -57,7 +57,7 @@ impl fmt::Display for DbError {
 }
 
 impl DbError {
-    /// Id da query no Snowflake, quando o erro veio de uma.
+    /// Query id on Snowflake, when the error came from one.
     pub fn query_id(&self) -> Option<&str> {
         match self {
             DbError::Snowflake { query_id, .. } => query_id.as_deref(),
@@ -86,7 +86,7 @@ impl From<tokio_postgres::Error> for DbError {
     }
 }
 
-/// Converte a posição do Postgres (1-based, em caracteres) para offset em bytes no statement.
+/// Converts the Postgres position (1-based, in characters) to a byte offset in the statement.
 pub fn error_byte_offset(stmt: &str, position: u32) -> usize {
     let n = position.saturating_sub(1) as usize;
     stmt.char_indices().nth(n).map_or(stmt.len(), |(i, _)| i)
@@ -98,7 +98,7 @@ mod tests {
     fn snowflake_errors_carry_the_query_id() {
         let e = DbError::Snowflake { code: "001003".into(), message: "syntax".into(), query_id: Some("01b2-abc".into()) };
         assert_eq!(e.query_id(), Some("01b2-abc"));
-        assert_eq!(e.to_string(), "[001003] syntax", "o id não polui a mensagem");
+        assert_eq!(e.to_string(), "[001003] syntax", "the id does not pollute the message");
         assert_eq!(DbError::Connection("x".into()).query_id(), None);
     }
 

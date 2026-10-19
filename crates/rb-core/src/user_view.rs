@@ -1,8 +1,8 @@
-//! Peças puras da página de usuário: tempo relativo, linha da lista, logins agrupados, árvore filtrada.
+//! Pure pieces of the user page: relative time, list row, grouped logins, filtered tree.
 
 use crate::admin::{LoginEvent, TreeRow, UserInfo};
 
-/// `YYYY-MM-DD HH:MM:SS…` → segundos Unix. ponytail: ignora o fuso (o Snowflake devolve UTC aqui).
+/// `YYYY-MM-DD HH:MM:SS…` → Unix seconds. ponytail: ignores the time zone (Snowflake returns UTC here).
 pub fn parse_ts(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[13] != b':' {
@@ -10,7 +10,7 @@ pub fn parse_ts(s: &str) -> Option<i64> {
     }
     let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
     let (y, m, d, hh, mm, ss) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
-    // Dias desde 1970-01-01 (algoritmo civil de Howard Hinnant).
+    // Days since 1970-01-01 (Howard Hinnant's civil algorithm).
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
@@ -24,7 +24,7 @@ pub fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// Intervalo na maior unidade que cabe; a tela traduz.
+/// Interval in the largest unit that fits; the screen translates it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Span {
     Minutes(u64),
@@ -50,10 +50,10 @@ pub fn span(secs: i64) -> Span {
     }
 }
 
-/// Sem login há mais que isto: destaque laranja na lista.
+/// No login for longer than this: orange highlight in the list.
 pub const IDLE_DAYS: i64 = 90;
 
-/// Segunda linha de cada usuário na lista.
+/// Second line of each user in the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserMeta {
     Disabled,
@@ -77,7 +77,7 @@ pub fn user_meta(u: &UserInfo, now: i64) -> UserMeta {
     }
 }
 
-/// Logins seguidos iguais (resultado, método, cliente, IP) viram uma linha com ×n; vem do mais recente.
+/// Consecutive identical logins (result, method, client, IP) become one row with ×n; starts from the most recent.
 pub fn group_sign_ins(events: &[LoginEvent]) -> Vec<(LoginEvent, usize)> {
     let mut out: Vec<(LoginEvent, usize)> = Vec::new();
     for e in events {
@@ -89,7 +89,7 @@ pub fn group_sign_ins(events: &[LoginEvent]) -> Vec<(LoginEvent, usize)> {
     out
 }
 
-/// 0 = nada, 1 = poucas, 2 = algumas, 3 = muitas (cor da faixa de dias).
+/// 0 = none, 1 = few, 2 = some, 3 = many (day band color).
 pub fn intensity(n: u64) -> u8 {
     match n {
         0 => 0,
@@ -99,7 +99,7 @@ pub fn intensity(n: u64) -> u8 {
     }
 }
 
-/// Para cada linha visível: é o último filho do pai? (`└` em vez de `├`).
+/// For each visible row: is it the parent's last child? (`└` instead of `├`).
 pub fn last_child(rows: &[&TreeRow]) -> Vec<bool> {
     (0..rows.len())
         .map(|i| {
@@ -109,13 +109,13 @@ pub fn last_child(rows: &[&TreeRow]) -> Vec<bool> {
         .collect()
 }
 
-/// Provisionado por SCIM: o dono é a role do provisionador do IdP (`OKTA_PROVISIONER`,
+/// Provisioned by SCIM: the owner is the IdP provisioner's role (`OKTA_PROVISIONER`,
 /// `AAD_PROVISIONER`, `GENERIC_SCIM_PROVISIONER`).
 pub fn scim_managed(owner: Option<&str>) -> bool {
     owner.is_some_and(|o| o.to_ascii_uppercase().ends_with("_PROVISIONER"))
 }
 
-/// Métodos de login: SSO vem dos logins recentes (o SHOW USERS não diz).
+/// Login methods: SSO comes from recent logins (SHOW USERS does not say).
 pub fn auth_summary(u: &UserInfo, recent: &[LoginEvent]) -> Vec<&'static str> {
     let mut out = Vec::new();
     let sso = recent.iter().any(|e| e.success && e.factor.as_deref().is_some_and(|f| f.contains("SAML") || f.contains("OAUTH")));
@@ -142,8 +142,8 @@ mod tests {
     fn timestamps_parse_as_utc_seconds() {
         assert_eq!(parse_ts("1970-01-02 00:00:00.000Z"), Some(DAY));
         assert_eq!(parse_ts("2026-10-15 16:57:43.398 Z"), parse_ts("2026-10-15 16:57:43"));
-        assert_eq!(parse_ts("2000-03-01 00:00:00").unwrap() - parse_ts("2000-02-28 00:00:00").unwrap(), 2 * DAY, "2000 é bissexto");
-        assert_eq!(parse_ts("lixo"), None);
+        assert_eq!(parse_ts("2000-03-01 00:00:00").unwrap() - parse_ts("2000-02-28 00:00:00").unwrap(), 2 * DAY, "2000 is a leap year");
+        assert_eq!(parse_ts("garbage"), None);
     }
 
     #[test]
@@ -179,7 +179,7 @@ mod tests {
     fn consecutive_identical_sign_ins_collapse() {
         let g = group_sign_ins(&[ev("3", true, "a"), ev("2", true, "a"), ev("1", true, "b"), ev("0", false, "b")]);
         let got: Vec<(&str, usize)> = g.iter().map(|(e, n)| (e.at.as_str(), *n)).collect();
-        assert_eq!(got, vec![("3", 2), ("1", 1), ("0", 1)], "o mais recente representa o grupo; falha não junta com sucesso");
+        assert_eq!(got, vec![("3", 2), ("1", 1), ("0", 1)], "the most recent represents the group; a failure does not merge with a success");
     }
 
     #[test]

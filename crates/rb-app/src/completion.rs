@@ -33,9 +33,9 @@ fn kind(k: CandidateKind) -> CompletionItemKind {
     }
 }
 
-/// Itens para o cursor; pede ao MetaStore o que faltar. `true` = faltava catálogo.
+/// Items for the cursor; asks the MetaStore for whatever is missing. `true` = catalog was missing.
 fn items(meta: &Entity<MetaStore>, text: &Rope, offset: usize, cx: &mut App) -> (Vec<CompletionItem>, bool) {
-    // ponytail: copia o script a cada tecla; ok para scripts de até centenas de KB.
+    // ponytail: copies the script on every keystroke; fine for scripts up to hundreds of KB.
     let src = text.to_string();
     let comp = complete(&src, offset, &meta.read(cx).cache);
     let missing = !comp.missing.is_empty();
@@ -60,7 +60,7 @@ fn items(meta: &Entity<MetaStore>, text: &Rope, offset: usize, cx: &mut App) -> 
     (items, missing)
 }
 
-/// Quanto o menu espera o catálogo chegar antes de mostrar o que já tem.
+/// How long the menu waits for the catalog to arrive before showing what it already has.
 const CATALOG_WAIT: Duration = Duration::from_secs(5);
 
 impl CompletionProvider for SqlCompletion {
@@ -71,12 +71,12 @@ impl CompletionProvider for SqlCompletion {
         if !missing {
             return Task::ready(Ok(CompletionResponse::Array(first)));
         }
-        // Sem o catálogo o menu sairia vazio (ex.: ⌃Espaço logo depois de `from`): espera o
-        // MetaStore e refaz; no Snowflake podem ser duas rodadas (schemas, depois objetos).
+        // Without the catalog the menu would come out empty (e.g. ⌃Space right after `from`): wait for the
+        // MetaStore and redo; on Snowflake it can take two rounds (schemas, then objects).
         let (meta, text) = (self.meta.clone(), text.clone());
         cx.spawn(async move |cx| {
             let mut last = first;
-            // Até 3 rodadas: um pedido que falha não vira uma enxurrada de consultas.
+            // Up to 3 rounds: a failing request does not turn into a flood of queries.
             let mut rounds = 0;
             while rounds < 3 && started.elapsed() < CATALOG_WAIT {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
@@ -99,10 +99,10 @@ impl CompletionProvider for SqlCompletion {
     }
 }
 
-/// Tabela que o ⌘-hover achou por último: (schema como no cache, nome). O clique abre essa.
+/// Table that ⌘-hover found last: (schema as in the cache, name). The click opens this one.
 pub type DefinitionTarget = Rc<RefCell<Option<(String, String)>>>;
 
-/// ⌘ + hover sublinha a tabela/view do script; ⌘-clique abre a aba dela (via `show_document`).
+/// ⌘ + hover underlines the script's table/view; ⌘-click opens its tab (via `show_document`).
 pub struct SqlDefinition {
     meta: Entity<MetaStore>,
     target: DefinitionTarget,
@@ -119,7 +119,7 @@ impl DefinitionProvider for SqlDefinition {
         let Some((range, schema, table)) = relation_at(&text.to_string(), offset, &self.meta.read(cx).cache) else { return Task::ready(Ok(Vec::new())) };
         *self.target.borrow_mut() = Some((schema, table));
         let origin = lsp_types::Range { start: text.offset_to_position(range.start), end: text.offset_to_position(range.end) };
-        // A URI só identifica "abrir tabela"; qual tabela fica em `target`.
+        // The URI only identifies "open table"; which table lives in `target`.
         let Ok(target_uri) = "rustbeaver:table".parse() else { return Task::ready(Ok(Vec::new())) };
         let link = lsp_types::LocationLink {
             origin_selection_range: Some(origin),

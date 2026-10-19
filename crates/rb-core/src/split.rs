@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use crate::lexer::{TokKind, tokenize};
 
-/// Divide o script em statements pelo lexer, respeitando strings, dollar-quotes e comentários.
+/// Splits the script into statements via the lexer, respecting strings, dollar-quotes and comments.
 pub fn split_statements(src: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut cur: Option<Range<usize>> = None;
@@ -20,7 +20,7 @@ pub fn split_statements(src: &str) -> Vec<Range<usize>> {
     out
 }
 
-/// Statement sob o cursor; se o cursor estiver entre statements, o anterior; senão o primeiro.
+/// Statement under the cursor; if the cursor is between statements, the previous one; otherwise the first.
 pub fn statement_at(src: &str, offset: usize) -> Option<Range<usize>> {
     let stmts = split_statements(src);
     stmts
@@ -35,13 +35,13 @@ fn words(stmt: &str) -> impl Iterator<Item = String> + '_ {
     tokenize(stmt).into_iter().filter(|t| t.kind == TokKind::Word).map(move |t| stmt[t.start..t.end].to_lowercase())
 }
 
-/// BEGIN / START TRANSACTION / SAVEPOINT: o app roda só em autocommit.
+/// BEGIN / START TRANSACTION / SAVEPOINT: the app runs in autocommit only.
 pub fn is_transaction_control(stmt: &str) -> bool {
     matches!(words(stmt).next().as_deref(), Some("begin" | "start" | "savepoint"))
 }
 
-/// Só lê dados? Leituras podem ficar paginadas num portal aberto; escritas são concluídas
-/// e confirmadas na hora, mesmo com RETURNING.
+/// Read-only? Reads may stay paginated on an open portal; writes are completed
+/// and committed right away, even with RETURNING.
 pub fn is_read_only_query(stmt: &str) -> bool {
     let mut w = words(stmt);
     match w.next().as_deref() {
@@ -51,8 +51,8 @@ pub fn is_read_only_query(stmt: &str) -> bool {
     }
 }
 
-/// `EXPLAIN [ANALYZE] [VERBOSE] <consulta>` escrito à mão → (analyze, consulta), para mostrar o
-/// diagrama. Com opções explícitas (`EXPLAIN (FORMAT …)`, `EXPLAIN USING …`) fica o texto do banco.
+/// `EXPLAIN [ANALYZE] [VERBOSE] <query>` typed by hand → (analyze, query), to show the
+/// diagram. With explicit options (`EXPLAIN (FORMAT …)`, `EXPLAIN USING …`) the database's text is kept.
 pub fn explain_prefix(stmt: &str) -> Option<(bool, &str)> {
     let toks: Vec<_> = tokenize(stmt).into_iter().filter(|t| t.kind != TokKind::Comment).collect();
     let word = |i: usize| toks.get(i).filter(|t| t.kind == TokKind::Word).map(|t| stmt[t.start..t.end].to_ascii_lowercase());
@@ -71,7 +71,7 @@ pub fn explain_prefix(stmt: &str) -> Option<(bool, &str)> {
     explainable(inner).then_some((analyze, inner))
 }
 
-/// Statements que o EXPLAIN aceita: consultas e DML.
+/// Statements EXPLAIN accepts: queries and DML.
 pub fn explainable(stmt: &str) -> bool {
     matches!(words(stmt).next().as_deref(), Some("select" | "with" | "insert" | "update" | "delete" | "merge" | "values" | "table"))
 }
@@ -86,8 +86,8 @@ mod tests {
         assert_eq!(explain_prefix(src), Some((true, "select task_type, count(*) from t GROUP BY 1")));
         assert_eq!(explain_prefix("explain select 1"), Some((false, "select 1")));
         assert_eq!(explain_prefix("/* c */ explain analyse verbose update t set a = 1"), Some((true, "update t set a = 1")));
-        assert_eq!(explain_prefix("explain (format text) select 1"), None, "opções explícitas: texto do banco");
-        assert_eq!(explain_prefix("explain using text select 1"), None, "Snowflake com formato explícito");
+        assert_eq!(explain_prefix("explain (format text) select 1"), None, "explicit options: database text");
+        assert_eq!(explain_prefix("explain using text select 1"), None, "Snowflake with explicit format");
         assert_eq!(explain_prefix("explain create table t (a int)"), None);
         assert_eq!(explain_prefix("select 1"), None);
     }
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn ignores_empty_and_comment_only_statements() {
-        assert_eq!(texts(";; -- nada\n; /* x */ select 1 -- fim\n;"), vec!["select 1"]);
+        assert_eq!(texts(";; -- nothing\n; /* x */ select 1 -- end\n;"), vec!["select 1"]);
     }
 
     #[test]
@@ -148,9 +148,9 @@ mod tests {
         let at = |o| statement_at(src, o).map(|r| &src[r]);
         assert_eq!(at(3), Some("select 1"));
         assert_eq!(at(11), Some("select 2"));
-        assert_eq!(at(19), Some("select 2")); // logo após "select 2"
-        assert_eq!(at(src.len()), Some("select 2")); // linha em branco no fim
-        assert_eq!(at(10), Some("select 1")); // linha em branco entre os dois
+        assert_eq!(at(19), Some("select 2")); // right after "select 2"
+        assert_eq!(at(src.len()), Some("select 2")); // blank line at the end
+        assert_eq!(at(10), Some("select 1")); // blank line between the two
         assert_eq!(statement_at("   ", 1), None);
     }
 }

@@ -46,21 +46,21 @@ struct Fields {
     sf_role: Entity<InputState>,
     sf_schema: Entity<InputState>,
     env: Rc<Cell<Option<Environment>>>,
-    /// Aba aberta: 0 General, 1 Authentication, 2 dbt (só Snowflake).
+    /// Open tab: 0 General, 1 Authentication, 2 dbt (Snowflake only).
     tab: Rc<Cell<usize>>,
     dbt_dir: Entity<InputState>,
     dbt_target: Entity<InputState>,
-    /// `AWS_PROFILE` do dbt parse (dbt-loom no S3); vazio = o do shell.
+    /// `AWS_PROFILE` for dbt parse (dbt-loom on S3); empty = the shell's.
     dbt_aws: Entity<InputState>,
-    /// Estado do manifest da pasta escolhida (o mesmo cartão da seção dbt da tabela).
+    /// Manifest state of the chosen folder (the same card as the table's dbt section).
     dbt_card: Entity<DbtStore>,
-    /// "Nenhum" + configurações instaladas (o primeiro item é sempre "Nenhum").
+    /// "None" + installed configurations (the first item is always "None").
     org: Entity<SelectState<Vec<String>>>,
-    /// Arquivos de configuração que não carregaram.
+    /// Config files that failed to load.
     org_errs: String,
 }
 
-/// Bloco Snowflake a partir dos campos do diálogo.
+/// Snowflake block from the dialog fields.
 fn parse_snowflake(account: &str, auth: SnowflakeAuth, key: &str, warehouse: &str, role: &str, schema: &str) -> Result<SnowflakeConfig, String> {
     if account.is_empty() {
         return Err(t!("conn.err_account").to_string());
@@ -72,7 +72,7 @@ fn parse_snowflake(account: &str, auth: SnowflakeAuth, key: &str, warehouse: &st
     Ok(SnowflakeConfig { dbt: None, configuration: None, account: account.into(), auth, private_key: opt(key), warehouse: opt(warehouse), role: opt(role), schema: opt(schema), db_filter: Vec::new() })
 }
 
-/// Bloco SSH a partir dos campos do diálogo; host vazio = sem túnel.
+/// SSH block from the dialog fields; empty host = no tunnel.
 fn parse_ssh(host: &str, user: &str, port: &str, key: &str) -> Result<Option<SshConfig>, String> {
     if host.is_empty() {
         return Ok(None);
@@ -86,7 +86,7 @@ fn parse_ssh(host: &str, user: &str, port: &str, key: &str) -> Result<Option<Ssh
 }
 
 impl Fields {
-    /// Pasta vazia = sem dbt; target vazio = "prod".
+    /// Empty folder = no dbt; empty target = "prod".
     fn dbt_cfg(&self, cx: &App) -> Option<DbtConfig> {
         let dir = self.dbt_dir.read(cx).value().trim().to_string();
         let target = self.dbt_target.read(cx).value().trim().to_string();
@@ -94,7 +94,7 @@ impl Fields {
         (!dir.is_empty()).then(|| DbtConfig { project_dir: dir, target: if target.is_empty() { "prod".into() } else { target }, aws_profile: (!aws.is_empty()).then_some(aws) })
     }
 
-    /// (config, senha ou PAT, passphrase da chave SSH ou Snowflake); vazios mantêm o Keychain.
+    /// (config, password or PAT, SSH or Snowflake key passphrase); empty ones keep the Keychain.
     fn read(&self, cx: &App) -> Result<(ConnectionConfig, String, String), String> {
         let v = |e: &Entity<InputState>| e.read(cx).value().trim().to_string();
         if self.snowflake.get() {
@@ -104,7 +104,7 @@ impl Fields {
             }
             let mut snowflake = snowflake;
             snowflake.dbt = self.dbt_cfg(cx);
-            // Item 0 é sempre "Nenhum".
+            // Item 0 is always "None".
             snowflake.configuration = self.org.read(cx).selected_value().filter(|v| **v != t!("conn.config_none")).cloned();
             let cfg = ConnectionConfig {
                 environment: self.env.get(),
@@ -145,7 +145,7 @@ impl Fields {
     }
 }
 
-/// Mostra como placeholder o que o `~/.ssh/config` resolve para o host digitado.
+/// Shows as placeholder what `~/.ssh/config` resolves for the typed host.
 fn show_resolved(host: &str, user: &WeakEntity<InputState>, port: &WeakEntity<InputState>, key: &WeakEntity<InputState>, window: &mut Window, cx: &mut App) {
     let resolved = (!host.is_empty())
         .then(|| SshConfig { host: host.into(), user: None, port: None, identity_file: None }.resolve(&SshEnv::system()).ok())
@@ -163,7 +163,7 @@ fn show_resolved(host: &str, user: &WeakEntity<InputState>, port: &WeakEntity<In
     key.update(cx, |s, cx| s.set_placeholder(k, window, cx)).ok();
 }
 
-/// Caminho escolhido no seletor do macOS; dentro do home vira `~/…` (o SSH e o Snowflake expandem).
+/// Path chosen in the macOS picker; inside home it becomes `~/…` (SSH and Snowflake expand it).
 fn tilde(path: &Path, home: &Path) -> String {
     match path.strip_prefix(home) {
         Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
@@ -171,7 +171,7 @@ fn tilde(path: &Path, home: &Path) -> String {
     }
 }
 
-/// Campo de caminho de chave com "Escolher…", que abre o seletor de arquivos do macOS.
+/// Key path field with "Choose…", which opens the macOS file picker.
 fn key_field(id: &'static str, input: &Entity<InputState>) -> impl IntoElement {
     let target = input.downgrade();
     h_flex().gap_2().child(div().flex_1().child(Input::new(input))).child(Button::new(id).label(t!("conn.choose_file").to_string()).on_click(move |_, window, cx| {
@@ -189,7 +189,7 @@ fn key_field(id: &'static str, input: &Entity<InputState>) -> impl IntoElement {
     }))
 }
 
-/// Pasta (seletor do macOS); `changed` roda depois de escolher.
+/// Folder (macOS picker); `changed` runs after choosing.
 fn folder_field(id: &'static str, input: &Entity<InputState>, changed: impl Fn(&mut App) + 'static) -> impl IntoElement {
     let target = input.downgrade();
     let changed = Rc::new(changed);
@@ -212,7 +212,7 @@ fn folder_field(id: &'static str, input: &Entity<InputState>, changed: impl Fn(&
     }))
 }
 
-/// Nova conexão (`None`) ou edição de uma existente, mantendo o id.
+/// New connection (`None`) or editing an existing one, keeping the id.
 pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Context<Workspace>) {
     let editing = existing.is_some();
     let c = existing.unwrap_or_else(|| ConnectionConfig {
@@ -237,11 +237,11 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         SslMode::Prefer => 1,
         SslMode::Require => 2,
     };
-    // Pasta lida a cada abertura do diálogo; uma configuração nova aparece ao reabrir.
+    // Folder read on every dialog open; a new configuration shows up on reopen.
     let (installed, errs) = rb_core::org_config::load_all(&rb_core::org_config::org_configs_dir());
     let mut orgs: Vec<String> = std::iter::once(t!("conn.config_none").to_string()).chain(installed.iter().map(|a| a.name().to_string())).collect();
     let current = sf.as_ref().and_then(|s| s.configuration.clone());
-    // Configurado mas não instalado: continua na lista para salvar não apagar a escolha.
+    // Configured but not installed: stays in the list so saving doesn't erase the choice.
     if let Some(c) = current.as_ref().filter(|c| !orgs[1..].iter().any(|a| a.eq_ignore_ascii_case(c))) {
         orgs.push(c.clone());
     }
@@ -277,15 +277,15 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         org: cx.new(|cx| SelectState::new(orgs, Some(IndexPath::new(org_ix)), window, cx)),
         org_errs: errs.join("\n"),
     });
-    // Pasta/target mudou: o cartão recarrega o manifest dela.
+    // Folder/target changed: the card reloads its manifest.
     for input in [f.dbt_dir.clone(), f.dbt_target.clone(), f.dbt_aws.clone()] {
         let f2 = f.clone();
         cx.subscribe_in(&input, window, move |_, _, ev: &InputEvent, _, cx| {
             let cfg = f2.dbt_cfg(cx);
             match ev {
-                // Sair do campo/Enter: recarrega o manifest da pasta nova.
+                // Leaving the field/Enter: reloads the new folder's manifest.
                 InputEvent::Blur | InputEvent::PressEnter { .. } => f2.dbt_card.update(cx, |c, cx| c.set_cfg(cfg, cx)),
-                // Digitando: só guarda, para o Refresh logo em seguida usar o valor novo.
+                // Typing: just store it, so a Refresh right after uses the new value.
                 InputEvent::Change => f2.dbt_card.update(cx, |c, _| c.set_cfg_quiet(cfg)),
                 _ => {}
             }
@@ -293,11 +293,11 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         .detach();
     }
 
-    // ponytail: lido uma vez ao abrir o diálogo; um alias novo no arquivo pede reabrir.
+    // ponytail: read once when the dialog opens; a new alias in the file needs a reopen.
     let aliases = Rc::new(host_aliases(&SshEnv::system()));
     let (u, p, k) = (f.ssh_user.downgrade(), f.ssh_port.downgrade(), f.ssh_key.downgrade());
     let resolved_targets = (u.clone(), p.clone(), k.clone());
-    // ponytail: lê o ~/.ssh/config na thread de UI ao sair do campo; arquivo pequeno.
+    // ponytail: reads ~/.ssh/config on the UI thread when leaving the field; small file.
     let initial = f.ssh_host.read(cx).value().to_string();
     show_resolved(&initial, &u, &p, &k, window, cx);
     cx.subscribe_in(&f.ssh_host, window, move |_, state, ev: &InputEvent, window, cx| {
@@ -312,7 +312,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
     let (title, keep) = if editing { (t!("conn.edit_title").to_string(), format!(" {}", t!("conn.keep_current"))) } else { (t!("conn.new_title").to_string(), String::new()) };
     window.open_dialog(cx, move |dialog, _window, _cx| {
         let (f, ws, aliases, targets) = (f.clone(), ws.clone(), aliases.clone(), resolved_targets.clone());
-        // O builder roda a cada render: os botões de tipo e de autenticação trocam os campos.
+        // The builder runs on every render: the type and auth buttons swap the fields.
         let snowflake = f.snowflake.get();
         let tipo = {
             let (k1, k2) = (f.snowflake.clone(), f.snowflake.clone());
@@ -343,7 +343,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                 .child(env_pick("env-stg", t!("conn.env_staging").to_string(), Some(Environment::Staging)))
                 .child(env_pick("env-dev", t!("conn.env_development").to_string(), Some(Environment::Development))),
         );
-        // Abas: General / Authentication / dbt (dbt só no Snowflake).
+        // Tabs: General / Authentication / dbt (dbt only on Snowflake).
         let tab = if snowflake { f.tab.get().min(2) } else { f.tab.get().min(1) };
         let tab_cell = f.tab.clone();
         let mut bar = TabBar::new("conn-tabs").selected_index(tab).on_click(move |ix: &usize, w, _| {
@@ -454,7 +454,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
 
 type Resolved = (WeakEntity<InputState>, WeakEntity<InputState>, WeakEntity<InputState>);
 
-/// Host SSH: digitável, com os aliases do `~/.ssh/config` num menu ao lado.
+/// SSH host: typeable, with the `~/.ssh/config` aliases in a menu beside it.
 fn ssh_host_field(input: &Entity<InputState>, aliases: Rc<Vec<String>>, targets: Resolved) -> impl IntoElement {
     let host = input.downgrade();
     h_flex().gap_2().child(div().flex_1().child(Input::new(input))).when(!aliases.is_empty(), |d| {
@@ -479,8 +479,8 @@ mod tests {
         let c = parse_snowflake("xy12345.us-east-1", SnowflakeAuth::KeyPair, "~/.ssh/sf.p8", "WH", "", "PUBLIC").unwrap();
         assert_eq!(c.private_key.as_deref(), Some("~/.ssh/sf.p8"));
         assert_eq!((c.warehouse.as_deref(), c.role, c.schema.as_deref()), (Some("WH"), None, Some("PUBLIC")));
-        assert!(parse_snowflake("", SnowflakeAuth::Pat, "", "", "", "").is_err(), "conta obrigatória");
-        assert!(parse_snowflake("a", SnowflakeAuth::KeyPair, "", "", "", "").is_err(), "keypair sem chave");
+        assert!(parse_snowflake("", SnowflakeAuth::Pat, "", "", "", "").is_err(), "account required");
+        assert!(parse_snowflake("a", SnowflakeAuth::KeyPair, "", "", "", "").is_err(), "keypair without key");
     }
 
     #[::core::prelude::v1::test]

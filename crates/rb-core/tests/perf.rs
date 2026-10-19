@@ -5,8 +5,8 @@ use std::time::Instant;
 use pollster::block_on;
 use rb_core::batch::ResultSet;
 
-/// Mede a memória com `perf_big` (1M × 10, de scripts/seed-perf.sql) inteiro carregado.
-/// Rode: `cargo test --release -p rb-core --test perf -- --ignored --nocapture`.
+/// Measures memory with `perf_big` (1M × 10, from scripts/seed-perf.sql) fully loaded.
+/// Run: `cargo test --release -p rb-core --test perf -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn load_perf_big_and_report_rss() {
@@ -29,6 +29,6 @@ fn load_perf_big_and_report_rss() {
     });
     assert_eq!(rs.rows(), 1_000_000);
     let after = rss_kb();
-    println!("1M×10 carregado em {:?}; RSS {} MB (antes {} MB)", started.elapsed(), after / 1024, before / 1024);
+    println!("1M×10 loaded in {:?}; RSS {} MB (before {} MB)", started.elapsed(), after / 1024, before / 1024);
     assert!(after / 1024 < 400, "meta: < 400 MB");
 }

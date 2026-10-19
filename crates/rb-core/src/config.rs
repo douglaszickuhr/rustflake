@@ -11,14 +11,14 @@ pub enum SslMode {
     #[default]
     Disable,
     Prefer,
-    /// TLS obrigatório, com certificado verificado pelas raízes do sistema.
+    /// TLS required, with the certificate verified against the system roots.
     Require,
 }
 
-/// Túnel SSH de uma conexão. Campos vazios vêm do `~/.ssh/config` ou dos padrões do OpenSSH.
+/// SSH tunnel of a connection. Empty fields come from `~/.ssh/config` or the OpenSSH defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SshConfig {
-    /// Alias do `~/.ssh/config` ou hostname.
+    /// `~/.ssh/config` alias or hostname.
     pub host: String,
     #[serde(default)]
     pub user: Option<String>,
@@ -37,7 +37,7 @@ pub enum SnowflakeAuth {
     Pat,
 }
 
-/// Conexão Snowflake. `ConnectionConfig.user` e `.database` são reaproveitados.
+/// Snowflake connection. `ConnectionConfig.user` and `.database` are reused.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SnowflakeConfig {
     pub account: String,
@@ -51,24 +51,24 @@ pub struct SnowflakeConfig {
     pub role: Option<String>,
     #[serde(default)]
     pub schema: Option<String>,
-    /// Padrões (`DEV_*`) das databases mostradas na árvore e no autocomplete; vazio = todas.
+    /// Patterns (`DEV_*`) of the databases shown in the tree and autocomplete; empty = all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub db_filter: Vec<String>,
-    /// Clone local do projeto dbt ligado a esta conexão (visão de tabela).
+    /// Local clone of the dbt project linked to this connection (table view).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dbt: Option<DbtConfig>,
-    /// `name` da configuração com as convenções da empresa (pasta `configurations/`); None = nenhum.
+    /// `name` of the config with the company conventions (`configurations/` folder); None = none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DbtConfig {
-    /// Pasta do projeto (aceita `~/`).
+    /// Project folder (accepts `~/`).
     pub project_dir: String,
-    /// Target do profiles.yml que aponta para esta conta (`dbt parse --target`).
+    /// profiles.yml target that points to this account (`dbt parse --target`).
     pub target: String,
-    /// `AWS_PROFILE` do `dbt parse` (dbt-loom busca manifests no S3); None = o do shell.
+    /// `AWS_PROFILE` for `dbt parse` (dbt-loom fetches manifests from S3); None = the shell's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aws_profile: Option<String>,
 }
@@ -85,17 +85,17 @@ pub struct ConnectionConfig {
     pub user: String,
     #[serde(default)]
     pub ssl: SslMode,
-    /// Com túnel, `host`/`port` são resolvidos pelo bastion.
+    /// With a tunnel, `host`/`port` are resolved by the bastion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SshConfig>,
-    /// Presente = conexão Snowflake; `host`, `port`, `ssl` e `ssh` são ignorados.
+    /// Present = Snowflake connection; `host`, `port`, `ssl` and `ssh` are ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snowflake: Option<SnowflakeConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<Environment>,
 }
 
-/// Rótulo na barra de contexto; Production também pinta a borda da janela.
+/// Label in the context bar; Production also paints the window border.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Environment {
@@ -150,7 +150,7 @@ pub fn connections_path() -> PathBuf {
     app_dir().join("connections.toml")
 }
 
-/// `~/x` → `$HOME/x`; o resto fica igual.
+/// `~/x` → `$HOME/x`; anything else is unchanged.
 pub fn expand_home(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
         Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
@@ -162,8 +162,8 @@ pub fn scripts_dir() -> PathBuf {
     app_dir().join("scripts")
 }
 
-/// Scripts da conexão `id` (em `root/<id>/`, ordenados). Scripts soltos em `root`, de antes
-/// dos scripts por conexão, vão para a primeira conexão que pedir.
+/// Scripts of connection `id` (in `root/<id>/`, sorted). Loose scripts in `root`, from before
+/// per-connection scripts, go to the first connection that asks.
 pub fn conn_scripts(root: &Path, id: &str) -> Result<Vec<PathBuf>, DbError> {
     let dir = root.join(id);
     std::fs::create_dir_all(&dir).map_err(io)?;
@@ -186,8 +186,8 @@ fn sql_files(dir: &Path) -> Result<Vec<PathBuf>, DbError> {
     Ok(files)
 }
 
-/// Cria `script-N.sql` vazio com o menor N livre. `create_new` garante que duas abas
-/// nunca compartilhem o mesmo arquivo.
+/// Creates an empty `script-N.sql` with the smallest free N. `create_new` ensures two tabs
+/// never share the same file.
 pub fn new_script(dir: &Path) -> Result<PathBuf, DbError> {
     std::fs::create_dir_all(dir).map_err(io)?;
     for n in 1.. {
@@ -198,10 +198,10 @@ pub fn new_script(dir: &Path) -> Result<PathBuf, DbError> {
             Err(e) => return Err(io(e)),
         }
     }
-    unreachable!("1.. é infinito")
+    unreachable!("1.. is infinite")
 }
 
-/// Move o script para `closed/` ao lado dele, sem sobrescrever nada que já esteja lá.
+/// Moves the script to `closed/` next to it, without overwriting anything already there.
 pub fn archive_script(path: &Path) -> Result<PathBuf, DbError> {
     let closed = path.parent().unwrap_or(Path::new(".")).join("closed");
     std::fs::create_dir_all(&closed).map_err(io)?;
@@ -217,7 +217,7 @@ pub fn archive_script(path: &Path) -> Result<PathBuf, DbError> {
     Ok(target)
 }
 
-/// Renomeia o script na mesma pasta (`nome` → `nome.sql`). Não sobrescreve outro script.
+/// Renames the script in the same folder (`name` → `name.sql`). Does not overwrite another script.
 pub fn rename_script(path: &Path, name: &str) -> Result<PathBuf, DbError> {
     // Barra viraria subpasta; o resto o macOS aceita.
     let name = name.trim().trim_end_matches(".sql").replace(['/', ':'], "-");
@@ -228,7 +228,7 @@ pub fn rename_script(path: &Path, name: &str) -> Result<PathBuf, DbError> {
     if target == path {
         return Ok(target);
     }
-    // Só a caixa mudou (APFS não diferencia): o rename direto funciona.
+    // Only the case changed (APFS is case-insensitive): a direct rename works.
     let same_file = target.to_string_lossy().to_lowercase() == path.to_string_lossy().to_lowercase();
     if target.exists() && !same_file {
         return Err(DbError::Config(rust_i18n::t!("err.script_exists", name = name).to_string()));
@@ -256,7 +256,7 @@ pub fn load(path: &Path) -> Result<ConfigFile, DbError> {
     }
 }
 
-/// Grava de forma atômica (arquivo temporário + rename).
+/// Writes atomically (temp file + rename).
 pub fn save(path: &Path, cfg: &ConfigFile) -> Result<(), DbError> {
     write_atomic(path, &toml::to_string_pretty(cfg).map_err(|e| DbError::Config(e.to_string()))?)
 }
@@ -270,7 +270,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), DbError> {
     std::fs::rename(&tmp, path).map_err(io)
 }
 
-/// Idioma da interface; `Auto` segue o macOS.
+/// Interface language; `Auto` follows macOS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -281,7 +281,7 @@ pub enum Language {
     Es,
 }
 
-/// Tema da interface; `Auto` segue o claro/escuro do macOS.
+/// Interface theme; `Auto` follows macOS light/dark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeChoice {
@@ -297,15 +297,15 @@ pub struct Settings {
     pub language: Language,
     #[serde(default)]
     pub theme: ThemeChoice,
-    /// Escolhas recentes do seletor, por "conexão:tipo" (role, warehouse…), mais recente primeiro.
+    /// Recent picker choices, by "connection:type" (role, warehouse…), most recent first.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub recent: std::collections::BTreeMap<String, Vec<String>>,
-    /// Conexões abertas quando o app fechou: reabertas na próxima partida.
+    /// Connections open when the app closed: reopened on the next launch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub last_open: Vec<String>,
 }
 
-/// O que reconectar na partida: na ordem salva, só as que ainda existem, sem repetir.
+/// What to reconnect on launch: in saved order, only those that still exist, without repeats.
 pub fn reconnect_order(last_open: &[String], existing: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for id in last_open {
@@ -320,7 +320,7 @@ pub fn settings_path() -> PathBuf {
     app_dir().join("settings.toml")
 }
 
-/// Ausente ou inválido = padrão (com aviso no log): preferência não vale uma tela de erro.
+/// Missing or invalid = default (with a log warning): a preference isn't worth an error screen.
 pub fn load_settings(path: &Path) -> Settings {
     match std::fs::read_to_string(path) {
         Ok(s) => toml::from_str(&s).unwrap_or_else(|e| {
@@ -335,7 +335,7 @@ pub fn save_settings(path: &Path, s: &Settings) -> Result<(), DbError> {
     write_atomic(path, &toml::to_string_pretty(s).map_err(|e| DbError::Config(e.to_string()))?)
 }
 
-/// Muda uma preferência sem apagar as outras.
+/// Changes one preference without erasing the others.
 pub fn update_settings(path: &Path, f: impl FnOnce(&mut Settings)) -> Result<(), DbError> {
     let mut s = load_settings(path);
     f(&mut s);
@@ -368,7 +368,7 @@ mod tests {
         let legacy = "[[connection]]\nid = \"a\"\nname = \"x\"\ndatabase = \"d\"\nuser = \"u\"\n";
         let f: ConfigFile = toml::from_str(legacy).unwrap();
         assert_eq!(f.connections[0].environment, None);
-        assert!(!toml::to_string(&f).unwrap().contains("environment"), "None não grava a chave");
+        assert!(!toml::to_string(&f).unwrap().contains("environment"), "None does not write the key");
 
         let mut f2 = f.clone();
         f2.connections[0].environment = Some(Environment::Production);
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(load_settings(&path).language, Language::Es);
         std::fs::write(&path, "language = \"klingon\"").unwrap();
         assert_eq!(load_settings(&path).language, Language::Auto);
-        assert_eq!(load_settings(&path.with_file_name("nao-existe.toml")).language, Language::Auto);
+        assert_eq!(load_settings(&path.with_file_name("missing.toml")).language, Language::Auto);
     }
 
     #[test]
@@ -475,7 +475,7 @@ mod tests {
         update_settings(&path, |s| s.theme = ThemeChoice::Dark).unwrap();
         assert_eq!(load_settings(&path), Settings { language: Language::Es, theme: ThemeChoice::Dark, ..Default::default() });
         assert!(std::fs::read_to_string(&path).unwrap().contains("theme = \"dark\""));
-        // Arquivo antigo, só com idioma: tema volta para Auto.
+        // Old file, language only: theme goes back to Auto.
         std::fs::write(&path, "language = \"pt\"").unwrap();
         assert_eq!(load_settings(&path).theme, ThemeChoice::Auto);
     }
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(first, vec![root.join("c1/script-1.sql"), root.join("c1/script-2.sql")]);
         assert_eq!(std::fs::read_to_string(&first[0]).unwrap(), "a");
         assert!(root.join("notas.txt").exists() && root.join("closed").is_dir());
-        // Os soltos já foram para c1; a próxima conexão começa vazia.
+        // The loose ones already went to c1; the next connection starts empty.
         assert!(conn_scripts(&root, "c2").unwrap().is_empty());
         assert_eq!(conn_scripts(&root, "c1").unwrap().len(), 2);
     }
@@ -568,10 +568,10 @@ mod tests {
         assert_eq!(p, dir.join("daily checks.sql"));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "a");
         assert!(!a.exists());
-        assert!(rename_script(&b, "daily checks").is_err(), "não sobrescreve");
+        assert!(rename_script(&b, "daily checks").is_err(), "does not overwrite");
         assert_eq!(rename_script(&b, "x/y").unwrap(), dir.join("x-y.sql"));
         assert!(rename_script(&p, "  ").is_err() && rename_script(&p, ".hidden").is_err());
-        assert_eq!(rename_script(&p, "Daily Checks").unwrap(), dir.join("Daily Checks.sql"), "só caixa");
+        assert_eq!(rename_script(&p, "Daily Checks").unwrap(), dir.join("Daily Checks.sql"), "case only");
     }
 
     #[test]

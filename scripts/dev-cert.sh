@@ -1,10 +1,10 @@
 #!/bin/sh
-# Cria, uma vez, o certificado local "rustbeaver-dev" no keychain "login".
-# Com ele o binário sai sempre com a mesma assinatura, e o "Permitir Sempre" do Keychain
-# vale para os próximos builds (sem ele, cada build é um app novo para o macOS).
+# Creates, once, the local "rustbeaver-dev" certificate in the "login" keychain.
+# With it the binary always gets the same signature, so the Keychain's "Always Allow"
+# carries over to later builds (without it, every build is a new app to macOS).
 set -eu
 if security find-certificate -c rustbeaver-dev >/dev/null 2>&1; then
-  echo "rustbeaver-dev já existe."
+  echo "rustbeaver-dev already exists."
   exit 0
 fi
 tmp=$(mktemp -d)
@@ -14,10 +14,10 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=rustbeaver-dev" 
   -addext "extendedKeyUsage=critical,codeSigning" \
   -addext "keyUsage=critical,digitalSignature" \
   -addext "basicConstraints=critical,CA:false" 2>/dev/null
-# Algoritmos explícitos: o padrão do OpenSSL 3 (AES/SHA-256) o `security` não importa.
+# Explicit algorithms: `security` cannot import OpenSSL 3's default (AES/SHA-256).
 openssl pkcs12 -export -inkey "$tmp/key.pem" -in "$tmp/cert.pem" -name rustbeaver-dev \
   -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
   -out "$tmp/id.p12" -passout pass:rustbeaver
-# -T: só o codesign usa a chave privada sem perguntar.
+# -T: only codesign may use the private key without prompting.
 security import "$tmp/id.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P rustbeaver -T /usr/bin/codesign
-echo "Pronto. O próximo cargo run assina o app; no primeiro acesso, digite a senha e clique em Permitir Sempre."
+echo "Done. The next cargo run signs the app; on first access, type your password and click Always Allow."

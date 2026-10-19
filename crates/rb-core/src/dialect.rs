@@ -1,4 +1,4 @@
-//! Regras de nome que mudam de um banco para outro.
+//! Naming rules that change from one database to another.
 
 use crate::lexer::{ident_text, quote_always, quote_ident, quote_ident_snowflake};
 
@@ -10,7 +10,7 @@ pub enum Dialect {
 }
 
 impl Dialect {
-    /// Identificador pronto para inserir no SQL, com aspas só quando preciso.
+    /// Identifier ready to insert into SQL, quoted only when needed.
     pub fn quote(self, name: &str) -> String {
         match self {
             Dialect::Postgres => quote_ident(name),
@@ -18,7 +18,7 @@ impl Dialect {
         }
     }
 
-    /// Nome que o banco enxerga a partir do token digitado (sem aspas dobra a caixa).
+    /// Name the database sees from the typed token (unquoted folds the case).
     pub fn fold(self, raw: &str) -> String {
         match self {
             Dialect::Postgres => ident_text(raw),
@@ -27,8 +27,8 @@ impl Dialect {
         }
     }
 
-    /// `FROM` totalmente citado. No Snowflake a chave de schema é `DB.SCHEMA`.
-    /// ponytail: database com "." no nome não é suportado.
+    /// `FROM` fully quoted. On Snowflake the schema key is `DB.SCHEMA`.
+    /// ponytail: database with "." in the name is not supported.
     pub fn qualified(self, schema_key: &str, table: &str) -> String {
         match (self, schema_key.split_once('.')) {
             (Dialect::Snowflake, Some((db, s))) => format!("{}.{}.{}", quote_always(db), quote_always(s), quote_always(table)),

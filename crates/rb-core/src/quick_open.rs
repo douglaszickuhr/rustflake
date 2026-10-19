@@ -1,4 +1,4 @@
-//! Busca rápida (⌘K): resultados, ordem, caminho na árvore e o índice do Snowflake.
+//! Quick search (⌘K): results, ordering, tree path and the Snowflake index.
 
 use std::collections::{BTreeSet, HashSet};
 use std::time::Instant;
@@ -9,7 +9,7 @@ use crate::metadata::{MetaCache, MetaRequest};
 use crate::session::Session;
 
 const MAX_HITS: usize = 50;
-/// Teto de linhas de um `SHOW`; batendo nele, a listagem pode estar truncada.
+/// Row cap of a `SHOW`; when it is hit, the listing may be truncated.
 const SHOW_LIMIT: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,7 +20,7 @@ pub enum HitKind {
     View,
 }
 
-/// Um objeto achado. `matview` só vale com `View`: decide o grupo da árvore.
+/// A found object. `matview` only applies with `View`: decides the tree group.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Hit {
     pub kind: HitKind,
@@ -38,7 +38,7 @@ fn key(db: Option<&str>, schema: &str) -> String {
 }
 
 impl Hit {
-    /// Chave de schema do cache: `DB.SCHEMA` no Snowflake, `SCHEMA` no Postgres.
+    /// Cache schema key: `DB.SCHEMA` on Snowflake, `SCHEMA` on Postgres.
     pub fn schema_key(&self) -> Option<String> {
         match self.kind {
             HitKind::Database => None,
@@ -47,7 +47,7 @@ impl Hit {
         }
     }
 
-    /// Ids da árvore (cada um em partes) da raiz até o alvo, no formato de `schema_tree.rs`.
+    /// Tree ids (each one in parts) from the root to the target, in the format of `schema_tree.rs`.
     pub fn tree_path(&self) -> Vec<Vec<String>> {
         let v = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         if self.kind == HitKind::Database {
@@ -69,12 +69,12 @@ impl Hit {
     }
 }
 
-/// `%texto%` para `LIKE`/`ILIKE` com `\` como escape: `_` e `%` digitados valem literalmente.
+/// `%text%` for `LIKE`/`ILIKE` with `\` as escape: typed `_` and `%` count literally.
 pub fn like_pattern(text: &str) -> String {
     format!("%{}%", text.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_"))
 }
 
-/// Só quem contém o texto (sem diferenciar caixa); exato, prefixo, contém; mais curto primeiro.
+/// Only those containing the text (case-insensitive); exact, prefix, contains; shorter first.
 pub fn rank(hits: Vec<Hit>, text: &str) -> Vec<Hit> {
     let q = text.to_uppercase();
     let mut scored: Vec<(u8, usize, Hit)> = hits
@@ -93,7 +93,7 @@ fn col(names: &[String], row: &[Option<String>], c: &str) -> Option<String> {
     names.iter().position(|n| n.eq_ignore_ascii_case(c)).and_then(|i| row.get(i).cloned().flatten())
 }
 
-/// `SHOW TERSE OBJECTS`: tabelas e views (matview marcada).
+/// `SHOW TERSE OBJECTS`: tables and views (matview flagged).
 pub fn parse_sf_objects(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<Hit> {
     rows.iter()
         .filter_map(|r| {
@@ -117,24 +117,24 @@ pub fn parse_sf_schemas(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<H
         .collect()
 }
 
-/// Tabelas, views e schemas da conta, como o papel atual enxerga.
+/// Tables, views and schemas of the account, as the current role sees them.
 #[derive(Debug, Clone, Default)]
 pub struct SfIndex {
     pub objects: Vec<Hit>,
     pub schemas: Vec<Hit>,
     pub refreshed: Option<Instant>,
-    /// Listagem por database (a da conta bateu no teto): quais entraram. Índices de escopos
-    /// diferentes não se comparam.
+    /// Per-database listing (the account-wide one hit the cap): which ones were included. Indexes of different
+    /// scopes are not comparable.
     pub fallback_dbs: Option<Vec<String>>,
 }
 
-/// O que mudou entre dois índices: schemas com objetos novos/removidos/trocados de tipo e
-/// databases com schemas novos/removidos.
+/// What changed between two indexes: schemas with new/removed/type-changed objects and
+/// databases with new/removed schemas.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndexDiff {
     pub changed_schemas: BTreeSet<String>,
     pub changed_dbs: BTreeSet<String>,
-    /// Schemas que deixaram de existir: saem do cache em vez de serem recarregados.
+    /// Schemas that no longer exist: they leave the cache instead of being reloaded.
     pub removed_schemas: BTreeSet<String>,
 }
 
@@ -151,13 +151,13 @@ pub fn diff(old: &SfIndex, new: &SfIndex) -> IndexDiff {
     }
 }
 
-/// O que fazer no cache da árvore com um diff: só mexe no que ela já carregou.
+/// What to do to the tree cache with a diff: only touches what it already loaded.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RefreshPlan {
-    /// Pedidos a refazer por cima do cache (sem apagar antes: colunas e a árvore continuam).
+    /// Requests to redo on top of the cache (without clearing first: columns and the tree stay).
     pub reload: Vec<MetaRequest>,
     pub drop_schemas: Vec<String>,
-    /// Database criada ou removida: a lista da raiz (`show databases`) muda.
+    /// Database created or removed: the root list (`show databases`) changes.
     pub reload_roots: bool,
 }
 
@@ -172,7 +172,7 @@ pub fn refresh_plan(d: &IndexDiff, cache: &MetaCache) -> RefreshPlan {
     }
 }
 
-/// Busca local: databases visíveis (do cache), schemas e objetos do índice nas databases visíveis.
+/// Local search: visible databases (from the cache), schemas and index objects in the visible databases.
 pub fn search_index(idx: &SfIndex, cache: &MetaCache, text: &str) -> Vec<Hit> {
     let visible: HashSet<&str> = cache.visible_databases().map(String::as_str).collect();
     let dbs = visible.iter().map(|d| Hit { kind: HitKind::Database, matview: false, database: None, schema: None, name: d.to_string() });
@@ -180,7 +180,7 @@ pub fn search_index(idx: &SfIndex, cache: &MetaCache, text: &str) -> Vec<Hit> {
     rank(dbs.chain(rest).collect(), text)
 }
 
-// Mais curtos primeiro antes do corte: o exato e os prefixos não ficam de fora num catálogo grande.
+// Shorter first before the cut: the exact match and prefixes are not left out in a large catalog.
 const PG_SEARCH: &str = "\
 select * from (
 select 'schema'::text, nspname::text, null::text from pg_namespace
@@ -193,7 +193,7 @@ select c.relkind::text, n.nspname::text, c.relname::text from pg_class c join pg
 order by length(coalesce(rel, nsp))
 limit 200";
 
-/// Postgres: busca ao vivo no catálogo (local, milissegundos).
+/// Postgres: live catalog search (local, milliseconds).
 pub async fn pg_search(s: &Session, text: &str) -> Result<Vec<Hit>, DbError> {
     let rows = s.query_text(PG_SEARCH, &[&like_pattern(text)]).await?;
     let hits = rows
@@ -216,7 +216,7 @@ pub async fn pg_search(s: &Session, text: &str) -> Result<Vec<Hit>, DbError> {
     Ok(rank(hits, text))
 }
 
-/// Snowflake: schemas e objetos da conta. Lista truncada no teto do `SHOW` → refaz por database.
+/// Snowflake: schemas and objects of the account. List truncated at the `SHOW` cap → redo per database.
 pub async fn sf_snapshot(s: &Session, dbs: &[String]) -> Result<SfIndex, DbError> {
     let (n, rows) = s.query_named("show terse schemas in account").await?;
     let schemas = parse_sf_schemas(&n, &rows);
@@ -224,10 +224,10 @@ pub async fn sf_snapshot(s: &Session, dbs: &[String]) -> Result<SfIndex, DbError
     if rows.len() < SHOW_LIMIT {
         return Ok(SfIndex { objects: parse_sf_objects(&n, &rows), schemas, refreshed: Some(Instant::now()), fallback_dbs: None });
     }
-    // ponytail: sem paginação `FROM`; uma database com mais de 10k objetos fica truncada.
+    // ponytail: no `FROM` pagination; a database with more than 10k objects ends up truncated.
     let mut objects = Vec::new();
     for db in dbs {
-        // Uma database que falha (removida no meio, share sem acesso) não derruba o índice todo.
+        // A database that fails (removed midway, share without access) does not take down the whole index.
         match s.query_named(&format!("show terse objects in database {}", quote_always(db))).await {
             Ok((n, rows)) => {
                 if rows.len() >= SHOW_LIMIT {
@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(d.changed_schemas.into_iter().collect::<Vec<_>>(), ["DB.S", "DB.S2"]);
         assert_eq!(d.changed_dbs.into_iter().collect::<Vec<_>>(), ["DB"]);
         assert!(d.removed_schemas.is_empty());
-        // Schema removido aparece à parte: some do cache em vez de ser recarregado.
+        // A removed schema shows up separately: it leaves the cache instead of being reloaded.
         let gone = diff(&new, &old);
         assert_eq!(gone.removed_schemas.into_iter().collect::<Vec<_>>(), ["DB.S2"]);
     }

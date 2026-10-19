@@ -39,14 +39,14 @@ use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
 use crate::{CloseTab, Db, NewSqlTab, Quit, QuickOpen, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
 
-/// Conexão aberta: sessão de metadados e árvore próprias; cada aba guarda a sua sessão.
+/// Open connection: its own metadata session and tree; each tab keeps its own session.
 pub struct Open {
     pub conn: ConnTarget,
     pub meta: Entity<MetaStore>,
     pub tree: Entity<SchemaTree>,
-    /// Índice da busca rápida (só Snowflake).
+    /// Quick search index (Snowflake only).
     pub indexer: Option<Entity<Indexer>>,
-    /// Projeto dbt ligado (só Snowflake; sem pasta = "não configurado").
+    /// Linked dbt project (Snowflake only; no folder = "not configured").
     pub dbt: Option<Entity<DbtStore>>,
 }
 
@@ -94,25 +94,25 @@ pub struct Workspace {
     focus: FocusHandle,
     pub connections: Vec<ConnectionConfig>,
     pub open: Vec<Open>,
-    /// Conexão destacada na barra lateral: recebe as abas novas e mostra a árvore.
+    /// Connection highlighted in the sidebar: receives new tabs and shows the tree.
     current: Option<String>,
-    /// Árvore da conexão atual recolhida (clique de novo na conexão).
-    /// Painel de objetos aberto (trilho → Objetos).
+    /// Current connection's tree collapsed (click the connection again).
+    /// Objects panel open (rail → Objects).
     objects_open: bool,
-    /// Na aba Usuários & Roles a árvore de databases não ajuda: fechada, a não ser que peçam.
+    /// In the Users & Roles tab the database tree doesn't help: closed unless asked.
     objects_on_admin: bool,
-    /// Botão esquerdo apertado na linha do título: o próximo movimento arrasta a janela.
+    /// Left button pressed on the title row: the next movement drags the window.
     drag_armed: bool,
     pub tabs: Vec<TabView>,
     pub active_tab: usize,
-    /// Conexão sendo aberta (nome) e a task: soltar a task cancela a tentativa.
+    /// Connection being opened (name) and its task: dropping the task cancels the attempt.
     connecting: Option<String>,
     connect_task: Option<Task<()>>,
-    /// Conexões a reabrir na partida, uma depois da outra (o SSO abre uma janela por vez).
+    /// Connections to reopen at startup, one after the other (SSO opens one window at a time).
     reconnect_queue: Vec<String>,
-    /// Escolhas recentes do seletor ("conexão:tipo"), espelho do settings.toml.
+    /// Recent picker choices ("connection:kind"), mirror of settings.toml.
     recent: std::collections::BTreeMap<String, Vec<String>>,
-    /// Última lista de roles/warehouses/… por "conexão:tipo": o seletor abre com ela na hora.
+    /// Last list of roles/warehouses/… per "connection:kind": the picker opens with it instantly.
     pick_cache: HashMap<String, Vec<String>>,
 }
 
@@ -126,7 +126,7 @@ impl Workspace {
             }
         };
         cx.observe_window_appearance(window, |_, window, cx| appearance::system_changed(window, cx)).detach();
-        // Reabre as conexões que estavam abertas quando o app fechou (com o ID token, sem navegador).
+        // Reopens the connections that were open when the app closed (with the ID token, no browser).
         let ids: Vec<String> = connections.iter().map(|c| c.id.clone()).collect();
         let reconnect_queue = config::reconnect_order(&config::load_settings(&config::settings_path()).last_open, &ids);
         cx.defer_in(window, |ws, window, cx| ws.reconnect_next(window, cx));
@@ -142,8 +142,8 @@ impl Workspace {
         self.current.as_deref().and_then(|id| self.open_conn(id))
     }
 
-    /// Cria ou atualiza (mesmo id). Senha/passphrase vazias mantêm o Keychain; sem túnel, a
-    /// passphrase guardada é apagada. Editar uma conexão aberta reconecta. Devolve `false` se recusou.
+    /// Creates or updates (same id). Empty password/passphrase keep the Keychain; without a tunnel, the
+    /// stored passphrase is deleted. Editing an open connection reconnects. Returns `false` if refused.
     pub fn save_connection(&mut self, mut cfg: ConnectionConfig, password: String, passphrase: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let id = cfg.id.clone();
         let reconnect = self.open_conn(&id).is_some();
@@ -151,7 +151,7 @@ impl Workspace {
             window.push_notification(Notification::error(t!("ws.pending_before_edit").to_string()), cx);
             return false;
         }
-        // O diálogo não edita o filtro de databases: mantém o que já estava salvo.
+        // The dialog doesn't edit the databases filter: keeps what was already saved.
         if let (Some(new), Some(old)) = (cfg.snowflake.as_mut(), self.connections.iter().find(|c| c.id == id).and_then(|c| c.snowflake.as_ref())) {
             new.db_filter = old.db_filter.clone();
         }
@@ -171,7 +171,7 @@ impl Workspace {
                         if !password.is_empty() {
                             secrets::set_password(&id, &password)?;
                         }
-                        // A passphrase do diálogo é da chave SSH (Postgres) ou da chave Snowflake.
+                        // The dialog's passphrase belongs to the SSH key (Postgres) or the Snowflake key.
                         let (keep, other) = if is_sf {
                             (secrets::key_account(&id), secrets::ssh_account(&id))
                         } else {
@@ -203,12 +203,12 @@ impl Workspace {
         true
     }
 
-    /// Fechada: conecta. Aberta: vira a atual; se já era, recolhe/expande a árvore.
+    /// Closed: connects. Open: becomes current; if it already was, collapses/expands the tree.
     fn connect(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.connections[ix].id.clone();
         if self.open_conn(&id).is_some() {
-            // A moldura segue a aba ativa: trocar de conexão leva a uma aba dela (ou abre um script),
-            // senão a barra de contexto mostraria uma conexão e o ⌘↵ rodaria em outra.
+            // The frame follows the active tab: switching connection goes to one of its tabs (or opens a script),
+            // otherwise the context bar would show one connection and ⌘↵ would run on another.
             self.current = Some(id.clone());
             self.objects_open = true;
             match self.tabs.iter().rposition(|t| t.conn_id(cx) == id) {
@@ -218,7 +218,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        // Outra tentativa em curso (SSO esperando, rede travada): esta substitui aquela.
+        // Another attempt in progress (SSO waiting, stuck network): this one replaces it.
         self.cancel_connect(cx);
         self.connecting = Some(self.connections[ix].name.clone());
         cx.notify();
@@ -239,7 +239,7 @@ impl Workspace {
                     })
                     .await?;
                 let session = engine.connect(&cfg, creds.clone()).await?;
-                // OrgConfig que sumiu ou quebrou não impede a conexão: segue sem convenções e avisa.
+                // A missing or broken OrgConfig doesn't block the connection: proceeds without conventions and warns.
                 let name = cfg.snowflake.as_ref().and_then(|s| s.configuration.clone());
                 let (org, org_err) = match cx.background_spawn(async move { rb_core::org_config::resolve(name.as_deref()) }).await {
                     Ok(a) => (a, None),
@@ -294,7 +294,7 @@ impl Workspace {
         self.connect_task = Some(task);
     }
 
-    /// Próxima da fila de reconexão (cada uma espera a anterior terminar).
+    /// Next in the reconnect queue (each waits for the previous to finish).
     fn reconnect_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         while !self.reconnect_queue.is_empty() {
             let id = self.reconnect_queue.remove(0);
@@ -307,7 +307,7 @@ impl Workspace {
         }
     }
 
-    /// Lembra quais conexões estão abertas, para a próxima partida.
+    /// Remembers which connections are open, for the next startup.
     fn save_open(&self) {
         let ids: Vec<String> = self.open.iter().map(|o| o.conn.cfg.id.clone()).collect();
         let path = config::settings_path();
@@ -318,18 +318,18 @@ impl Workspace {
         });
     }
 
-    /// Abandona a tentativa de conexão: a task é solta e o resultado, se chegar, é descartado.
-    /// ponytail: um login SSO já aberto no navegador continua lá; só o app para de esperar.
+    /// Abandons the connection attempt: the task is dropped and the result, if it arrives, is discarded.
+    /// ponytail: an SSO login already open in the browser stays there; the app just stops waiting.
     fn cancel_connect(&mut self, cx: &mut Context<Self>) {
         if self.connect_task.take().is_some() {
-            // Cancelar também desiste das reconexões automáticas que faltavam.
+            // Cancelling also gives up the remaining automatic reconnects.
             self.reconnect_queue.clear();
             self.connecting = None;
             cx.notify();
         }
     }
 
-    /// "Conectando a X… · Cancelar".
+    /// "Connecting to X… · Cancel".
     fn connecting_row(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let name = self.connecting.clone()?;
         Some(
@@ -358,7 +358,7 @@ impl Workspace {
         self.select_tab(self.tabs.len() - 1, cx);
     }
 
-    /// Uma aba de usuários & roles por conexão: se já existe, só foca.
+    /// One users & roles tab per connection: if it exists, just focus it.
     fn open_admin(&mut self, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.open_conn(conn_id).map(|o| o.conn.clone()) else { return };
         if let Some(ix) = self.tabs.iter().position(|t| matches!(t, TabView::Admin(_)) && t.conn_id(cx) == conn_id) {
@@ -370,7 +370,7 @@ impl Workspace {
         self.select_tab(self.tabs.len() - 1, cx);
     }
 
-    /// Uma aba de warehouses por conexão; role/usuário clicado lá abre Usuários & Roles.
+    /// One warehouses tab per connection; a role/user clicked there opens Users & Roles.
     fn open_warehouses(&mut self, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.open_conn(conn_id).map(|o| o.conn.clone()) else { return };
         if let Some(ix) = self.tabs.iter().position(|t| matches!(t, TabView::Warehouses(_)) && t.conn_id(cx) == conn_id) {
@@ -386,7 +386,7 @@ impl Workspace {
         self.select_tab(self.tabs.len() - 1, cx);
     }
 
-    /// Abre (ou foca) Usuários & Roles já na role/usuário pedido.
+    /// Opens (or focuses) Users & Roles already on the requested role/user.
     fn admin_goto(&mut self, conn_id: &str, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         self.open_admin(conn_id, window, cx);
         if let Some(TabView::Admin(t)) = self.tabs.get(self.active_tab) {
@@ -394,7 +394,7 @@ impl Workspace {
         }
     }
 
-    /// Busca rápida (⌘K) na conexão atual.
+    /// Quick search (⌘K) on the current connection.
     fn quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(o) = self.current_open() else {
             window.push_notification(Notification::error(t!("ws.open_connection_to_search").to_string()), cx);
@@ -431,7 +431,7 @@ impl Workspace {
         );
     }
 
-    /// ⌘Y: histórico da conexão atual.
+    /// ⌘Y: current connection's history.
     fn show_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(o) = self.current_open() else {
             window.push_notification(Notification::error(t!("ws.open_connection_to_search").to_string()), cx);
@@ -451,7 +451,7 @@ impl Workspace {
         );
     }
 
-    /// Insere a query na aba SQL ativa (se for desta conexão) ou num script novo.
+    /// Inserts the query into the active SQL tab (if it's of this connection) or a new script.
     fn use_history(&mut self, conn_id: &str, sql: &str, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
         let same_conn = |t: &Entity<SqlTab>, cx: &App| t.read(cx).conn_id() == conn_id;
         let target = match self.tabs.get(self.active_tab) {
@@ -470,7 +470,7 @@ impl Workspace {
         }
     }
 
-    /// Mostra o objeto na árvore; tabela/view também abre a aba.
+    /// Shows the object in the tree; table/view also opens the tab.
     fn reveal_hit(&mut self, conn_id: &str, hit: Hit, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tree) = self.open_conn(conn_id).map(|o| o.tree.clone()) else { return };
         self.current = Some(conn_id.to_string());
@@ -484,7 +484,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Script novo já com o SQL (botão Query da aba de tabela).
+    /// New script already holding the SQL (Query button of the table tab).
     fn open_query(&mut self, conn_id: &str, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
         let created = config::new_script(&config::scripts_dir().join(conn_id)).and_then(|p| std::fs::write(&p, sql).map(|_| p).map_err(|e| rb_core::DbError::Io(e.to_string())));
         match created {
@@ -493,7 +493,7 @@ impl Workspace {
         }
     }
 
-    /// Script novo na conexão atual.
+    /// New script on the current connection.
     pub fn new_sql_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.current_open().map(|o| o.conn.cfg.id.clone()) else { return };
         match config::new_script(&config::scripts_dir().join(&id)) {
@@ -502,7 +502,7 @@ impl Workspace {
         }
     }
 
-    /// Escolher uma aba torna a conexão dela a atual.
+    /// Choosing a tab makes its connection the current one.
     fn select_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.active_tab = ix;
         if let Some(t) = self.tabs.get(ix) {
@@ -515,7 +515,7 @@ impl Workspace {
         self.tabs.iter().any(|t| matches!(t, TabView::Table(t) if t.read(cx).conn_id() == conn_id && t.read(cx).has_pending(cx)))
     }
 
-    /// Grava já o texto de todos os scripts abertos (o autosave espera 1 s).
+    /// Saves now the text of all open scripts (autosave waits 1 s).
     fn save_all(&self, cx: &App) {
         for t in &self.tabs {
             if let TabView::Sql(t) = t {
@@ -536,7 +536,7 @@ impl Workspace {
         self.select_tab(self.tabs.len() - 1, cx);
     }
 
-    /// Fechar não apaga: o arquivo vai para scripts/closed/.
+    /// Closing doesn't delete: the file goes to scripts/closed/.
     fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(ix) else { return };
         if let TabView::Table(t) = tab
@@ -556,7 +556,7 @@ impl Workspace {
         self.select_tab(ix, cx);
     }
 
-    /// Reabre os scripts da conexão (ordenados) ou cria um novo.
+    /// Reopens the connection's scripts (sorted) or creates a new one.
     fn on_connected(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let files = config::conn_scripts(&config::scripts_dir(), id).unwrap_or_else(|e| {
             window.push_notification(Notification::error(e.to_string()), cx);
@@ -582,8 +582,8 @@ impl Workspace {
             TabView::Admin(t) => t.clone().into_any_element(),
             TabView::Warehouses(t) => t.clone().into_any_element(),
         };
-        // min_w_0: sem ele o item flex mede no mínimo a largura do conteúdo (todas as colunas da
-        // grade) e vaza da janela em vez de deixar a grade rolar na horizontal.
+        // min_w_0: without it the flex item measures at least the content width (all the grid's columns)
+        // and overflows the window instead of letting the grid scroll horizontally.
         div().flex_1().min_w_0().min_h_0().size_full().child(content).into_any_element()
     }
 
@@ -609,7 +609,7 @@ impl Workspace {
         });
     }
 
-    /// Tira a conexão do TOML e a senha do Keychain. Se estiver aberta, desconecta antes.
+    /// Removes the connection from the TOML and the password from the Keychain. If open, disconnects first.
     fn remove_connection(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.open_conn(id).is_some() {
             if self.has_pending_edits(id, cx) {
@@ -639,8 +639,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Salva os scripts, fecha as abas da conexão e solta a sessão (e o túnel, se for o último uso).
-    /// Os scripts ficam na pasta da conexão e voltam ao reconectar.
+    /// Saves the scripts, closes the connection's tabs and drops the session (and the tunnel, if it's the last use).
+    /// Scripts stay in the connection's folder and come back on reconnect.
     fn disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
         self.save_all(cx);
         let keep: Vec<bool> = self.tabs.iter().map(|t| t.conn_id(cx) != id).collect();
@@ -662,7 +662,7 @@ impl Workspace {
         self.disconnect(id, cx);
     }
 
-    /// Host SSH fora do known_hosts: mostra o fingerprint e, se o usuário confiar, grava e reconecta.
+    /// SSH host not in known_hosts: shows the fingerprint and, if the user trusts it, saves and reconnects.
     #[allow(clippy::too_many_arguments)]
     fn confirm_trust(&mut self, ix: usize, host: String, port: u16, fingerprint: String, key: String, window: &mut Window, cx: &mut Context<Self>) {
         let ws = cx.entity().downgrade();
@@ -679,7 +679,7 @@ impl Workspace {
                         .child(Button::new("trust-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx)))
                         .child(Button::new("trust-ok").label(t!("ws.trust").to_string()).primary().on_click(move |_, window, cx| {
                             window.close_dialog(cx);
-                            // ponytail: append de uma linha no known_hosts na thread de UI; arquivo pequeno.
+                            // ponytail: one-line append to known_hosts on the UI thread; small file.
                             match ssh::trust_host(&SshEnv::system().known_hosts, &host, port, &key) {
                                 Ok(()) => {
                                     ws.update(cx, |ws, cx| ws.connect(ix, window, cx)).ok();
@@ -691,8 +691,8 @@ impl Workspace {
         });
     }
 
-    /// Lista warehouses ou roles (`SHOW …`) e roda `USE …` na escolhida; a sessão é compartilhada.
-    /// Idioma da interface: Auto (segue o macOS) ou um dos três; troca na hora.
+    /// Lists warehouses or roles (`SHOW …`) and runs `USE …` on the chosen one; the session is shared.
+    /// Interface language: Auto (follows macOS) or one of the three; switches instantly.
     fn pick_language(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = cx.global::<Lang>().0;
         window.open_dialog(cx, move |dialog, _, _| {
@@ -723,7 +723,7 @@ impl Workspace {
         });
     }
 
-    /// Diálogo do filtro de databases (Snowflake): chips, `*` coringa, `!` exclui.
+    /// Databases filter dialog (Snowflake): chips, `*` wildcard, `!` excludes.
     fn edit_db_filter(&mut self, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.open_conn(conn_id).map(|o| o.meta.read(cx).cache.db_filter.clone()).unwrap_or_default();
         let (ws, id) = (cx.entity().downgrade(), conn_id.to_string());
@@ -732,7 +732,7 @@ impl Workspace {
         }, window, cx);
     }
 
-    /// Grava o filtro no TOML e aplica na árvore e no autocomplete, sem reconectar.
+    /// Saves the filter to the TOML and applies it to the tree and autocomplete, without reconnecting.
     fn set_db_filter(&mut self, conn_id: &str, patterns: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sf) = self.connections.iter_mut().find(|c| c.id == conn_id).and_then(|c| c.snowflake.as_mut()) else { return };
         sf.db_filter = patterns.clone();
@@ -753,8 +753,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Seletor de role/warehouse/database/schema: abre na hora (recentes + última lista conhecida)
-    /// e atualiza a lista em segundo plano.
+    /// Role/warehouse/database/schema picker: opens instantly (recents + last known list)
+    /// and refreshes the list in the background.
     fn pick_context(&mut self, conn_id: &str, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(meta) = self.open_conn(conn_id).map(|o| o.meta.clone()) else { return };
         let session = meta.read(cx).session.clone();
@@ -801,7 +801,7 @@ impl Workspace {
         let p2 = picker.clone();
         window.open_dialog(cx, move |dialog, _, _| dialog.title(t!("ws.choose", kind = kind_label(kind)).to_string()).w(px(420.)).child(p2.clone()));
         input.update(cx, |s, cx| s.focus(window, cx));
-        // Lista atualizada em segundo plano; o seletor já está aberto.
+        // List refreshed in the background; the picker is already open.
         cx.spawn(async move |ws, cx| {
             let listed = session.query_named(list_sql(kind)).await.map(|(n, rows)| match kind {
                 "role" => rows.first().and_then(|r| r.first().cloned().flatten()).map(|j| parse_available_roles(&j)).unwrap_or_default(),
@@ -826,12 +826,12 @@ impl Workspace {
         matches!(self.tabs.get(self.active_tab), Some(TabView::Admin(_) | TabView::Warehouses(_)))
     }
 
-    /// Painel de objetos: cada contexto (aba de admin ou o resto) lembra o seu.
+    /// Objects panel: each context (admin tab or the rest) remembers its own.
     fn objects_visible(&self) -> bool {
         if self.on_admin() { self.objects_on_admin } else { self.objects_open }
     }
 
-    /// Conexão que a moldura mostra: a da aba ativa (é onde o próximo ⌘↵ roda), senão a atual.
+    /// Connection the frame shows: the active tab's (where the next ⌘↵ runs), otherwise the current one.
     fn display_conn(&self, cx: &App) -> Option<&Open> {
         self.tabs.get(self.active_tab).and_then(|t| self.open_conn(&t.conn_id(cx))).or_else(|| self.current_open())
     }
@@ -847,8 +847,8 @@ impl Workspace {
                 TabBar::new("tabs")
                     .selected_index(self.active_tab)
                     .on_click(cx.listener(|ws, ix: &usize, _, cx| ws.select_tab(*ix, cx)))
-                    // + logo depois da última aba; o TabBar só desenha esse espaço se houver sufixo.
-                    // O vazio depois das abas também arrasta a janela (o "+" não).
+                    // + right after the last tab; the TabBar only draws that space if there is a suffix.
+                    // The empty space after the tabs also drags the window (the "+" doesn't).
                     .last_empty_space(
                         drag_space("drag-tabs", cx).flex_1().child(
                             div().on_mouse_down(MouseButton::Left, no_drag).child(Button::new("new-tab").label("+").ghost().tooltip(t!("ws.new_script").to_string()).on_click(cx.listener(|ws, _, window, cx| ws.new_sql_tab(window, cx)))),
@@ -860,7 +860,7 @@ impl Workspace {
                     let cfg = self.connections.iter().find(|c| c.id == id);
                     let name = cfg.map_or(String::new(), |c| c.name.clone());
                     let label = format!("{name} · {}", t.title(cx));
-                    // Script: duplo clique no nome renomeia o arquivo.
+                    // Script: double-click on the name renames the file.
                     let label = match t {
                         TabView::Sql(s) => {
                             let s = s.clone();
@@ -879,8 +879,8 @@ impl Workspace {
                             .when_some(cfg, |tab, c| tab.prefix(div().pl_2().child(logo(c).small())))
                             .child(label)
                             .suffix(Button::new(("close", i)).label("×").ghost().tooltip(t!("ws.close_tab").to_string()).on_click(cx.listener(move |ws, _, window, cx| {
-                                // Sem isto o clique sobe até a aba, que faria active_tab = i depois da remoção
-                                // (índice inexistente ao fechar a última aba → pânico no render).
+                                // Without this the click bubbles up to the tab, which would do active_tab = i after the removal
+                                // (nonexistent index when closing the last tab → panic in render).
                                 cx.stop_propagation();
                                 ws.close_tab(i, window, cx)
                             }))),
@@ -890,11 +890,11 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Linha do título: abas, barra de contexto (abre o menu) e ⌘K.
+    /// Title row: tabs, context bar (opens the menu) and ⌘K.
     fn render_title(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        // A barra nativa é transparente e o app é dono do arrasto (TitleBar::window_options):
-        // mesmo esquema do TitleBar do gpui-component.
+        // The native bar is transparent and the app owns the dragging (TitleBar::window_options):
+        // same scheme as gpui-component's TitleBar.
         h_flex()
             .id("title-row")
             .window_control_area(WindowControlArea::Drag)
@@ -910,7 +910,7 @@ impl Workspace {
             }))
             .h(px(44.))
             .flex_shrink_0()
-            // Os botões da janela ficam à esquerda; em tela cheia eles somem.
+            // The window buttons are on the left; in fullscreen they disappear.
             .map(|d| if window.is_fullscreen() { d.pl_3() } else { d.pl(px(84.)) })
             .pr_3()
             .gap_4()
@@ -925,7 +925,7 @@ impl Workspace {
             )
     }
 
-    /// Menu da barra de contexto: conexões e, no Snowflake, role/warehouse/database/schema.
+    /// Context bar menu: connections and, on Snowflake, role/warehouse/database/schema.
     fn context_menu(&mut self, pop: Entity<PopoverState>, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let close = move |w: &mut Window, cx: &mut App| pop.update(cx, |p, cx| p.dismiss(w, cx));
@@ -968,7 +968,7 @@ impl Workspace {
         if let Some(o) = self.display_conn(cx).filter(|o| o.meta.read(cx).cache.dialect == Dialect::Snowflake) {
             let id = o.conn.cfg.id.clone();
             menu = menu.child(section_label("Snowflake".into(), &theme));
-            // Sem database atual, `show schemas` lista os de todas e o `use schema` cairia no lugar errado.
+            // With no current database, `show schemas` lists those of all and `use schema` would land in the wrong place.
             let has_db = o.meta.read(cx).cache.current_db().is_some();
             for kind in ["role", "warehouse", "database", "schema"].into_iter().filter(|k| *k != "schema" || has_db) {
                 let (id, cl) = (id.clone(), close.clone());
@@ -981,7 +981,7 @@ impl Workspace {
         menu.into_any_element()
     }
 
-    /// Trilho de ícones à esquerda.
+    /// Icon rail on the left.
     fn render_rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let sf = self.display_conn(cx).filter(|o| o.conn.cfg.snowflake.is_some()).map(|o| o.conn.cfg.id.clone());
@@ -1011,14 +1011,14 @@ impl Workspace {
             .child(btn("rail-theme", IconName::SunMoon, appearance::label(cx.global::<Appearance>().0, cx), false).on_click(cx.listener(|ws, _, w, cx| ws.pick_theme(w, cx))))
     }
 
-    /// Painel de objetos: cabeçalho com o filtro (Snowflake) e a árvore da conexão atual.
+    /// Objects panel: header with the filter (Snowflake) and the current connection's tree.
     fn render_objects(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let Some(o) = self.current_open() else {
             return div().p_3().text_sm().text_color(theme.muted_foreground).child(t!("frame.connect_hint").to_string()).into_any_element();
         };
         let cache = &o.meta.read(cx).cache;
-        // Badge só com filtro ativo; os padrões ficam no tooltip.
+        // Badge only with an active filter; the patterns go in the tooltip.
         let filter = (cache.dialect == Dialect::Snowflake).then(|| {
             let badge = (!cache.db_filter.is_empty()).then(|| format!("{}/{}", cache.visible_databases().count(), cache.databases.len()));
             let tip = if cache.db_filter.is_empty() { t!("filter.title").to_string() } else { cache.db_filter.join(", ") };
@@ -1049,7 +1049,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Sem conexão aberta: a lista de conexões ocupa a área principal (não há mais barra lateral).
+    /// No open connection: the connection list fills the main area (there is no sidebar anymore).
     fn render_connections(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mut list = v_flex().w_full().max_w(px(480.)).gap_1().child(section_label(t!("frame.connections").to_string(), &theme));
@@ -1072,8 +1072,8 @@ impl Workspace {
         v_flex().size_full().items_center().justify_center().p_4().child(list).into_any_element()
     }
 
-    /// Barra de contexto (ENV / ROLE / WAREHOUSE / DB.SCHEMA): na barra de status, para não disputar
-    /// espaço com as abas na linha do título.
+    /// Context bar (ENV / ROLE / WAREHOUSE / DB.SCHEMA): in the status bar, so it doesn't compete for
+    /// space with the tabs on the title row.
     fn context_pill(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let p = palette(theme.mode.is_dark());
@@ -1085,7 +1085,7 @@ impl Workspace {
         });
         let ws = cx.entity().downgrade();
         let menu = Popover::new("ctx-menu")
-            // Na barra de status: o menu abre para cima.
+            // In the status bar: the menu opens upward.
             .anchor(Anchor::BottomLeft)
             .trigger(
                 Button::new("ctx-pill")
@@ -1095,7 +1095,7 @@ impl Workspace {
                     .child(h_flex().gap_1().when(ctx.is_none(), |d| d.child(t!("frame.connect").to_string())).child(Icon::new(IconName::ChevronUp).xsmall())),
             )
             .content(move |_, window, cx| {
-                // Montado a cada abertura: reflete conexões e contexto atuais.
+                // Built on every open: reflects current connections and context.
                 let pop = cx.entity();
                 ws.upgrade().map(|ws| ws.update(cx, |ws, cx| ws.context_menu(pop, window, cx))).unwrap_or_else(|| div().into_any_element())
             });
@@ -1115,7 +1115,7 @@ impl Workspace {
                     .child(e.label()),
             );
         }
-        // Snowflake: cada parte abre o seletor dela (role, warehouse, database). Postgres: só texto.
+        // Snowflake: each part opens its own picker (role, warehouse, database). Postgres: text only.
         let kinds: &[&'static str] = if dialect == Dialect::Snowflake { &["role", "warehouse", "database"] } else { &[] };
         for (i, part) in parts.into_iter().enumerate() {
             if i > 0 {
@@ -1150,7 +1150,7 @@ impl Workspace {
         row.child(menu)
     }
 
-    /// Barra de status: "conectando…" e os atalhos. O status da execução fica no rodapé da aba SQL.
+    /// Status bar: "connecting…" and the shortcuts. Execution status lives in the SQL tab's footer.
     fn render_status(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let hint = |s: String| div().font_family(theme.mono_font_family.clone()).child(s);
@@ -1174,8 +1174,8 @@ impl Workspace {
     }
 }
 
-/// Clique em aba/botão da linha do título não pode virar arrasto da janela.
-/// Diálogo com o nome atual do script; Enter ou "Rename" aplica.
+/// A click on a tab/button of the title row must not become a window drag.
+/// Dialog with the script's current name; Enter or "Rename" applies.
 fn rename_script(tab: Entity<SqlTab>, window: &mut Window, cx: &mut App) {
     let input = cx.new(|cx| InputState::new(window, cx).default_value(tab.read(cx).title().to_string()));
     let apply = {
@@ -1217,8 +1217,8 @@ fn no_drag(_: &MouseDownEvent, _: &mut Window, cx: &mut App) {
     cx.stop_propagation();
 }
 
-/// Área vazia dentro da faixa das abas que arrasta a janela como a barra de título: arma o
-/// arrasto (o `title-row` começa o movimento) e o duplo clique maximiza.
+/// Empty area inside the tab strip that drags the window like the title bar: arms the
+/// drag (`title-row` starts the movement) and double-click maximizes.
 fn drag_space(id: &'static str, cx: &mut Context<Workspace>) -> Stateful<Div> {
     h_flex()
         .id(id)
@@ -1228,7 +1228,7 @@ fn drag_space(id: &'static str, cx: &mut Context<Workspace>) -> Stateful<Div> {
         .on_mouse_down(MouseButton::Left, cx.listener(|ws, _, _, _| ws.drag_armed = true))
 }
 
-/// `kind` vai cru para o SQL (`show roles`); na tela, traduzido.
+/// `kind` goes raw into the SQL (`show roles`); on screen, translated.
 fn kind_label(kind: &str) -> String {
     match kind {
         "role" => t!("kind.role"),
@@ -1243,7 +1243,7 @@ fn section_label(text: String, theme: &Theme) -> Div {
     div().px_2().pt_2().pb_1().text_xs().text_color(theme.muted_foreground).child(text.to_uppercase())
 }
 
-/// Item clicável da barra lateral, alinhado à esquerda (o Button sempre centraliza).
+/// Clickable sidebar item, left-aligned (Button always centers).
 fn side_item(id: impl Into<ElementId>, icon: Option<Icon>, label: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div> {
     let t = cx.theme();
     let label = label.into();
@@ -1267,9 +1267,9 @@ fn side_item(id: impl Into<ElementId>, icon: Option<Icon>, label: impl Into<Shar
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        // Faixa de 2px no topo: laranja quando a aba ativa é de produção.
+        // 2px strip on top: orange when the active tab is production.
         let stripe = self.display_conn(cx).and_then(|o| env_color(o.conn.cfg.environment, theme.mode.is_dark())).unwrap_or(theme.border);
-        // Painel fechado: sem o split, para ele não reescalar os tamanhos guardados (reabriria em 640px).
+        // Closed panel: no split, so it doesn't rescale the stored sizes (it would reopen at 640px).
         let split = if self.objects_visible() {
             h_resizable("objects-split")
                 .child(resizable_panel().size(px(260.)).size_range(px(180.)..px(640.)).child(self.render_objects(cx)))

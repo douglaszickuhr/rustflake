@@ -1,4 +1,4 @@
-//! Túnel SSH contra o container rb-sshd. Suba com `scripts/test-sshd.sh` e exporte RB_TEST_SSH.
+//! SSH tunnel against the rb-sshd container. Start it with `scripts/test-sshd.sh` and export RB_TEST_SSH.
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -18,16 +18,16 @@ struct Env {
 
 fn env() -> Option<Env> {
     let addr = std::env::var("RB_TEST_SSH").ok()?;
-    let (host, port) = addr.rsplit_once(':').expect("RB_TEST_SSH = host:porta");
+    let (host, port) = addr.rsplit_once(':').expect("RB_TEST_SSH = host:port");
     Some(Env {
         host: host.into(),
-        port: port.parse().expect("porta"),
+        port: port.parse().expect("port"),
         dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/test-ssh"),
     })
 }
 
 fn skip() {
-    eprintln!("RB_TEST_SSH ausente; teste de túnel pulado");
+    eprintln!("RB_TEST_SSH missing; tunnel test skipped");
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -53,19 +53,19 @@ fn target(e: &Env, key: &str, known_hosts: PathBuf, agent: Option<PathBuf>) -> S
     }
 }
 
-/// known_hosts temporário com a chave do rb-sshd, aprendida pelo fluxo de confiança.
+/// Temporary known_hosts with rb-sshd's key, learned through the trust flow.
 fn trusted_known_hosts(e: &Env) -> PathBuf {
     let kh = scratch("kh").join("known_hosts");
     match run(Tunnel::connect(target(e, "id_plain", kh.clone(), None), None)).err() {
         Some(DbError::HostKeyUnknown { host, port, key, .. }) => trust_host(&kh, &host, port, &key).unwrap(),
-        other => panic!("esperava HostKeyUnknown: {other:?}"),
+        other => panic!("expected HostKeyUnknown: {other:?}"),
     }
     kh
 }
 
-/// Mensagens no idioma padrão dos testes (`en`: ninguém chama `set_locale`).
+/// Messages in the tests' default language (`en`: nobody calls `set_locale`).
 fn ssh_err(res: Option<DbError>, needle: &str) {
-    assert!(matches!(&res, Some(DbError::Ssh(m)) if m.contains(needle)), "esperava SSH com {needle:?}: {res:?}");
+    assert!(matches!(&res, Some(DbError::Ssh(m)) if m.contains(needle)), "expected SSH with {needle:?}: {res:?}");
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn changed_host_key_is_refused_without_touching_known_hosts() {
     let real = std::fs::read_to_string(&kh).unwrap();
     let fake = std::fs::read_to_string(e.dir.join("id_plain.pub")).unwrap();
     let mut parts: Vec<String> = real.trim().splitn(3, ' ').map(String::from).collect();
-    assert_eq!(parts[1], "ssh-ed25519", "o teste supõe chave de host ed25519");
+    assert_eq!(parts[1], "ssh-ed25519", "the test assumes an ed25519 host key");
     parts[2] = fake.split_whitespace().nth(1).unwrap().to_string();
     let tampered = format!("{}\n", parts.join(" "));
     std::fs::write(&kh, &tampered).unwrap();
@@ -117,7 +117,7 @@ fn key_file_with_passphrase() {
     let t = || target(&e, "id_pass", kh.clone(), None);
     ssh_err(run(Tunnel::connect(t(), None)).err(), "requires a passphrase");
     ssh_err(run(Tunnel::connect(t(), Some("errada".into()))).err(), "wrong passphrase");
-    assert!(run(Tunnel::connect(t(), Some("segredo".into()))).is_ok());
+    assert!(run(Tunnel::connect(t(), Some("secret".into()))).is_ok());
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn rejected_user_lists_what_was_tried() {
 fn agent_only_authentication() {
     let Some(e) = env() else { return skip() };
     let kh = trusted_known_hosts(&e);
-    // Caminho curto: sockets Unix no macOS têm limite de ~104 bytes.
+    // Short path: Unix sockets on macOS have a ~104-byte limit.
     let sock = PathBuf::from(format!("/tmp/rb-agent-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);
     let mut agent = std::process::Command::new("ssh-agent").arg("-D").arg("-a").arg(&sock).stdout(Stdio::null()).spawn().unwrap();
@@ -169,7 +169,7 @@ fn channels_to_open_and_closed_ports() {
     });
 }
 
-/// Engine que só enxerga o home temporário; destino `rb-pg:5432` só resolve dentro do bastion.
+/// Engine that only sees the temporary home; destination `rb-pg:5432` only resolves inside the bastion.
 fn tunneled(e: &Env) -> (Engine, ConnectionConfig) {
     let home = scratch("home");
     let env = SshEnv {
@@ -237,7 +237,7 @@ fn cancel_through_tunnel() {
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
 
-/// `cargo test --release -p rb-core --test ssh -- --ignored --nocapture` (precisa do seed de perf no rb-pg).
+/// `cargo test --release -p rb-core --test ssh -- --ignored --nocapture` (needs the perf seed on rb-pg).
 #[test]
 #[ignore]
 fn perf_big_first_batch_through_tunnel() {
@@ -245,7 +245,7 @@ fn perf_big_first_batch_through_tunnel() {
     let (engine, cfg) = tunneled(&e);
     let s = block_on(engine.connect(&cfg, Credentials::default())).unwrap();
     let out = block_on(s.execute("select * from perf_big".into())).unwrap();
-    println!("primeiro lote de perf_big pelo túnel: {} ms", out.elapsed.as_millis());
+    println!("first perf_big batch through the tunnel: {} ms", out.elapsed.as_millis());
     assert!(out.elapsed.as_millis() < 200);
 }
 
@@ -255,7 +255,7 @@ fn slow_channel_does_not_block_others_and_times_out() {
     let kh = trusted_known_hosts(&e);
     run(async {
         let t = std::sync::Arc::new(Tunnel::connect(target(&e, "id_plain", kh, None), None).await.unwrap());
-        // Endereço que não responde: o sshd fica esperando o connect.
+        // Address that does not respond: sshd waits on the connect.
         let slow = tokio::spawn({
             let t = t.clone();
             async move { t.open_stream("10.255.255.1", 5432).await.err() }

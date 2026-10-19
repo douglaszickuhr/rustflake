@@ -1,8 +1,8 @@
 #!/bin/sh
-# Runner do cargo (.cargo/config.toml): assina o app com o certificado local antes de rodar.
-# Sem o certificado (scripts/dev-cert.sh), só roda.
+# Cargo runner (.cargo/config.toml): signs the app with the local certificate before running it.
+# Without the certificate (scripts/dev-cert.sh), it just runs.
 bin="$1"
 if [ "$(basename "$bin")" = rustbeaver ] && security find-certificate -c rustbeaver-dev >/dev/null 2>&1; then
-  codesign --force --sign rustbeaver-dev --identifier dev.rustbeaver "$bin" 2>/dev/null || echo "aviso: não consegui assinar $bin" >&2
+  codesign --force --sign rustbeaver-dev --identifier dev.rustbeaver "$bin" 2>/dev/null || echo "warning: could not sign $bin" >&2
 fi
 exec "$@"

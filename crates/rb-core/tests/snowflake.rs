@@ -1,5 +1,5 @@
-//! Contra uma conta Snowflake real. Variáveis: RB_TEST_SNOWFLAKE_{ACCOUNT,USER,WAREHOUSE,ROLE,DATABASE}
-//! e RB_TEST_SNOWFLAKE_PRIVATE_KEY (caminho da .p8) ou RB_TEST_SNOWFLAKE_PAT.
+//! Against a real Snowflake account. Variables: RB_TEST_SNOWFLAKE_{ACCOUNT,USER,WAREHOUSE,ROLE,DATABASE}
+//! e RB_TEST_SNOWFLAKE_PRIVATE_KEY (path to the .p8) or RB_TEST_SNOWFLAKE_PAT.
 
 use std::time::{Duration, Instant};
 
@@ -51,14 +51,14 @@ fn env() -> Option<Env> {
 }
 
 fn skip() {
-    eprintln!("RB_TEST_SNOWFLAKE_* ausentes; teste Snowflake pulado");
+    eprintln!("RB_TEST_SNOWFLAKE_* missing; Snowflake test skipped");
 }
 
 fn connect(e: &Env) -> Session {
-    block_on(e.engine.connect(&e.cfg, e.creds.clone())).expect("conectar ao Snowflake")
+    block_on(e.engine.connect(&e.cfg, e.creds.clone())).expect("connect to Snowflake")
 }
 
-/// Cria um schema descartável e devolve `"DB"."RB_TEST_<pid>_<tag>"`.
+/// Creates a throwaway schema and returns `"DB"."RB_TEST_<pid>_<tag>"`.
 fn scratch_schema(e: &Env, s: &Session, tag: &str) -> String {
     let name = format!("\"{}\".\"RB_TEST_{}_{}\"", e.database, std::process::id(), tag.to_uppercase());
     block_on(s.execute(format!("create or replace schema {name}"))).unwrap();
@@ -174,7 +174,7 @@ fn manual_transactions_and_grid_edits_are_refused() {
 #[test]
 fn sessions_of_one_connection_share_one_login() {
     let Some(e) = env() else { return skip() };
-    // Estrutural: o contador global de logins é disputado pelos outros testes em paralelo.
+    // Structural: the global login counter is contended by the other tests running in parallel.
     let a = connect(&e);
     let b = connect(&e);
     assert!(a.shares_snowflake_with(&b));
@@ -188,7 +188,7 @@ fn metadata_of_test_schema() {
     let Some(e) = env() else { return skip() };
     let s = connect(&e);
     let schema = scratch_schema(&e, &s, "meta");
-    block_on(s.execute(format!("create table {schema}.T (ID number primary key, \"nome\" varchar)"))).unwrap();
+    block_on(s.execute(format!("create table {schema}.T (ID number primary key, \"name\" varchar)"))).unwrap();
     block_on(s.execute(format!("create view {schema}.V as select ID from {schema}.T"))).unwrap();
     let key = format!("{}.RB_TEST_{}_META", e.database, std::process::id());
 
@@ -198,7 +198,7 @@ fn metadata_of_test_schema() {
     let o = block_on(rb_core::metadata::objects(&s, &key)).unwrap();
     assert_eq!((o.tables, o.views), (vec!["T".to_string()], vec!["V".to_string()]));
     let cols = block_on(rb_core::metadata::columns(&s, &key, "T")).unwrap();
-    assert_eq!(cols.iter().map(|c| (c.name.as_str(), c.is_pk)).collect::<Vec<_>>(), vec![("ID", true), ("nome", false)]);
+    assert_eq!(cols.iter().map(|c| (c.name.as_str(), c.is_pk)).collect::<Vec<_>>(), vec![("ID", true), ("name", false)]);
     assert_eq!(block_on(rb_core::metadata::columns(&s, &key, "V")).unwrap().len(), 1);
     drop_schema(&s, &schema);
 }
@@ -217,7 +217,7 @@ fn use_role_and_warehouse_change_context() {
     assert!(ctx.role.is_some());
 }
 
-/// Passa do timeout padrão do conector (300 s). Lento: `cargo test --test snowflake -- --ignored long_query`.
+/// Exceeds the connector's default timeout (300 s). Slow: `cargo test --test snowflake -- --ignored long_query`.
 #[test]
 #[ignore]
 fn long_query_survives_five_minutes() {

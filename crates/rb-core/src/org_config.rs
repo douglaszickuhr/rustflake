@@ -1,5 +1,5 @@
-//! Convenções de uma empresa (nomes de role, tag de classificação, masking policies) num arquivo
-//! TOML escolhido por conexão. Sem configuração o app não supõe nenhuma convenção.
+//! Conventions of a company (role names, classification tag, masking policies) in a TOML
+//! file chosen per connection. Without a config the app assumes no convention.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -60,7 +60,7 @@ struct RawOrgConfig {
 
 #[derive(Debug)]
 struct Rule {
-    /// `Classification(0)`: o nível sai do grupo `level`.
+    /// `Classification(0)`: the level comes from the `level` group.
     kind: RoleKind,
     re: Regex,
     write: Option<String>,
@@ -68,7 +68,7 @@ struct Rule {
 
 #[derive(Debug)]
 struct Classification {
-    /// db, schema, nome.
+    /// db, schema, name.
     tag: [String; 3],
     labels: Vec<String>,
     values: HashMap<String, u8>,
@@ -126,7 +126,7 @@ impl OrgConfig {
         &self.name
     }
 
-    /// Primeira regra que casa (classificação com `level` fora de u8 não casa).
+    /// First matching rule (a classification with `level` outside u8 doesn't match).
     fn matched<'a>(&'a self, role: &'a str) -> Option<(&'a Rule, regex::Captures<'a>, RoleKind)> {
         self.rules.iter().find_map(|r| {
             let c = r.re.captures(role)?;
@@ -145,12 +145,12 @@ impl OrgConfig {
     /// `X_WH_OP_AR` → (`X_WH`, operar?).
     pub fn warehouse_of(&self, role: &str) -> Option<(String, bool)> {
         let (_, c, kind) = self.matched(role)?;
-        // O grupo existe na regex mas pode não participar do match (alternância).
+        // The group exists in the regex but may not take part in the match (alternation).
         let w = c.name("warehouse")?;
         (kind == RoleKind::Warehouse).then(|| (w.as_str().to_string(), c.name("op").is_some()))
     }
 
-    /// Departamento de uma role base; sem o grupo `department`, a própria role.
+    /// Department of a base role; without the `department` group, the role itself.
     pub fn department_of(&self, role: &str) -> String {
         self.matched(role).and_then(|(_, c, _)| c.name("department").map(|m| m.as_str().to_string())).unwrap_or_else(|| role.to_string())
     }
@@ -159,12 +159,12 @@ impl OrgConfig {
         self.matched(role).and_then(|(r, _, _)| r.write.as_deref()).is_some_and(|w| role.to_ascii_uppercase().contains(w))
     }
 
-    /// Alguma regra produz esse tipo (só a variante conta).
+    /// Some rule produces this kind (only the variant counts).
     pub fn has_kind(&self, k: RoleKind) -> bool {
         self.rules.iter().any(|r| std::mem::discriminant(&r.kind) == std::mem::discriminant(&k))
     }
 
-    /// Tem tag de classificação (senão as telas não falam de classificação).
+    /// Has a classification tag (otherwise the screens don't talk about classification).
     pub fn has_classification(&self) -> bool {
         self.class.is_some()
     }
@@ -173,7 +173,7 @@ impl OrgConfig {
         self.class.as_ref()?.labels.get(usize::from(level).checked_sub(1)?).map(String::as_str)
     }
 
-    /// O nível mais alto (o que as roles de `forced_by` mascaram sempre).
+    /// The highest level (the one that `forced_by` roles always mask).
     pub fn max_level(&self) -> Option<u8> {
         self.class.as_ref().and_then(|c| u8::try_from(c.labels.len()).ok()).filter(|&n| n > 0)
     }
@@ -186,7 +186,7 @@ impl OrgConfig {
         self.class.as_ref().is_some_and(|c| [db, schema, name].iter().zip(&c.tag).all(|(a, b)| a.eq_ignore_ascii_case(b)))
     }
 
-    /// Onde uma role de classificação desmascara. `databases`: o maior que casar com o começo vence.
+    /// Where a classification role unmasks. `databases`: the longest that matches the start wins.
     pub fn scope(&self, role: &str, level: u8, databases: &[String]) -> Scope {
         let r = role.to_ascii_uppercase();
         let fill = |t: &str| t.replace("{level}", &level.to_string()).to_ascii_uppercase();
@@ -212,7 +212,7 @@ impl OrgConfig {
         }
     }
 
-    /// Colunas do nível que a role desmascara no escopo.
+    /// Columns of the level that the role unmasks in the scope.
     pub fn columns(&self, counts: &[TagCount], level: u8, scope: &Scope) -> u64 {
         counts
             .iter()
@@ -228,7 +228,7 @@ impl OrgConfig {
             .sum()
     }
 
-    /// Tem alguma regra de masking (senão não há "onde desmascara").
+    /// Has some masking rule (otherwise there is no "where it unmasks").
     pub fn has_masking(&self) -> bool {
         let m = &self.masking;
         m.global.is_some() || m.group.is_some() || m.scoped_suffix.is_some()
@@ -238,12 +238,12 @@ impl OrgConfig {
         self.masking.group.as_ref().map(|g| g.databases.as_str())
     }
 
-    /// As roles da pessoa que forçam o mascaramento; vazio = nenhuma.
+    /// The person's roles that force masking; empty = none.
     pub fn forces_masking(&self, roles: &[String]) -> Vec<String> {
         roles.iter().filter(|r| self.masking.forced_by.iter().any(|f| f.eq_ignore_ascii_case(r))).cloned().collect()
     }
 
-    /// Colunas com a tag de classificação, agregadas no servidor (~1–2 mil linhas).
+    /// Columns with the classification tag, aggregated on the server (~1–2 thousand rows).
     pub fn tag_counts_sql(&self) -> Option<String> {
         let [db, schema, name] = &self.class.as_ref()?.tag;
         Some(format!(
@@ -263,7 +263,7 @@ pub fn org_configs_dir() -> PathBuf {
     crate::config::app_dir().join("configurations")
 }
 
-/// `*.toml` em ordem alfabética; nome repetido: o primeiro vence e o outro vira erro.
+/// `*.toml` in alphabetical order; repeated name: the first wins and the other becomes an error.
 pub fn load_all(dir: &Path) -> (Vec<OrgConfig>, Vec<String>) {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "toml")).collect();
     files.sort();
@@ -279,7 +279,7 @@ pub fn load_all(dir: &Path) -> (Vec<OrgConfig>, Vec<String>) {
     (out, errs)
 }
 
-/// A configuração da conexão; nome ausente = nenhum. Erro = o nome não carregou (arquivo quebrado ou sumiu).
+/// The connection's config; missing name = none. Error = the name didn't load (broken or missing file).
 pub fn resolve(name: Option<&str>) -> Result<OrgConfig, String> {
     let Some(name) = name.filter(|n| !n.is_empty()) else { return Ok(OrgConfig::none()) };
     let (all, errs) = load_all(&org_configs_dir());
@@ -319,21 +319,21 @@ mod tests {
         ] {
             assert_eq!(a.classify(name), kind, "{name}");
         }
-        assert_eq!(a.classify("X_C999_AR"), Access, "nível fora de u8: a regra não casa");
+        assert_eq!(a.classify("X_C999_AR"), Access, "level outside u8: the rule does not match");
     }
 
     #[test]
     fn warehouse_operate_or_monitor() {
         let a = acme();
         assert_eq!(a.warehouse_of("GENERAL_XS_WH_OP_AR"), Some(("GENERAL_XS_WH".into(), true)));
-        assert_eq!(a.warehouse_of("ops_xs_wh_monitor_ar"), Some(("ops_xs_wh".into(), false)), "OPS no nome não é operar");
+        assert_eq!(a.warehouse_of("ops_xs_wh_monitor_ar"), Some(("ops_xs_wh".into(), false)), "OPS in the name is not operate");
         assert_eq!(a.warehouse_of("GENERAL_XS_WH_FULL_AR"), None);
         assert_eq!(a.department_of("FINANCE_DEPARTMENT_BASE_ROLE"), "FINANCE");
         assert_eq!(a.department_of("DATA_UNIT_BASE_ROLE"), "DATA_UNIT_BASE_ROLE");
         assert!(a.writes("SALES_PROD_CRM_RW_AR") && !a.writes("SALES_PROD_CRM_RO_AR"));
         let alt = OrgConfig::parse("name = 'X'\n[[roles]]\nkind = 'warehouse'\nmatch = '^(?P<warehouse>.+_WH)_OP|^WH_MONITOR'").unwrap();
         assert_eq!(alt.classify("WH_MONITOR"), Warehouse);
-        assert_eq!(alt.warehouse_of("WH_MONITOR"), None, "grupo fora do match: sem pânico");
+        assert_eq!(alt.warehouse_of("WH_MONITOR"), None, "group outside the match: no panic");
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(a.scope("classification_c2_masking_ar", 2, &d), Scope::Global);
         assert_eq!(a.scope("SHARED_C3_MASKING_AR", 3, &d), Scope::Group);
         assert_eq!(a.scope("SALES_PROD_C4_MASKING_AR", 4, &d), Scope::Database("SALES_PROD".into()));
-        assert_eq!(a.scope("SALES_PROD_MART_CRM_C4_MASKING_AR", 4, &d), Scope::Schema("SALES_PROD".into(), "MART_CRM".into()), "database mais longo que casa");
+        assert_eq!(a.scope("SALES_PROD_MART_CRM_C4_MASKING_AR", 4, &d), Scope::Schema("SALES_PROD".into(), "MART_CRM".into()), "longest matching database");
         assert_eq!(a.scope("LAKE_RAW_HR_ABSENCE_C4_MASKING_AR", 4, &d), Scope::Schema("LAKE_RAW".into(), "HR_ABSENCE".into()));
         assert_eq!(a.scope("UNKNOWN_DB_X_C4_MASKING_AR", 4, &d), Scope::Unresolved("UNKNOWN_DB_X".into()));
         assert_eq!(a.scope("SOMETHING_C4_POLICY_READER", 4, &d), Scope::Unresolved("SOMETHING_C4_POLICY_READER".into()));
@@ -401,7 +401,7 @@ mod tests {
             c("REPORTING_PROD", "RPT_CX", "C-3 Confidential", 88),
             c("FINANCE_SHARED", "PUBLIC", "C-3 Confidential", 5),
         ];
-        assert_eq!(a.columns(&c, 4, &Scope::Schema("SALES_PROD".into(), "MART_CRM".into())), 96, "C4 também cobre UNCLASSIFIED/CONFLICT");
+        assert_eq!(a.columns(&c, 4, &Scope::Schema("SALES_PROD".into(), "MART_CRM".into())), 96, "C4 also covers UNCLASSIFIED/CONFLICT");
         assert_eq!(a.columns(&c, 4, &Scope::Database("SALES_PROD".into())), 106);
         assert_eq!(a.columns(&c, 4, &Scope::Global), 106);
         assert_eq!(a.columns(&c, 3, &Scope::Global), 93);

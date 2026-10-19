@@ -1,4 +1,4 @@
-//! Histórico (⌘Y): queries já executadas na conexão atual, com busca.
+//! History (⌘Y): queries already run on the current connection, with search.
 
 use rust_i18n::t;
 use std::path::PathBuf;
@@ -12,12 +12,12 @@ use rb_core::history::{self, Entry};
 
 use crate::{QuickNext, QuickPrev};
 
-/// (sql, abrir em aba nova)
+/// (sql, open in new tab)
 type OnPick = Rc<dyn Fn(String, bool, &mut Window, &mut App)>;
 
 const MAX_HITS: usize = 200;
 
-/// "hoje 21:14", "ontem 18:40" ou "2026-10-05 09:12", no fuso de `tz`.
+/// "today 21:14", "yesterday 18:40" or "2026-10-05 09:12", in the timezone `tz`.
 fn when_label<Tz: chrono::TimeZone>(ts: i64, now: i64, tz: &Tz) -> String
 where
     Tz::Offset: std::fmt::Display,
@@ -130,18 +130,18 @@ impl Render for HistoryPopup {
             .on_action(cx.listener(|h, _: &QuickPrev, _, cx| h.step(false, cx)))
             .on_action(cx.listener(|h, _: &QuickNext, _, cx| h.step(true, cx)))
             .child(Input::new(&self.input))
-            // As linhas são filhas diretas do contêiner rolável: `scroll_to_item` conta por elas.
+            // The rows are direct children of the scrollable container: `scroll_to_item` counts by them.
             .child(div().id("hist-list").flex().flex_col().max_h(px(420.)).overflow_y_scroll().track_scroll(&self.scroll).children(rows))
             .child(div().text_sm().text_color(theme.muted_foreground).child(status))
     }
 }
 
-/// Abre o popup; `on_pick(sql, aba_nova)` roda depois de fechar.
+/// Opens the popup; `on_pick(sql, new_tab)` runs after closing.
 pub fn open(conn_name: String, path: PathBuf, on_pick: impl Fn(String, bool, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| HistoryPopup::new(path, Rc::new(on_pick), window, cx));
     let input = view.read(cx).input.clone();
     window.open_dialog(cx, move |dialog, _, _| dialog.title(t!("history.title", conn = conn_name).to_string()).w(px(640.)).child(view.clone()));
-    // Depois de abrir: o diálogo foca um handle próprio e guarda o foco anterior para devolver ao fechar.
+    // After opening: the dialog focuses its own handle and stores the previous focus to restore on close.
     input.update(cx, |s, cx| s.focus(window, cx));
 }
 

@@ -1,4 +1,4 @@
-//! Tema claro/escuro: resolve a escolha (ou o do macOS) e aplica no gpui-kit.
+//! Light/dark theme: resolves the choice (or macOS's) and applies it to gpui-kit.
 
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::*;
@@ -6,7 +6,7 @@ use rb_core::config::{self, ThemeChoice};
 use rust_i18n::t;
 use gpui_kit::{Hsla, rgb};
 
-/// Tema escolhido; `Auto` é reaplicado quando o macOS troca (`system_changed`).
+/// Chosen theme; `Auto` is reapplied when macOS switches (`system_changed`).
 pub struct Appearance(pub ThemeChoice);
 
 impl Global for Appearance {}
@@ -25,12 +25,12 @@ fn apply(choice: ThemeChoice, system: WindowAppearance, cx: &mut App) {
     cx.set_global(Appearance(choice));
 }
 
-/// Na partida, antes de abrir a janela.
+/// At startup, before opening the window.
 pub fn init(cx: &mut App) {
     apply(config::load_settings(&config::settings_path()).theme, cx.window_appearance(), cx);
 }
 
-/// Troca já (o `Theme::change` redesenha as janelas) e salva em segundo plano.
+/// Switches now (`Theme::change` redraws the windows) and saves in the background.
 pub fn set(choice: ThemeChoice, window: &Window, cx: &mut App) {
     apply(choice, window.appearance(), cx);
     let path = config::settings_path();
@@ -42,14 +42,14 @@ pub fn set(choice: ThemeChoice, window: &Window, cx: &mut App) {
     .detach();
 }
 
-/// O macOS trocou claro/escuro: só importa no `Auto`.
+/// macOS switched light/dark: only matters for `Auto`.
 pub fn system_changed(window: &Window, cx: &mut App) {
     if cx.global::<Appearance>().0 == ThemeChoice::Auto {
         apply(ThemeChoice::Auto, window.appearance(), cx);
     }
 }
 
-/// Rótulo do seletor; `Auto` mostra o que está valendo.
+/// Picker label; `Auto` shows what is in effect.
 pub fn label(choice: ThemeChoice, cx: &App) -> String {
     let name = |m: ThemeMode| if m.is_dark() { t!("theme.dark") } else { t!("theme.light") }.to_string();
     match choice {
@@ -60,7 +60,7 @@ pub fn label(choice: ThemeChoice, cx: &App) -> String {
 }
 
 
-/// Cores do canvas "Rustflake UX Concepts"; o claro é derivado do escuro.
+/// Colors of the "Rustflake UX Concepts" canvas; the light one is derived from the dark.
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub background: Hsla,
@@ -106,7 +106,7 @@ pub fn palette(dark: bool) -> Palette {
     }
 }
 
-/// Razão de contraste WCAG (só o teste de legibilidade usa).
+/// WCAG contrast ratio (only the legibility test uses it).
 #[cfg(test)]
 fn contrast(a: Hsla, b: Hsla) -> f32 {
     let lum = |h: Hsla| {
@@ -118,7 +118,7 @@ fn contrast(a: Hsla, b: Hsla) -> f32 {
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
-/// O `Theme::change` recarrega o tema registrado; reaplicar depois de cada troca.
+/// `Theme::change` reloads the registered theme; reapply after every switch.
 fn apply_palette(theme: &mut Theme) {
     let p = palette(theme.mode.is_dark());
     let t = &mut theme.colors;
@@ -136,7 +136,7 @@ fn apply_palette(theme: &mut Theme) {
     t.secondary_hover = p.border_strong;
     t.secondary_active = p.border_strong;
     t.secondary_foreground = p.foreground;
-    // Hover de menu/lista: secondary some sobre o popover (#111113 × #17171A).
+    // Menu/list hover: secondary disappears over the popover (#111113 × #17171A).
     t.accent = p.border_strong;
     t.accent_foreground = p.foreground;
     t.primary = p.accent;

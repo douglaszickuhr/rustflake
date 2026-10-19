@@ -3,10 +3,10 @@
 use rb_core::config::{ConnectionConfig, SslMode};
 use rb_core::session::{Engine, Session};
 
-/// Conexão de teste a partir de RB_TEST_DATABASE_URL; `None` se a variável não existir.
+/// Test connection from RB_TEST_DATABASE_URL; `None` if the variable is not set.
 pub fn open() -> Option<(Engine, Session)> {
     let url = std::env::var("RB_TEST_DATABASE_URL").ok()?;
-    let pg: tokio_postgres::Config = url.parse().expect("RB_TEST_DATABASE_URL inválida");
+    let pg: tokio_postgres::Config = url.parse().expect("RB_TEST_DATABASE_URL invalid");
     let host = match &pg.get_hosts()[0] {
         tokio_postgres::config::Host::Tcp(h) => h.clone(),
         _ => panic!("use host TCP em RB_TEST_DATABASE_URL"),
@@ -26,12 +26,12 @@ pub fn open() -> Option<(Engine, Session)> {
     let password = pg.get_password().map(|p| String::from_utf8_lossy(p).into_owned());
     let engine = Engine::new().expect("runtime");
     let creds = rb_core::session::Credentials { password, ..Default::default() };
-    let session = pollster::block_on(engine.connect(&cfg, creds)).expect("conectar ao Postgres de teste");
+    let session = pollster::block_on(engine.connect(&cfg, creds)).expect("connect to the test Postgres");
     Some((engine, session))
 }
 
 pub fn skip() {
-    eprintln!("RB_TEST_DATABASE_URL ausente; teste de integração pulado");
+    eprintln!("RB_TEST_DATABASE_URL missing; integration test skipped");
 }
 
 pub fn unique(prefix: &str) -> String {

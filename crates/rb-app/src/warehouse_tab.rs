@@ -1,4 +1,4 @@
-//! Aba "Warehouses" do Snowflake (somente leitura): configuração, quem usa, créditos e uso.
+//! Snowflake "Warehouses" tab (read-only): configuration, who uses it, credits and usage.
 
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -24,14 +24,14 @@ use crate::meta::ConnTarget;
 use crate::plan_view::PlanView;
 use crate::sql_tab::query_id_button;
 
-/// Abre (ou foca) Usuários & Roles na role/usuário clicado.
+/// Opens (or focuses) Users & Roles on the clicked role/user.
 pub type Goto = Rc<dyn Fn(Target, &mut Window, &mut App)>;
 
 type Reach = (Arc<RoleGraph>, Arc<HashMap<String, Vec<String>>>);
 
 pub struct WarehouseTab {
     conn: ConnTarget,
-    /// SHOWs (rápidos); ACCOUNT_USAGE abre sessões próprias, porque o ator é serial.
+    /// SHOWs (fast); ACCOUNT_USAGE opens its own sessions, because the actor is serial.
     session: Option<Arc<Session>>,
     filter: Entity<InputState>,
     list: Load<Vec<WarehouseInfo>>,
@@ -39,11 +39,11 @@ pub struct WarehouseTab {
     grants: HashMap<String, Load<Vec<WhGrant>>>,
     credits: HashMap<String, Load<Vec<(String, f64)>>>,
     usage: HashMap<String, Load<WhUsage>>,
-    /// Hierarquia + roles de todos os usuários: uma vez por aba, para "N usuários chegam".
+    /// Hierarchy + roles of all users: once per tab, for "N users reach it".
     reach: Option<Load<Reach>>,
     users_open: bool,
     goto: Goto,
-    /// Sobe a cada ↻: resultado de task anterior é descartado.
+    /// Bumped on each ↻: results from a previous task are discarded.
     generation: u64,
     _subs: Vec<Subscription>,
 }
@@ -134,7 +134,7 @@ impl WarehouseTab {
         cx.notify();
     }
 
-    /// Busca o que falta do warehouse selecionado; cada parte fica em cache na aba.
+    /// Fetches what's missing for the selected warehouse; each part is cached in the tab.
     fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         let Some(name) = self.selected.clone() else { return };
         let (conn, engine, generation) = (self.conn.clone(), cx.global::<Db>().0.clone(), self.generation);
@@ -208,7 +208,7 @@ impl WarehouseTab {
         }
     }
 
-    /// Plano real de uma query lenta, num diálogo (mesma visão do SQL).
+    /// Real plan of a slow query, in a dialog (same view as SQL).
     fn open_plan(&mut self, q: warehouse::SlowQuery, window: &mut Window, cx: &mut Context<Self>) {
         let holder = cx.new(|_| PlanHolder { plan: Load::Loading });
         let (conn, engine) = (self.conn.clone(), cx.global::<Db>().0.clone());
@@ -341,7 +341,7 @@ impl WarehouseTab {
             .into_any_element()
     }
 
-    /// Roles com privilégio no warehouse e quantos usuários chegam nele por herança.
+    /// Roles with a privilege on the warehouse and how many users reach it via inheritance.
     fn render_access(&mut self, name: &str, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let mut out = v_flex().gap_2().child(section(t!("wh.who").to_string(), &theme));
@@ -359,7 +359,7 @@ impl WarehouseTab {
             }
             out = out.child(row);
         }
-        // Quem usa = USAGE ou OWNERSHIP (OPERATE/MONITOR sozinhos não rodam query).
+        // Who uses = USAGE or OWNERSHIP (OPERATE/MONITOR alone can't run queries).
         let usable: Vec<String> = grants.iter().filter(|g| g.privilege == "USAGE" || g.privilege == "OWNERSHIP").map(|g| g.role.clone()).collect();
         match &self.reach {
             Some(Load::Ready((graph, users))) => {
@@ -489,7 +489,7 @@ fn section(title: String, theme: &gpui_kit::component::Theme) -> Div {
     div().pt_1().pb_1().text_xs().text_color(theme.muted_foreground).child(title.to_uppercase())
 }
 
-/// Sem warehouse ativo o ACCOUNT_USAGE não roda; sem IMPORTED PRIVILEGES nem existe.
+/// Without an active warehouse ACCOUNT_USAGE doesn't run; without IMPORTED PRIVILEGES it doesn't even exist.
 fn usage_error(e: &rb_core::DbError) -> String {
     let msg = e.to_string();
     if msg.to_ascii_lowercase().contains("no active warehouse") {
@@ -499,7 +499,7 @@ fn usage_error(e: &rb_core::DbError) -> String {
     }
 }
 
-/// Conteúdo do diálogo do plano: carrega em segundo plano.
+/// Plan dialog content: loads in the background.
 struct PlanHolder {
     plan: Load<Entity<PlanView>>,
 }

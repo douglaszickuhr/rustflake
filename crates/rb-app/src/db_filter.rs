@@ -1,4 +1,4 @@
-//! Diálogo do filtro de databases (Snowflake): cada padrão vira um chip; `!padrão` exclui (chip vermelho).
+//! Database filter dialog (Snowflake): each pattern becomes a chip; `!pattern` excludes (red chip).
 
 use rust_i18n::t;
 use std::rc::Rc;
@@ -14,12 +14,12 @@ use rb_core::metadata::parse_db_filter;
 pub struct DbFilterEditor {
     input: Entity<InputState>,
     tags: Vec<String>,
-    /// Posição do chip em edição (duplo clique): o texto volta para lá.
+    /// Position of the chip being edited (double click): the text goes back there.
     editing: Option<usize>,
     _sub: Subscription,
 }
 
-/// Junta padrões novos aos chips, sem repetir (sem diferenciar caixa): em `at` (chip editado) ou no fim.
+/// Merges new patterns into the chips, without repeats (case-insensitive): at `at` (edited chip) or at the end.
 fn merge(tags: &mut Vec<String>, at: Option<usize>, new: Vec<String>) {
     let mut pos = at.map_or(tags.len(), |i| i.min(tags.len()));
     for p in new {
@@ -42,7 +42,7 @@ impl DbFilterEditor {
         DbFilterEditor { input, tags, editing: None, _sub: sub }
     }
 
-    /// Passa o texto digitado para chips (sem repetir, sem diferenciar caixa) e limpa o campo.
+    /// Turns the typed text into chips (no repeats, case-insensitive) and clears the field.
     fn absorb(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value().to_string();
         if text.trim().is_empty() {
@@ -53,7 +53,7 @@ impl DbFilterEditor {
         cx.notify();
     }
 
-    /// Duplo clique num chip: o texto dele vai para o campo (o que já estava digitado vira chip antes).
+    /// Double click on a chip: its text goes to the field (whatever was already typed becomes a chip first).
     fn edit(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.absorb(window, cx);
         if i >= self.tags.len() {
@@ -68,7 +68,7 @@ impl DbFilterEditor {
         cx.notify();
     }
 
-    /// Chips mais o que ficou digitado sem Enter.
+    /// Chips plus whatever was typed without Enter.
     fn patterns(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<String> {
         self.absorb(window, cx);
         self.tags.clone()
@@ -99,7 +99,7 @@ impl Render for DbFilterEditor {
         });
         v_flex()
             .gap_2()
-            // Backspace com o campo vazio apaga o último chip (antes de o campo tratar a tecla).
+            // Backspace with an empty field deletes the last chip (before the field handles the key).
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "backspace" && this.input.read(cx).value().is_empty() && this.tags.pop().is_some() {
                     cx.notify();
@@ -116,7 +116,7 @@ impl Render for DbFilterEditor {
     }
 }
 
-/// Abre o diálogo com os padrões atuais; `apply` recebe a lista nova (vazia = sem filtro).
+/// Opens the dialog with the current patterns; `apply` receives the new list (empty = no filter).
 pub fn open(current: Vec<String>, apply: impl Fn(Vec<String>, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
     let editor = cx.new(|cx| DbFilterEditor::new(current, window, cx));
     let input = editor.read(cx).input.clone();
@@ -139,7 +139,7 @@ pub fn open(current: Vec<String>, apply: impl Fn(Vec<String>, &mut Window, &mut 
                 })),
         )
     });
-    // Depois de abrir: o diálogo foca um handle próprio e guarda o foco anterior para devolver ao fechar.
+    // After opening: the dialog focuses its own handle and stores the previous focus to restore on close.
     input.update(cx, |s, cx| s.focus(window, cx));
 }
 
@@ -156,10 +156,10 @@ mod tests {
         let mut tags = v(&["A*", "C*"]);
         merge(&mut tags, None, v(&["b*", "a*"]));
         assert_eq!(tags, v(&["A*", "C*", "b*"]));
-        // Chip editado (era o índice 1) volta para o mesmo lugar, mesmo virando dois.
+        // Edited chip (was index 1) goes back to the same place, even when it becomes two.
         merge(&mut tags, Some(1), v(&["X*", "Y*"]));
         assert_eq!(tags, v(&["A*", "X*", "Y*", "C*", "b*"]));
-        // Índice além do fim (chips removidos durante a edição): vai para o fim.
+        // Index past the end (chips removed during editing): goes to the end.
         merge(&mut tags, Some(99), v(&["Z"]));
         assert_eq!(tags.last().map(String::as_str), Some("Z"));
     }

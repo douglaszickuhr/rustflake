@@ -37,7 +37,7 @@ fn exact_multiple_of_page_size_terminates() {
         assert_eq!((f.batch.rows(), f.more), (1000, true));
         let f = s.fetch_more(id).await.unwrap();
         assert_eq!((f.batch.rows(), f.more), (0, false));
-        let f = s.fetch_more(id).await.unwrap(); // sem portal aberto: vazio
+        let f = s.fetch_more(id).await.unwrap(); // no open portal: empty
         assert_eq!((f.batch.rows(), f.more), (0, false));
     });
 }
@@ -77,7 +77,7 @@ fn postgres_errors_keep_sqlstate_and_position() {
     block_on(async {
         let err = s.execute("select nope from pg_class".into()).await.unwrap_err();
         assert!(matches!(err, DbError::Postgres { ref code, position: Some(8), .. } if code == "42703"), "{err:?}");
-        // a sessão continua utilizável
+        // the session remains usable
         assert_eq!(s.execute("select 1".into()).await.unwrap().batch.rows(), 1);
     });
 }
@@ -131,7 +131,7 @@ fn quick_open_pg_search_keeps_exact_match_in_large_catalog() {
     let schema = common::unique("qobig");
     block_on(async {
         s.execute(format!("create schema {schema}")).await.unwrap();
-        // 300 nomes que contêm o texto, criados antes do exato: o corte do servidor pegaria estes.
+        // 300 names containing the text, created before the exact one: the server-side cut would pick these.
         s.execute(format!("do $$ begin for i in 1..300 loop execute format('create table {schema}.zzqk_long_%s(id int)', i); end loop; end $$")).await.unwrap();
         s.execute(format!("create table {schema}.zzqk(id int)")).await.unwrap();
         let hits = pg_search(&s, "zzqk").await.unwrap();
@@ -155,13 +155,13 @@ fn explain_analyze_of_dml_changes_nothing() {
         assert_eq!(rows[0][0].as_deref(), Some("0"), "rollback desfez o UPDATE");
         assert!(matches!(s.explain("drop table rb_explain".into(), false).await, Err(DbError::Unsupported(_))), "DDL recusado");
         assert!(s.explain("select * from nao_existe".into(), true).await.is_err());
-        // Vários statements: um COMMIT no meio anularia o rollback do ANALYZE.
+        // Multiple statements: a COMMIT in the middle would defeat the ANALYZE rollback.
         assert!(matches!(s.explain("delete from rb_explain; commit; delete from rb_explain".into(), true).await, Err(DbError::Unsupported(_))));
-        // DELETE que falha no meio da execução: nada é apagado.
+        // DELETE that fails midway: nothing is deleted.
         assert!(s.explain("delete from rb_explain where 1 / (id - 25) is not null".into(), true).await.is_err());
         let rows = s.query_text("select count(*)::text from rb_explain", &[]).await.unwrap();
         assert_eq!(rows[0][0].as_deref(), Some("50"));
-        // Depois de um EXPLAIN com erro a sessão continua usável e sem transação pendurada.
+        // After an EXPLAIN with an error the session remains usable and with no dangling transaction.
         s.execute("drop table rb_explain".into()).await.unwrap();
     });
 }

@@ -21,7 +21,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 toml = "1"
 
-# Ícone do Dock em tempo de execução (o app roda sem pacote .app); já vêm com o gpui.
+# Dock icon at runtime (the app runs without an .app bundle); these already come with gpui.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }

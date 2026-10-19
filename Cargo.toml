@@ -7,7 +7,7 @@ lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
 
-# Conector Snowflake com o cache de ID token (login SSO sem navegador ao reabrir o app).
-# Cópia do 1.1.0 em vendor/ com o patch mínimo; ver vendor/snowflake-connector-rs/PATCH.md.
+# Snowflake connector with the ID token cache (SSO login without a browser when the app reopens).
+# Copy of 1.1.0 in vendor/ with a minimal patch; see vendor/snowflake-connector-rs/PATCH.md.
 [patch.crates-io]
 snowflake-connector-rs = { path = "vendor/snowflake-connector-rs" }

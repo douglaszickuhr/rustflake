@@ -1,4 +1,4 @@
-//! Peças puras da moldura: texto da barra de contexto e cor do ambiente.
+//! Pure frame pieces: context bar text and environment color.
 
 use gpui_kit::Hsla;
 use rb_core::config::Environment;
@@ -6,14 +6,14 @@ use rb_core::dialect::Dialect;
 
 use crate::appearance::palette;
 
-/// Limite por parte: o Button não encolhe, então nome longo empurraria o ⌘K para fora.
+/// Per-part limit: the Button doesn't shrink, so a long name would push ⌘K out.
 pub const MAX_PART: usize = 24;
 
 fn clip(s: &str) -> String {
     if s.chars().count() <= MAX_PART { s.to_string() } else { format!("{}…", s.chars().take(MAX_PART - 1).collect::<String>()) }
 }
 
-/// Partes da barra de contexto; o que falta vira "—"; cada uma corta em `MAX_PART`.
+/// Context bar parts; missing ones become "—"; each is cut at `MAX_PART`.
 pub fn context_parts(env: Option<Environment>, dialect: Dialect, user: &str, role: Option<&str>, warehouse: Option<&str>, search_path: &[String]) -> Vec<String> {
     let dash = |v: Option<&str>| clip(v.filter(|s| !s.is_empty()).unwrap_or("—"));
     let mut out: Vec<String> = env.map(|e| e.label().to_string()).into_iter().collect();
@@ -25,7 +25,7 @@ pub fn context_parts(env: Option<Environment>, dialect: Dialect, user: &str, rol
     out
 }
 
-/// Só produção ganha cor (borda da janela e rótulo).
+/// Only production gets a color (window border and label).
 pub fn env_color(env: Option<Environment>, dark: bool) -> Option<Hsla> {
     (env == Some(Environment::Production)).then(|| palette(dark).prod)
 }

@@ -1,12 +1,12 @@
 use tokio_postgres::types::{Kind, Type};
 
-/// Texto completo do valor no formato que o Postgres aceita de volta como entrada.
+/// Full value text, in the format Postgres accepts back as input.
 pub fn cell_text(ty: &Type, raw: &[u8]) -> String {
     decode(ty, raw).unwrap_or_else(|| format!("<{}: {} bytes>", ty.name(), raw.len()))
 }
 
-/// Texto para a grade: uma linha, no máximo `max_chars` caracteres (+ `…`).
-/// Para tipos textuais e bytea grandes, decodifica só o começo.
+/// Text for the grid: one line, at most `max_chars` characters (+ `…`).
+/// For large text types and bytea, decodes only the beginning.
 pub fn display_text(ty: &Type, raw: &[u8], max_chars: usize) -> String {
     let cap = max_chars * 4 + 8;
     let text = if *ty == Type::BYTEA && raw.len() > max_chars {
@@ -20,7 +20,7 @@ pub fn display_text(ty: &Type, raw: &[u8], max_chars: usize) -> String {
     one_line(&text, max_chars)
 }
 
-/// Troca caracteres de controle por espaço e corta em `max_chars` com `…`.
+/// Replaces control characters with spaces and cuts at `max_chars` with `…`.
 pub fn one_line(s: &str, max_chars: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max_chars * 4) + 3);
     for (n, ch) in s.chars().enumerate() {
@@ -33,8 +33,8 @@ pub fn one_line(s: &str, max_chars: usize) -> String {
     out
 }
 
-/// Valor completo para leitura detalhada: JSON indentado (ordem das chaves mantida),
-/// o resto como está; corta em `max_chars` com `…`.
+/// Full value for detailed reading: indented JSON (key order kept),
+/// everything else as is; cuts at `max_chars` with `…`.
 pub fn detail_text(s: &str, max_chars: usize) -> String {
     let t = s.trim_start();
     let pretty = (t.starts_with('{') || t.starts_with('['))
@@ -124,7 +124,7 @@ fn uuid(r: &[u8]) -> Option<String> {
     Some(format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32]))
 }
 
-/// Formato binário de numeric: ndigits, weight, sign, dscale, dígitos base 10000.
+/// Binary numeric format: ndigits, weight, sign, dscale, base-10000 digits.
 fn numeric(r: &[u8]) -> Option<String> {
     let ndigits = i16::from_be_bytes(be(r, 0)?) as i32;
     let weight = i16::from_be_bytes(be(r, 2)?) as i32;
@@ -171,7 +171,7 @@ fn numeric(r: &[u8]) -> Option<String> {
 const PG_EPOCH_UNIX_DAYS: i64 = 10_957; // 2000-01-01 - 1970-01-01
 const DAY_US: i64 = 86_400_000_000;
 
-/// Dias desde 1970-01-01 para (ano, mês, dia). Algoritmo "civil_from_days" de H. Hinnant.
+/// Days since 1970-01-01 to (year, month, day). Algorithm "civil_from_days" by H. Hinnant.
 fn civil(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -297,9 +297,9 @@ mod tests {
         assert_eq!(detail_text(r#"{"a":[1,2]}"#, 100), "{\n  \"a\": [\n    1,\n    2\n  ]\n}");
         assert_eq!(detail_text("  [true]", 100), "[\n  true\n]");
         assert_eq!(detail_text(r#"{"b":1,"a":2}"#, 100), "{\n  \"b\": 1,\n  \"a\": 2\n}");
-        // Texto que não é JSON fica como está, mesmo começando com chave.
-        assert_eq!(detail_text("{não é json", 100), "{não é json");
-        assert_eq!(detail_text("linha 1\nlinha 2", 100), "linha 1\nlinha 2");
+        // Text that is not JSON stays as is, even if it starts with a brace.
+        assert_eq!(detail_text("{not json", 100), "{not json");
+        assert_eq!(detail_text("line 1\nline 2", 100), "line 1\nline 2");
         assert_eq!(detail_text("abcdef", 3), "abc…");
     }
 
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn dates_and_times() {
-        // 2024-02-29 = 8825 dias após 2000-01-01
+        // 2024-02-29 = 8825 days after 2000-01-01
         assert_eq!(cell_text(&Type::DATE, &8825i32.to_be_bytes()), "2024-02-29");
         assert_eq!(cell_text(&Type::DATE, &(-1i32).to_be_bytes()), "1999-12-31");
         assert_eq!(cell_text(&Type::DATE, &i32::MAX.to_be_bytes()), "infinity");

@@ -1,5 +1,5 @@
-# Configuração de exemplo: convenções de uma empresa fictícia. Copie para
-# ~/Library/Application Support/rustbeaver/configurations/ e ajuste.
+# Example configuration: the conventions of a fictional company. Copy it to
+# ~/Library/Application Support/rustbeaver/configurations/ and adjust.
 name = "ACME"
 
 [[roles]]

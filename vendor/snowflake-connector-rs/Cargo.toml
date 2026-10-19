@@ -263,5 +263,5 @@ inherits = "test"
 [profile.ci.package."*"]
 debug = 0
 
-# rustbeaver: cópia vendida; workspace próprio só para rodar os testes do conector.
+# rustbeaver: vendored copy; its own workspace only so the connector's tests can run.
 [workspace]

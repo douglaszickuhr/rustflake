@@ -26,7 +26,7 @@ use crate::lang::Lang;
 use crate::meta::{ConnTarget, MetaStore};
 use crate::{CancelQuery, CopyCells, Db, SaveEdits};
 
-/// Abre uma aba SQL com o texto (botão Query).
+/// Opens a SQL tab with the text (Query button).
 pub type OpenQuery = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -36,8 +36,8 @@ pub enum Section {
     Dbt,
 }
 
-/// Colunas, classificação e mascaramento vindos do Snowflake (o dbt entra na hora de desenhar).
-/// + as demais tags por coluna e o erro das consultas de tag/policy (aparece no resumo).
+/// Columns, classification and masking coming from Snowflake (dbt is merged at draw time).
+/// + the remaining per-column tags and the tag/policy query error (shown in the summary).
 pub(crate) type DefRaw = (Vec<ColInfo>, HashMap<String, (u8, String)>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>, Option<String>);
 
 pub struct TableTab {
@@ -52,12 +52,12 @@ pub struct TableTab {
     target: Option<EditTarget>,
     sort: Option<(usize, bool)>,
     status: SharedString,
-    /// Mensagem a mostrar quando a próxima carga terminar (ex.: resultado da gravação).
+    /// Message to show when the next load finishes (e.g. save result).
     after_load: Option<SharedString>,
     loaded_once: bool,
-    /// Carga em andamento (liga o skeleton da grade depois de um instante).
+    /// Load in progress (turns on the grid skeleton after a moment).
     _busy: Option<Task<()>>,
-    // Visão de tabela (Snowflake): seções Data | Definition | dbt.
+    // Table view (Snowflake): Data | Definition | dbt sections.
     pub(crate) section: Section,
     pub(crate) dbt: Option<Entity<DbtStore>>,
     pub(crate) open_query: OpenQuery,
@@ -66,17 +66,17 @@ pub struct TableTab {
     pub(crate) selected_col: Option<String>,
     pub(crate) col_lineage: HashMap<String, Load<Vec<LinNode>>>,
     pub(crate) show_compiled: bool,
-    /// Comentário da tabela aberto por inteiro no cabeçalho.
+    /// Table comment expanded in full in the header.
     pub(crate) comment_open: bool,
-    /// git blame do arquivo do modelo (carregado ao ligar o Blame).
+    /// git blame of the model file (loaded when Blame is turned on).
     pub(crate) blame: Option<(String, Load<Vec<rb_core::dbt::BlameLine>>)>,
     pub(crate) show_blame: bool,
-    /// SQL compilado do modelo (disco ou `dbt compile`), por unique_id, com quando foi gerado.
+    /// Compiled model SQL (disk or `dbt compile`), by unique_id, with when it was generated.
     pub(crate) compiled: Option<(String, Load<(String, Option<std::time::SystemTime>)>)>,
     pub(crate) compiling: bool,
-    /// Últimas linhas do `dbt compile` em andamento.
+    /// Last lines of the running `dbt compile`.
     pub(crate) compile_live: Vec<String>,
-    /// SQL do modelo (somente leitura): estado do editor e qual texto está nele.
+    /// Model SQL (read-only): editor state and which text it holds.
     pub(crate) sql_view: Option<(Entity<EditorState>, String)>,
     _subs: Vec<Subscription>,
 }
@@ -90,7 +90,7 @@ impl TableTab {
         let weak = cx.entity().downgrade();
         let on_sort: Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)> = Rc::new(move |col, sort, _, cx| {
             let weak = weak.clone();
-            // A grade está em update agora; recarregar depois evita empréstimo duplo.
+            // The grid is mid-update now; reloading later avoids a double borrow.
             cx.defer(move |cx| {
                 weak.update(cx, |tab, cx| tab.set_sort(col, sort, cx)).ok();
             });
@@ -98,7 +98,7 @@ impl TableTab {
         grid.update(cx, |t, _| t.delegate_mut().on_sort = Some(on_sort));
 
         let subs = vec![
-            // O placeholder fica no estado do campo: troca junto com o idioma.
+            // The placeholder lives in the field state: it changes along with the language.
             cx.observe_global_in::<Lang>(window, |this, window, cx| {
                 this.filter.update(cx, |s, cx| s.set_placeholder(t!("table.filter_placeholder").to_string(), window, cx));
             }),
@@ -164,7 +164,7 @@ impl TableTab {
         format!("{}.{}", self.schema, self.table).into()
     }
 
-    /// Quando as colunas chegam: decide se a grade é editável e faz a primeira carga.
+    /// When the columns arrive: decides whether the grid is editable and does the first load.
     fn on_meta(&mut self, cx: &mut Context<Self>) {
         if self.loaded_once {
             return;
@@ -173,7 +173,7 @@ impl TableTab {
         let Some(cols) = self.meta.read(cx).cache.columns.get(&key).cloned() else { return };
         self.loaded_once = true;
         let target = EditTarget { schema: self.schema.clone(), table: self.table.clone(), columns: cols };
-        // Snowflake não garante PK: a grade dele é sempre somente leitura.
+        // Snowflake doesn't enforce PKs: its grid is always read-only.
         let editable = !target.pk().is_empty() && self.meta.read(cx).cache.dialect == Dialect::Postgres;
         self.grid.update(cx, |t, _| t.delegate_mut().edits = editable.then(PendingEdits::default));
         self.target = Some(target);
@@ -221,7 +221,7 @@ impl TableTab {
                     Ok((session, out)) => {
                         tab.session = Some(session.clone());
                         if tab.target.as_ref().is_some_and(|t| !columns_match(t, &out.columns)) {
-                            // ALTER TABLE desde que a aba abriu: índices de coluna não batem mais.
+                            // ALTER TABLE since the tab opened: column indices no longer match.
                             tab.target = None;
                             tab.grid.update(cx, |t, _| t.delegate_mut().edits = None);
                             let (schema, table) = (tab.schema.clone(), tab.table.clone());
@@ -425,7 +425,7 @@ impl TableTab {
                     .text_sm()
                     .when(spinning, |d| d.child(Spinner::new().small()))
                     .child(t!("grid.rows", n = format!("{rows}{}", if more { "+" } else { "" })).to_string())
-                    // Bateu no LIMIT da aba: a tabela pode ter mais; para ver tudo, SQL no editor.
+                    // Hit the tab's LIMIT: the table may have more; to see everything, use SQL in the editor.
                     .when(sf && rows >= TABLE_LIMIT, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("table.limited", n = TABLE_LIMIT).to_string())))
                     .when(pending, |d| d.child(div().text_color(cx.theme().warning).child(t!("table.pending_edits").to_string())))
                     .when(read_only, |d| {

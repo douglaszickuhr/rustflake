@@ -1,4 +1,4 @@
-//! Snowflake: conversão de valores, paginação, metadados e sessão compartilhada.
+//! Snowflake: value conversion, pagination, metadata and shared session.
 
 use rust_i18n::t;
 use std::collections::VecDeque;
@@ -21,7 +21,7 @@ use crate::split::{is_read_only_query, is_transaction_control};
 
 type Rows = Vec<Vec<Option<String>>>;
 
-/// Texto exibido na grade. Decimal fica exato; timestamps em ISO 8601.
+/// Text shown in the grid. Decimal stays exact; timestamps in ISO 8601.
 pub fn cell_text(v: &CellValue) -> Option<String> {
     Some(match v {
         CellValue::Null => return None,
@@ -39,17 +39,17 @@ pub fn cell_text(v: &CellValue) -> Option<String> {
         CellValue::Binary(b) => format!("\\x{}", b.as_bytes().iter().map(|x| format!("{x:02x}")).collect::<String>()),
         CellValue::Vector(VectorValue::Int(x)) => format!("{:?}", x.clone().into_vec()),
         CellValue::Vector(VectorValue::Float(x)) => format!("{:?}", x.clone().into_vec()),
-        // CellValue é non_exhaustive: tipo novo aparece como texto de depuração em vez de sumir.
+        // CellValue is non_exhaustive: a new type shows up as debug text instead of vanishing.
         other => format!("{other:?}"),
     })
 }
 
-/// Fonte de blocos de linhas (o cursor do conector; nos testes, uma fila).
+/// Source of row blocks (the connector's cursor; in tests, a queue).
 pub(crate) trait Chunks {
     fn next_chunk(&mut self) -> impl Future<Output = Result<Option<Rows>, DbError>> + Send;
 }
 
-/// Reparte blocos de tamanho qualquer em lotes de `n` linhas.
+/// Splits blocks of any size into batches of `n` rows.
 pub(crate) struct Pager<C> {
     src: C,
     buf: VecDeque<Vec<Option<String>>>,
@@ -70,7 +70,7 @@ impl<C: Chunks> Pager<C> {
         Ok(())
     }
 
-    /// Próximo lote e se ainda há linhas depois dele.
+    /// Next batch and whether there are still rows after it.
     pub(crate) async fn next_batch(&mut self, n: usize) -> Result<(Batch, bool), DbError> {
         while self.buf.len() < n && !self.done {
             self.pull().await?;
@@ -81,7 +81,7 @@ impl<C: Chunks> Pager<C> {
             let cells: Vec<Option<&[u8]>> = row.iter().map(|c| c.as_deref().map(str::as_bytes)).collect();
             batch.push_row(&cells);
         }
-        // Lote exato no fim de um bloco: confere se há outro para responder "more" certo.
+        // Batch ends exactly at a block end: checks for another block so "more" is answered correctly.
         while self.buf.is_empty() && !self.done {
             self.pull().await?;
         }
@@ -97,7 +97,7 @@ pub(crate) fn field<'a>(names: &[String], row: &'a [Option<String>], col: &str) 
     col_index(names, col).and_then(|i| row.get(i)).and_then(|v| v.as_deref())
 }
 
-/// Valores de uma coluna de um `SHOW` (nomes de coluna sem diferenciar caixa).
+/// Values of a `SHOW` column (column names case-insensitive).
 pub fn first_named(names: &[String], rows: &[Vec<Option<String>>], col: &str) -> Vec<String> {
     rows.iter().filter_map(|r| field(names, r, col).map(String::from)).collect()
 }
@@ -144,11 +144,11 @@ pub fn parse_describe(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<Col
         .collect()
 }
 
-/// O conector espera o retorno do SSO por 60 s e depois cai para ler a URL do stdin, o que num app
-/// de janela trava (terminal) ou falha (Finder). Damos um pouco mais e desistimos com mensagem clara.
+/// The connector waits 60 s for the SSO return and then falls back to reading the URL from stdin, which in a windowed app
+/// hangs (terminal) or fails (Finder). We give a bit more and give up with a clear message.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// O padrão do conector (300 s) derruba queries longas sem cancelá-las no Snowflake.
+/// The connector default (300 s) kills long queries without cancelling them in Snowflake.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(48 * 3600);
 
 async fn create_session(client: &sf::Client) -> Result<sf::Session, DbError> {
@@ -177,17 +177,17 @@ impl Chunks for sf::ResultCursor {
     }
 }
 
-/// Uma sessão Snowflake por conexão do app, compartilhada por árvore e abas. Se expirar,
-/// `renew` faz um novo login (no SSO, o navegador abre de novo).
+/// One Snowflake session per app connection, shared by tree and tabs. If it expires,
+/// `renew` does a new login (with SSO, the browser opens again).
 pub(crate) struct SfShared {
     client: sf::Client,
     session: AsyncMutex<Arc<sf::Session>>,
     uses: Mutex<UseLog>,
-    /// SSO: o que é preciso para logar de novo com o ID token guardado (sem navegador).
+    /// SSO: what is needed to log in again with the stored ID token (no browser).
     sso: Option<Sso>,
 }
 
-/// Dados para montar um cliente `ID_TOKEN` e a conta do Keychain onde o token fica.
+/// Data to build an `ID_TOKEN` client and the Keychain account where the token is kept.
 struct Sso {
     user: String,
     account: String,
@@ -197,7 +197,7 @@ struct Sso {
 }
 
 impl Sso {
-    /// Tenta o ID token guardado; se ele não existir ou for recusado (vencido), apaga e devolve None.
+    /// Tries the stored ID token; if it doesn't exist or is rejected (expired), deletes it and returns None.
     async fn with_cached_token(&self) -> Option<sf::Session> {
         let token = match secrets::get_password(&self.keychain) {
             Ok(Some(t)) => t,
@@ -230,10 +230,10 @@ impl Sso {
         }
     }
 
-    /// Guarda o ID token que veio no login pelo navegador.
+    /// Stores the ID token that came from the browser login.
     fn remember(&self, s: &sf::Session) {
         let Some(t) = s.id_token() else {
-            // Sem token: a conta sem ALLOW_ID_TOKEN ou o servidor não emite para este cliente.
+            // No token: the account lacks ALLOW_ID_TOKEN or the server doesn't issue one to this client.
             tracing::warn!("SSO login returned no ID token; the next login will open the browser again");
             return;
         };
@@ -243,7 +243,7 @@ impl Sso {
         }
     }
 
-    /// ID token, senão navegador (guardando o token novo).
+    /// ID token, otherwise browser (storing the new token).
     async fn session(&self, browser: &sf::Client) -> Result<sf::Session, DbError> {
         if let Some(s) = self.with_cached_token().await {
             return Ok(s);
@@ -276,12 +276,12 @@ impl SfShared {
         let set = |v: &Option<String>| v.clone().filter(|v| !v.is_empty());
         let mut session = sf::SessionConfig::new()
             .with_session_parameter("CLIENT_SESSION_KEEP_ALIVE", serde_json::Value::Bool(true))
-            // O conector se apresenta como o driver Go (para ganhar o ID token do SSO) e o servidor
-            // então responde em Arrow, que o conector não lê: pede JSON.
+            // The connector presents itself as the Go driver (to get the SSO ID token) and the server
+            // then answers in Arrow, which the connector can't read: asks for JSON.
             .with_session_parameter("GO_QUERY_RESULT_FORMAT", serde_json::Value::String("JSON".into()));
         let is_sso = s.auth == SnowflakeAuth::ExternalBrowser;
         if is_sso {
-            // Pede o ID token no login SSO (a conta precisa de ALLOW_ID_TOKEN = true).
+            // Asks for the ID token on SSO login (the account needs ALLOW_ID_TOKEN = true).
             session = session.with_session_parameter("CLIENT_STORE_TEMPORARY_CREDENTIAL", serde_json::Value::Bool(true));
         }
         if !cfg.database.is_empty() {
@@ -310,7 +310,7 @@ impl SfShared {
         self.session.lock().await.clone()
     }
 
-    /// Novo login, a não ser que outro ator já tenha renovado a sessão vencida.
+    /// New login, unless another actor already renewed the expired session.
     async fn renew(&self, stale: &Arc<sf::Session>) -> Result<Arc<sf::Session>, DbError> {
         let mut cur = self.session.lock().await;
         if Arc::ptr_eq(&cur, stale) {
@@ -319,8 +319,8 @@ impl SfShared {
                 Some(sso) => sso.session(&self.client).await?,
                 None => create_session(&self.client).await?,
             };
-            // O login novo volta ao contexto da configuração: refaz os USE da sessão anterior.
-            let replay = self.uses.lock().expect("mutex dos USE").replay();
+            // The new login returns to the configured context: redoes the previous session's USEs.
+            let replay = self.uses.lock().expect("USE mutex").replay();
             for sql in replay {
                 let res = match fresh.query_handle(sql.clone()) {
                     Ok(h) => h.execute().await.map(|_| ()),
@@ -336,12 +336,12 @@ impl SfShared {
     }
 }
 
-/// Últimos `USE …` bem-sucedidos, para refazer o contexto depois de um novo login.
+/// Latest successful `USE …`, to redo the context after a new login.
 #[derive(Debug, Default)]
 pub(crate) struct UseLog(Vec<(String, String)>);
 
 impl UseLog {
-    /// Guarda o statement se for `USE`; o mais recente de cada tipo substitui o anterior.
+    /// Stores the statement if it is a `USE`; the most recent of each kind replaces the previous one.
     pub(crate) fn record(&mut self, sql: &str) {
         let mut words = sql.split_whitespace();
         if !words.next().is_some_and(|w| w.eq_ignore_ascii_case("use")) {
@@ -351,7 +351,7 @@ impl UseLog {
             Some(k @ ("warehouse" | "role" | "database" | "schema" | "secondary")) => k.to_string(),
             _ => "plain".into(),
         };
-        // Trocar de database desfaz o schema escolhido antes.
+        // Switching database undoes the previously chosen schema.
         let reset: &[&str] = if kind == "database" { &["schema", "plain"] } else { &[] };
         self.0.retain(|(k, _)| *k != kind && !reset.contains(&k.as_str()));
         self.0.push((kind, sql.to_string()));
@@ -400,24 +400,24 @@ impl SfActor {
         }
     }
 
-    /// Envia o statement; se a sessão venceu, renova e tenta uma vez de novo.
+    /// Sends the statement; if the session expired, renews and tries once more.
     async fn submit(&self, sql: &str) -> Result<sf::ResultCursor, DbError> {
         let mut session = self.shared.current().await;
         for attempt in 0..2 {
             let handle = session.query_handle(sql.to_string()).map_err(sf_err)?;
-            *self.canceller.lock().expect("mutex do cancelador") = Some(handle.canceller());
+            *self.canceller.lock().expect("canceller mutex") = Some(handle.canceller());
             let res = handle.execute().await;
-            *self.canceller.lock().expect("mutex do cancelador") = None;
+            *self.canceller.lock().expect("canceller mutex") = None;
             match res {
                 Err(e) if e.is_session_expired() && attempt == 0 => session = self.shared.renew(&session).await?,
                 other => return other.map_err(sf_err),
             }
         }
-        unreachable!("o laço sempre retorna na segunda tentativa")
+        unreachable!("the loop always returns on the second attempt")
     }
 
-    /// Estimado: `EXPLAIN USING JSON` (só compila). Real: executa e lê GET_QUERY_OPERATOR_STATS —
-    /// só leituras, porque a sessão é compartilhada entre as abas e um BEGIN/ROLLBACK atingiria as outras.
+    /// Estimated: `EXPLAIN USING JSON` (compile only). Actual: executes and reads GET_QUERY_OPERATOR_STATS —
+    /// reads only, because the session is shared across tabs and a BEGIN/ROLLBACK would hit the others.
     async fn explain(&self, sql: &str, analyze: bool) -> Result<Plan, DbError> {
         if !analyze {
             let (_, rows) = self.query_named(&format!("EXPLAIN USING JSON {sql}")).await?;
@@ -466,7 +466,7 @@ impl SfActor {
                 return rx.recv().await;
             }
         };
-        self.shared.uses.lock().expect("mutex dos USE").record(&sql);
+        self.shared.uses.lock().expect("USE mutex").record(&sql);
         let query_id = Some(cursor.query_id().to_string());
         let columns: Arc<[ColumnInfo]> =
             cursor.schema().columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: crate::Type::TEXT }).collect();
@@ -517,7 +517,7 @@ mod tests {
         for sql in ["use warehouse A", "USE ROLE r1", "select 1", "use schema S1", "use warehouse B", "  use database D", "use secondary roles all"] {
             log.record(sql);
         }
-        // database antes de schema (USE DATABASE zera o schema); o último de cada tipo vale.
+        // database before schema (USE DATABASE resets the schema); the last of each kind wins.
         assert_eq!(log.replay(), vec!["USE ROLE r1", "use warehouse B", "  use database D", "use secondary roles all"]);
         log.record("use schema S2");
         assert_eq!(log.replay().last().map(String::as_str), Some("use schema S2"));

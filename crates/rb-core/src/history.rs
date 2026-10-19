@@ -1,4 +1,4 @@
-//! Histórico de queries por conexão: JSON Lines em `app_dir()/history/<id>.jsonl`.
+//! Query history per connection: JSON Lines in `app_dir()/history/<id>.jsonl`.
 
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -16,7 +16,7 @@ pub struct Entry {
     pub ts: i64,
     pub sql: String,
     pub ms: u64,
-    /// Linhas lidas (consulta) ou afetadas (DML).
+    /// Rows read (query) or affected (DML).
     pub rows: Option<u64>,
     pub error: Option<String>,
 }
@@ -33,7 +33,7 @@ fn io(e: impl std::fmt::Display) -> DbError {
     DbError::Io(e.to_string())
 }
 
-/// Só o dono lê: o SQL pode ter senha (`ALTER USER … PASSWORD`).
+/// Owner-only read: the SQL may contain a password (`ALTER USER … PASSWORD`).
 fn open_private(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
     let mut o = std::fs::OpenOptions::new();
     o.create(true).write(true);
@@ -55,8 +55,8 @@ pub fn append(path: &Path, e: &Entry) -> Result<(), DbError> {
     writeln!(open_private(path, true).map_err(io)?, "{line}").map_err(io)
 }
 
-/// Mais novo primeiro. Linhas inválidas são ignoradas; com linha inválida ou acima de
-/// `MAX_ENTRIES`, o arquivo é reescrito só com as entradas válidas mais recentes.
+/// Newest first. Invalid lines are ignored; with an invalid line or above
+/// `MAX_ENTRIES`, the file is rewritten with only the most recent valid entries.
 pub fn load(path: &Path) -> Vec<Entry> {
     let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
     let lines = text.lines().count();
@@ -77,7 +77,7 @@ pub fn load(path: &Path) -> Vec<Entry> {
     all
 }
 
-/// "Contém" sem diferenciar caixa; o mesmo SQL (após `trim`) aparece uma vez, na entrada mais nova.
+/// "Contains", case-insensitive; the same SQL (after `trim`) appears once, in the newest entry.
 pub fn search<'a>(entries: &'a [Entry], text: &str) -> Vec<&'a Entry> {
     let needle = text.trim().to_lowercase();
     let mut seen = HashSet::new();
