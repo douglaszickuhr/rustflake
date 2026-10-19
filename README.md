@@ -22,6 +22,7 @@ It speaks **PostgreSQL** and **Snowflake**, starts in well under a second and st
 - Virtualized grid that pages in more rows as you scroll; copy cells, rows or columns as TSV.
 - Table tab with server-side filtering and sorting, and inline editing on PostgreSQL tables with a primary key.
 - Snowflake table view: definition, tags, classification, masking, column lineage, and dbt descriptions and tests from a local dbt project.
+- Snowflake lineage graph (Enterprise): upstream and downstream objects with expand/collapse, re-centering, each object's definition and input queries, and a column's lineage highlighted on the graph.
 
 **Query plans**
 - `EXPLAIN` rendered as a diagram (estimated or actual), with per-node timings, hot-path highlighting, zoom and a details panel.
