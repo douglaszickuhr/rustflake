@@ -1,5 +1,5 @@
 # Example configuration: the conventions of a fictional company. Copy it to
-# ~/Library/Application Support/rustbeaver/configurations/ and adjust.
+# ~/Library/Application Support/rustflake/configurations/ and adjust.
 name = "ACME"
 
 [[roles]]

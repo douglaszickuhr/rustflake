@@ -1,4 +1,4 @@
-# rustbeaver
+# rustflake
 
 A fast, native SQL client for macOS, written in Rust on [GPUI](https://www.gpui.rs/) (via `gpui-kit`).
 It speaks **PostgreSQL** and **Snowflake**, starts in well under a second and stays light on memory.
@@ -47,7 +47,7 @@ It speaks **PostgreSQL** and **Snowflake**, starts in well under a second and st
 cargo run --release -p rb-app
 ```
 
-The binary is called `rustbeaver`.
+The binary is called `rustflake`.
 
 ### Keychain prompts during development
 
@@ -82,7 +82,7 @@ From then on, `cargo run` signs the binary before launching it (see `.cargo/conf
 
 ## Where things are stored
 
-Everything lives under `~/Library/Application Support/rustbeaver/`:
+Everything lives under `~/Library/Application Support/rustflake/`:
 
 | Path | Contents |
 |---|---|

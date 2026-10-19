@@ -36,9 +36,9 @@ pt = "host %{host}:%{port} não está no known_hosts (%{fingerprint})"
 es = "el host %{host}:%{port} no está en known_hosts (%{fingerprint})"
 
 [err.manual_transactions]
-en = "manual transactions (BEGIN/START/SAVEPOINT): rustbeaver runs in autocommit"
-pt = "transações manuais (BEGIN/START/SAVEPOINT): o rustbeaver roda em autocommit"
-es = "transacciones manuales (BEGIN/START/SAVEPOINT): rustbeaver funciona en autocommit"
+en = "manual transactions (BEGIN/START/SAVEPOINT): rustflake runs in autocommit"
+pt = "transações manuais (BEGIN/START/SAVEPOINT): o rustflake roda em autocommit"
+es = "transacciones manuales (BEGIN/START/SAVEPOINT): rustflake funciona en autocommit"
 
 [err.expected_one_row]
 en = "expected to change 1 row, changed %{n}: %{sql}"

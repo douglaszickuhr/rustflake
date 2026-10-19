@@ -128,7 +128,7 @@ impl ConnectionConfig {
             .port(self.port)
             .dbname(&self.database)
             .user(&self.user)
-            .application_name("rustbeaver")
+            .application_name("rustflake")
             .connect_timeout(Duration::from_secs(10))
             .ssl_mode(match self.ssl {
                 SslMode::Disable => Pg::Disable,
@@ -143,7 +143,19 @@ impl ConnectionConfig {
 }
 
 pub fn app_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Application Support/rustbeaver")
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Application Support/rustflake")
+}
+
+/// The app was called rustbeaver: moves its folder over once, before anything reads it.
+pub fn migrate_legacy_dir() {
+    let new = app_dir();
+    let old = new.with_file_name("rustbeaver");
+    if old.is_dir() && !new.exists() {
+        match std::fs::rename(&old, &new) {
+            Ok(()) => tracing::info!("moved {} to {}", old.display(), new.display()),
+            Err(e) => tracing::warn!("could not move {}: {e}", old.display()),
+        }
+    }
 }
 
 pub fn connections_path() -> PathBuf {

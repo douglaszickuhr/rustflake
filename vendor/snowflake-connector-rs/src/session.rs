@@ -60,7 +60,7 @@ impl QueryOptions {
 /// Per-session authentication state.
 pub(crate) struct SessionAuth {
     pub(crate) session_token: String,
-    /// rustbeaver: SSO login ID token, to reopen without a browser.
+    /// rustflake: SSO login ID token, to reopen without a browser.
     pub(crate) id_token: Option<String>,
 }
 
@@ -87,7 +87,7 @@ impl SessionAuth {
 }
 
 impl Session {
-    /// rustbeaver: ID token issued by the SSO login (with CLIENT_STORE_TEMPORARY_CREDENTIAL);
+    /// rustflake: ID token issued by the SSO login (with CLIENT_STORE_TEMPORARY_CREDENTIAL);
     /// store it and use it with `AuthConfig::id_token` to log in without a browser while it is valid.
     pub fn id_token(&self) -> Option<&str> {
         self.auth.id_token.as_deref()

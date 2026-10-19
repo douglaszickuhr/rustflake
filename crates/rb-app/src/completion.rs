@@ -120,7 +120,7 @@ impl DefinitionProvider for SqlDefinition {
         *self.target.borrow_mut() = Some((schema, table));
         let origin = lsp_types::Range { start: text.offset_to_position(range.start), end: text.offset_to_position(range.end) };
         // The URI only identifies "open table"; which table lives in `target`.
-        let Ok(target_uri) = "rustbeaver:table".parse() else { return Task::ready(Ok(Vec::new())) };
+        let Ok(target_uri) = "rustflake:table".parse() else { return Task::ready(Ok(Vec::new())) };
         let link = lsp_types::LocationLink {
             origin_selection_range: Some(origin),
             target_uri,
@@ -135,6 +135,6 @@ impl DefinitionProvider for SqlDefinition {
 mod tests {
     #[test]
     fn table_uri_parses() {
-        assert!("rustbeaver:table".parse::<lsp_types::Uri>().is_ok());
+        assert!("rustflake:table".parse::<lsp_types::Uri>().is_ok());
     }
 }

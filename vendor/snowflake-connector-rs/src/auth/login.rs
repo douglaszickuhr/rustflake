@@ -26,7 +26,7 @@ pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Re
     client.login(request).await
 }
 
-/// rustbeaver: the login presents itself as the official Go driver; with an unknown id the server
+/// rustflake: the login presents itself as the official Go driver; with an unknown id the server
 /// does not issue the SSO ID token (`CLIENT_STORE_TEMPORARY_CREDENTIAL`).
 pub(crate) const CLIENT_APP_ID: &str = "Go";
 pub(crate) const CLIENT_APP_VERSION: &str = "1.13.0";

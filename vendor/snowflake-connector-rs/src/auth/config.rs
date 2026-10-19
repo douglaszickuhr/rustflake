@@ -14,7 +14,7 @@ pub(crate) enum AuthConfigKind {
     #[cfg(feature = "key-pair-auth")]
     KeyPair(KeyPairConfig),
     OAuth(OAuthConfig),
-    /// rustbeaver: login with the ID token of a previous SSO session (no browser).
+    /// rustflake: login with the ID token of a previous SSO session (no browser).
     IdToken(String),
     #[cfg(feature = "external-browser-sso")]
     ExternalBrowser(ExternalBrowserConfig),
@@ -91,7 +91,7 @@ impl AuthConfig {
         }
     }
 
-    /// rustbeaver: reuses the ID token issued by an SSO login (`Session::id_token`).
+    /// rustflake: reuses the ID token issued by an SSO login (`Session::id_token`).
     pub fn id_token(token: impl Into<String>) -> Self {
         Self {
             kind: AuthConfigKind::IdToken(token.into()),

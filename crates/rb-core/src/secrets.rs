@@ -2,7 +2,9 @@ use security_framework::passwords::{delete_generic_password, get_generic_passwor
 
 use crate::DbError;
 
-const SERVICE: &str = "dev.rustbeaver";
+const SERVICE: &str = "dev.rustflake";
+/// Service used while the app was called rustbeaver; items move over on first read.
+const LEGACY_SERVICE: &str = "dev.rustbeaver";
 const NOT_FOUND: i32 = -25300; // errSecItemNotFound
 
 /// Keychain account that holds the SSH key passphrase of a connection.
@@ -27,9 +29,20 @@ fn err(e: security_framework::base::Error) -> DbError {
 pub fn get_password(id: &str) -> Result<Option<String>, DbError> {
     match get_generic_password(SERVICE, id) {
         Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|e| DbError::Keychain(e.to_string())),
-        Err(e) if e.code() == NOT_FOUND => Ok(None),
+        Err(e) if e.code() == NOT_FOUND => migrate_legacy(id),
         Err(e) => Err(err(e)),
     }
+}
+
+fn migrate_legacy(id: &str) -> Result<Option<String>, DbError> {
+    let bytes = match get_generic_password(LEGACY_SERVICE, id) {
+        Ok(b) => b,
+        Err(e) if e.code() == NOT_FOUND => return Ok(None),
+        Err(e) => return Err(err(e)),
+    };
+    set_generic_password(SERVICE, id, &bytes).map_err(err)?;
+    let _ = delete_generic_password(LEGACY_SERVICE, id);
+    String::from_utf8(bytes).map(Some).map_err(|e| DbError::Keychain(e.to_string()))
 }
 
 pub fn set_password(id: &str, password: &str) -> Result<(), DbError> {
@@ -37,6 +50,7 @@ pub fn set_password(id: &str, password: &str) -> Result<(), DbError> {
 }
 
 pub fn delete_password(id: &str) -> Result<(), DbError> {
+    let _ = delete_generic_password(LEGACY_SERVICE, id);
     match delete_generic_password(SERVICE, id) {
         Err(e) if e.code() != NOT_FOUND => Err(err(e)),
         _ => Ok(()),

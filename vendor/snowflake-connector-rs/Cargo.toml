@@ -263,5 +263,5 @@ inherits = "test"
 [profile.ci.package."*"]
 debug = 0
 
-# rustbeaver: vendored copy; its own workspace only so the connector's tests can run.
+# rustflake: vendored copy; its own workspace only so the connector's tests can run.
 [workspace]

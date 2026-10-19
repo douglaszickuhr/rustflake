@@ -38,7 +38,7 @@ pub(crate) struct LoginData<'a> {
     pub(crate) credential: LoginCredentialWire<'a>,
     #[serde(rename = "SESSION_PARAMETERS", skip_serializing_if = "Option::is_none")]
     pub(crate) session_parameters: Option<&'a HashMap<String, serde_json::Value>>,
-    /// rustbeaver: client identification. The server only returns `idToken` (browserless SSO)
+    /// rustflake: client identification. The server only returns `idToken` (browserless SSO)
     /// to drivers it recognizes, such as the official ones.
     #[serde(rename = "CLIENT_APP_ID", skip_serializing_if = "Option::is_none")]
     pub(crate) client_app_id: Option<&'a str>,
@@ -59,7 +59,7 @@ pub(crate) enum LoginCredentialWire<'a> {
     OAuth {
         token: &'a str,
     },
-    /// rustbeaver: ID token stored from a previous SSO login.
+    /// rustflake: ID token stored from a previous SSO login.
     IdToken {
         token: &'a str,
     },
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(request.url().query(), None);
     }
 
-    // rustbeaver: login with the stored ID token (no browser).
+    // rustflake: login with the stored ID token (no browser).
     #[test]
     fn id_token_credential_serializes_as_id_token_authenticator() {
         let v = serde_json::to_value(LoginCredentialWire::IdToken { token: "id-123" }).unwrap();

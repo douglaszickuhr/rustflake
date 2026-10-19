@@ -26,7 +26,7 @@ use gpui_kit::*;
 rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment, EditConnection]);
+gpui_kit::actions!(rustflake, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment, EditConnection]);
 
 /// Database runtime shared by the application.
 pub struct Db(pub Engine);
@@ -75,6 +75,7 @@ fn set_dock_icon() {
 fn main() {
     let started = Instant::now();
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
+    rb_core::config::migrate_legacy_dir();
     let engine = Engine::new().expect("create database runtime");
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
