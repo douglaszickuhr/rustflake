@@ -124,17 +124,11 @@ impl ConnectionConfig {
     pub fn pg_config(&self, password: Option<&str>) -> tokio_postgres::Config {
         use tokio_postgres::config::SslMode as Pg;
         let mut c = tokio_postgres::Config::new();
-        c.host(&self.host)
-            .port(self.port)
-            .dbname(&self.database)
-            .user(&self.user)
-            .application_name("rustflake")
-            .connect_timeout(Duration::from_secs(10))
-            .ssl_mode(match self.ssl {
-                SslMode::Disable => Pg::Disable,
-                SslMode::Prefer => Pg::Prefer,
-                SslMode::Require => Pg::Require,
-            });
+        c.host(&self.host).port(self.port).dbname(&self.database).user(&self.user).application_name("rustflake").connect_timeout(Duration::from_secs(10)).ssl_mode(match self.ssl {
+            SslMode::Disable => Pg::Disable,
+            SslMode::Prefer => Pg::Prefer,
+            SslMode::Require => Pg::Require,
+        });
         if let Some(p) = password {
             c.password(p);
         }
@@ -188,12 +182,37 @@ pub fn conn_scripts(root: &Path, id: &str) -> Result<Vec<PathBuf>, DbError> {
     sql_files(&dir)
 }
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct OpenTables {
+    #[serde(default)]
+    tables: Vec<[String; 2]>,
+}
+
+/// Table tabs ([schema, table]) a connection had open: `tables.toml` next to its scripts.
+pub fn load_open_tables(conn_dir: &Path) -> Vec<[String; 2]> {
+    let Ok(s) = std::fs::read_to_string(conn_dir.join("tables.toml")) else { return Vec::new() };
+    toml::from_str::<OpenTables>(&s).map(|t| t.tables).unwrap_or_else(|e| {
+        tracing::warn!("tables.toml: {e}");
+        Vec::new()
+    })
+}
+
+/// Writes the list; empty removes the file.
+pub fn save_open_tables(conn_dir: &Path, tables: &[[String; 2]]) -> Result<(), DbError> {
+    let path = conn_dir.join("tables.toml");
+    if tables.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io(e)),
+            _ => Ok(()),
+        };
+    }
+    std::fs::create_dir_all(conn_dir).map_err(io)?;
+    let body = toml::to_string(&OpenTables { tables: tables.to_vec() }).map_err(|e| DbError::Io(e.to_string()))?;
+    std::fs::write(&path, body).map_err(io)
+}
+
 fn sql_files(dir: &Path) -> Result<Vec<PathBuf>, DbError> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(io)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "sql"))
-        .collect();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir).map_err(io)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "sql")).collect();
     files.sort();
     Ok(files)
 }
@@ -453,12 +472,7 @@ mod tests {
     fn ssh_block_round_trips_and_old_files_still_load() {
         let path = tmp("ssh");
         let mut c = sample();
-        c.ssh = Some(SshConfig {
-            host: "prod-bastion".into(),
-            user: Some("deploy".into()),
-            port: None,
-            identity_file: Some("~/.ssh/id_ed25519".into()),
-        });
+        c.ssh = Some(SshConfig { host: "prod-bastion".into(), user: Some("deploy".into()), port: None, identity_file: Some("~/.ssh/id_ed25519".into()) });
         let cfg = ConfigFile { connections: vec![c] };
         save(&path, &cfg).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -589,5 +603,18 @@ mod tests {
     #[test]
     fn ids_are_unique() {
         assert_ne!(new_id(), new_id());
+    }
+
+    #[test]
+    fn open_tables_round_trip_next_to_the_scripts() {
+        let dir = std::env::temp_dir().join(format!("rf-tables-{}", std::process::id()));
+        assert!(load_open_tables(&dir).is_empty(), "no file = nothing");
+        let t = vec![["MARTS_PROD.MART_CDP".to_string(), "DIM_COMPANIES_LATEST".to_string()], ["public".to_string(), "users".to_string()]];
+        save_open_tables(&dir, &t).unwrap();
+        assert_eq!(load_open_tables(&dir), t);
+        save_open_tables(&dir, &[]).unwrap();
+        assert!(!dir.join("tables.toml").exists(), "empty list removes the file");
+        save_open_tables(&dir, &[]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

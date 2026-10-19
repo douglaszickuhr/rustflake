@@ -150,8 +150,24 @@ fn text(v: &Value) -> String {
 }
 
 const PG_DETAIL: &[&str] = &[
-    "Filter", "Index Cond", "Recheck Cond", "Hash Cond", "Merge Cond", "Join Filter", "Rows Removed by Filter", "Sort Key", "Group Key", "Join Type", "Strategy",
-    "Workers Planned", "Workers Launched", "Shared Hit Blocks", "Shared Read Blocks", "Temp Read Blocks", "Temp Written Blocks", "Peak Memory Usage",
+    "Filter",
+    "Index Cond",
+    "Recheck Cond",
+    "Hash Cond",
+    "Merge Cond",
+    "Join Filter",
+    "Rows Removed by Filter",
+    "Sort Key",
+    "Group Key",
+    "Join Type",
+    "Strategy",
+    "Workers Planned",
+    "Workers Launched",
+    "Shared Hit Blocks",
+    "Shared Read Blocks",
+    "Temp Read Blocks",
+    "Temp Written Blocks",
+    "Peak Memory Usage",
 ];
 
 fn children_of(v: &Value) -> &[Value] {
@@ -346,7 +362,8 @@ pub fn parse_sf_stats(names: &[String], rows: &[Vec<Option<String>>]) -> Result<
         return Ok(Plan { root, analyzed: true, total_ms: None, note: Some(PlanNote::Cached), profile: None });
     }
     let col = |n: &str| names.iter().position(|c| c.eq_ignore_ascii_case(n)).ok_or_else(|| bad_json(n));
-    let (id, parents, op, stats, time, attrs) = (col("OPERATOR_ID")?, col("PARENT_OPERATORS")?, col("OPERATOR_TYPE")?, col("OPERATOR_STATISTICS")?, col("EXECUTION_TIME_BREAKDOWN")?, col("OPERATOR_ATTRIBUTES")?);
+    let (id, parents, op, stats, time, attrs) =
+        (col("OPERATOR_ID")?, col("PARENT_OPERATORS")?, col("OPERATOR_TYPE")?, col("OPERATOR_STATISTICS")?, col("EXECUTION_TIME_BREAKDOWN")?, col("OPERATOR_ATTRIBUTES")?);
     let cell = |r: &[Option<String>], i: usize| r.get(i).cloned().flatten();
     let json = |r: &[Option<String>], i: usize| cell(r, i).and_then(|s| serde_json::from_str::<Value>(&sanitize_json(&s)).ok()).unwrap_or(Value::Null);
     let mut prof = Profile::default();
@@ -481,7 +498,14 @@ mod tests {
     fn profile_aggregates_time_and_scan_statistics() {
         let rows = vec![
             stats_row("0", None, "Result", r#"{"output_rows": 10}"#, r#"{"overall_percentage": 0.1, "processing": 0.1}"#, "{}"),
-            stats_row("1", Some("[0]"), "Join", r#"{"output_rows": 159400}"#, r#"{"overall_percentage": 0.5, "processing": 0.4, "synchronization": 0.1}"#, r#"{"equality_join_condition": "(F.A = T.B)"}"#),
+            stats_row(
+                "1",
+                Some("[0]"),
+                "Join",
+                r#"{"output_rows": 159400}"#,
+                r#"{"overall_percentage": 0.5, "processing": 0.4, "synchronization": 0.1}"#,
+                r#"{"equality_join_condition": "(F.A = T.B)"}"#,
+            ),
             stats_row(
                 "2",
                 Some("[1]"),

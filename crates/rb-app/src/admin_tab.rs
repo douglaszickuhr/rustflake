@@ -4,23 +4,23 @@ use rust_i18n::t;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::description_list::DescriptionList;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Icon, Theme, Selectable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme as _, Icon, Selectable as _, Sizable as _, Theme, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use gpui_kit::component::spinner::Spinner;
-use rb_core::org_config::OrgConfig;
+use rb_core::admin::{self, Activity, DirectGrant, EffectiveRole, Grant, Grantee, RoleGraph, RoleInfo, RoleKind, UserInfo};
 use rb_core::masking::{self, Scope, TagCount};
+use rb_core::org_config::OrgConfig;
+use rb_core::session::Session;
 use rb_core::unlocks::{self, Detail, ItemKind, UnlockItem};
 use rb_core::user_view::{self, Span, UserMeta};
-use rb_core::admin::{self, Activity, RoleKind, DirectGrant, RoleGraph, EffectiveRole, Grant, Grantee, RoleInfo, UserInfo};
-use rb_core::session::Session;
 
 use crate::Db;
 use crate::lang::Lang;
@@ -528,39 +528,51 @@ impl AdminTab {
                 Ok((items, _)) => {
                     let n = items.len();
                     let selected = self.stack.last().cloned();
-                    uniform_list("adm-list", n, cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
-                        let theme = cx.theme();
-                        range
-                            .map(|i| {
-                                let (name, meta, warn, disabled) = items[i].clone();
-                                let target = if show_roles { Target::Role(name.clone()) } else { Target::User(name.clone()) };
-                                let active = selected.as_ref() == Some(&target);
-                                h_flex()
-                                    .id(("adm-item", i))
-                                    .gap_2()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(theme.radius)
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .when(active, |d| d.bg(theme.secondary))
-                                    .hover(|d| d.bg(theme.secondary_hover))
-                                    .when(disabled, |d| d.text_color(theme.muted_foreground))
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font_family.clone()).child(name))
-                                            .child(div().text_xs().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(if warn { theme.warning } else { theme.muted_foreground }).child(meta)),
-                                    )
-                                    .on_click(cx.listener(move |t, _, _, cx| {
-                                        // Clicking the list restarts navigation.
-                                        t.stack.clear();
-                                        t.open(target.clone(), cx);
-                                    }))
-                            })
-                            .collect()
-                    }))
+                    uniform_list(
+                        "adm-list",
+                        n,
+                        cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
+                            let theme = cx.theme();
+                            range
+                                .map(|i| {
+                                    let (name, meta, warn, disabled) = items[i].clone();
+                                    let target = if show_roles { Target::Role(name.clone()) } else { Target::User(name.clone()) };
+                                    let active = selected.as_ref() == Some(&target);
+                                    h_flex()
+                                        .id(("adm-item", i))
+                                        .gap_2()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(theme.radius)
+                                        .text_sm()
+                                        .cursor_pointer()
+                                        .when(active, |d| d.bg(theme.secondary))
+                                        .hover(|d| d.bg(theme.secondary_hover))
+                                        .when(disabled, |d| d.text_color(theme.muted_foreground))
+                                        .child(
+                                            v_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font_family.clone()).child(name))
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .overflow_hidden()
+                                                        .text_ellipsis()
+                                                        .whitespace_nowrap()
+                                                        .text_color(if warn { theme.warning } else { theme.muted_foreground })
+                                                        .child(meta),
+                                                ),
+                                        )
+                                        .on_click(cx.listener(move |t, _, _, cx| {
+                                            // Clicking the list restarts navigation.
+                                            t.stack.clear();
+                                            t.open(target.clone(), cx);
+                                        }))
+                                })
+                                .collect()
+                        }),
+                    )
                     .flex_1()
                     .into_any_element()
                 }
@@ -576,11 +588,14 @@ impl AdminTab {
             .when(self.stack.len() > 1, |d| {
                 d.child(Button::new("adm-back").icon(IconName::ArrowLeft).ghost().small().tooltip(t!("admin.back").to_string()).on_click(cx.listener(|t, _, _, cx| t.back(cx))))
             })
-            .when_some(match &top {
-                Target::Role(r) => Some(r.clone()),
-                Target::UserRoles(u) => Some(format!("{u} / {}", t!("admin.roles"))),
-                Target::User(_) => None,
-            }, |d, r| d.child(div().text_lg().child(r)));
+            .when_some(
+                match &top {
+                    Target::Role(r) => Some(r.clone()),
+                    Target::UserRoles(u) => Some(format!("{u} / {}", t!("admin.roles"))),
+                    Target::User(_) => None,
+                },
+                |d, r| d.child(div().text_lg().child(r)),
+            );
         let body = match top {
             Target::User(u) => self.render_user(&u, cx),
             Target::UserRoles(u) => self.render_user_roles(&u, cx),
@@ -624,7 +639,19 @@ impl AdminTab {
                 h_flex()
                     .gap_4()
                     .flex_wrap()
-                    .child(div().size(px(48.)).flex_shrink_0().rounded_full().bg(theme.secondary).text_color(theme.primary).flex().items_center().justify_center().font_weight(FontWeight::SEMIBOLD).child(initials))
+                    .child(
+                        div()
+                            .size(px(48.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(theme.secondary)
+                            .text_color(theme.primary)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(initials),
+                    )
                     .child(v_flex().gap_1().min_w_0().child(div().text_xl().child(shown)).child(div().text_sm().text_color(theme.muted_foreground).child(sub)))
                     .child(
                         h_flex()
@@ -843,11 +870,7 @@ impl AdminTab {
             Load::Ready(g) => (g.clone(), self.databases.clone()),
             _ => {
                 let inh = self.grants_cache.iter().map(|(k, g)| (k.clone(), admin::inherited_roles(g))).collect();
-                let dbs = self
-                    .grants_cache
-                    .iter()
-                    .map(|(k, g)| (k.clone(), g.iter().filter(|x| x.privilege == "USAGE" && x.granted_on == "DATABASE").map(|x| x.name.clone()).collect()))
-                    .collect();
+                let dbs = self.grants_cache.iter().map(|(k, g)| (k.clone(), g.iter().filter(|x| x.privilege == "USAGE" && x.granted_on == "DATABASE").map(|x| x.name.clone()).collect())).collect();
                 (Arc::new(inh), Arc::new(dbs))
             }
         }
@@ -901,18 +924,12 @@ impl AdminTab {
         }
         v_flex()
             .gap_2()
-            .child(
-                h_flex()
-                    .items_baseline()
-                    .gap_2()
-                    .child(div().text_xl().child(t!("admin.direct_n", n = direct.len()).to_string()))
-                    .child(if loading {
-                        // "0 inherited" while loading looked like the final answer.
-                        h_flex().gap_1().items_center().text_base().text_color(theme.muted_foreground).child(Spinner::new().small()).child(t!("admin.inherited_loading").to_string())
-                    } else {
-                        h_flex().text_base().text_color(theme.muted_foreground).child(t!("admin.inherited_n", n = eff.len()).to_string())
-                    }),
-            )
+            .child(h_flex().items_baseline().gap_2().child(div().text_xl().child(t!("admin.direct_n", n = direct.len()).to_string())).child(if loading {
+                // "0 inherited" while loading looked like the final answer.
+                h_flex().gap_1().items_center().text_base().text_color(theme.muted_foreground).child(Spinner::new().small()).child(t!("admin.inherited_loading").to_string())
+            } else {
+                h_flex().text_base().text_color(theme.muted_foreground).child(t!("admin.inherited_n", n = eff.len()).to_string())
+            }))
             // Counts with only the direct ones would be wrong: they wait for the inherited.
             .when(!loading, |d| d.child(h_flex().flex_wrap().gap_x_4().gap_y_1().text_sm().text_color(theme.muted_foreground).children(facts)))
     }
@@ -954,10 +971,12 @@ impl AdminTab {
         let searching = !toks.is_empty();
 
         // Header + search + filters.
-        let mut chips = h_flex().flex_wrap().gap_1().child(Button::new("uf-all").label(t!("admin.all_types").to_string()).xsmall().outline().selected(self.unlock_filter.is_none()).on_click(cx.listener(|t, _, _, cx| {
-            t.unlock_filter = None;
-            cx.notify();
-        })));
+        let mut chips = h_flex().flex_wrap().gap_1().child(Button::new("uf-all").label(t!("admin.all_types").to_string()).xsmall().outline().selected(self.unlock_filter.is_none()).on_click(
+            cx.listener(|t, _, _, cx| {
+                t.unlock_filter = None;
+                cx.notify();
+            }),
+        ));
         for (i, k) in [ItemKind::Warehouse, ItemKind::Classification, ItemKind::Department, ItemKind::Data, ItemKind::Functional, ItemKind::Other].into_iter().enumerate() {
             let n = items.iter().filter(|it| it.kind == k).count();
             if n == 0 {
@@ -1076,7 +1095,11 @@ impl AdminTab {
                         .hover(|d| d.bg(theme.secondary_hover))
                         .child(div().w(px(12.)).text_xs().text_color(theme.muted_foreground).child(if multi { if open { "▾" } else { "▸" } } else { "" }))
                         .child(one_line(highlighted(&label, &toks, &theme)).flex_1())
-                        .child(div().flex_shrink_0().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(if k == ItemKind::Classification { self.class_scope_summary(it) } else { detail_text(it) }))
+                        .child(div().flex_shrink_0().whitespace_nowrap().text_xs().text_color(theme.muted_foreground).child(if k == ItemKind::Classification {
+                            self.class_scope_summary(it)
+                        } else {
+                            detail_text(it)
+                        }))
                         .child(div().w(px(80.)).text_xs().text_right().text_color(if warn { theme.warning } else { theme.muted_foreground }).child(used))
                         .on_click(cx.listener(move |t, _, _, cx| {
                             if multi && !t.item_open.remove(&key2) {
@@ -1146,19 +1169,24 @@ impl AdminTab {
                 .border_1()
                 .border_color(theme.border)
                 .when_some(item, |d, it| {
-                    d.child(h_flex().gap_2().items_center().text_xs().text_color(theme.muted_foreground).child(div().size(px(7.)).rounded_full().bg(kind_color(it.kind, &theme))).child(item_kind_label(it.kind)))
-                        .child(div().text_lg().font_family(theme.mono_font_family.clone()).child(if it.name.is_empty() { t!("admin.unknown_db").to_string() } else { item_title(&self.conn.org, it) }))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(detail_text(it)))
+                    d.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(div().size(px(7.)).rounded_full().bg(kind_color(it.kind, &theme)))
+                            .child(item_kind_label(it.kind)),
+                    )
+                    .child(div().text_lg().font_family(theme.mono_font_family.clone()).child(if it.name.is_empty() { t!("admin.unknown_db").to_string() } else { item_title(&self.conn.org, it) }))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(detail_text(it)))
                 })
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().flex_1().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).overflow_hidden().text_ellipsis().child(sel.clone()))
-                        .child(Button::new("copy-role").label(t!("admin.copy").to_string()).ghost().xsmall().on_click({
-                            let sel = sel.clone();
-                            move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sel.clone()))
-                        })),
-                )
+                .child(h_flex().gap_2().child(div().flex_1().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).overflow_hidden().text_ellipsis().child(sel.clone())).child(
+                    Button::new("copy-role").label(t!("admin.copy").to_string()).ghost().xsmall().on_click({
+                        let sel = sel.clone();
+                        move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sel.clone()))
+                    }),
+                ))
                 .child(div().text_xs().text_color(theme.muted_foreground).child(t!("admin.paths", n = paths.len()).to_string()));
             for p in &paths {
                 let mut ol = v_flex().gap_0p5().p_2().rounded(theme.radius).bg(theme.secondary).text_xs().font_family(theme.mono_font_family.clone());
@@ -1207,12 +1235,11 @@ impl AdminTab {
         if let Load::Ready(rs) = &self.roles
             && let Some(r) = rs.iter().find(|r| r.name == name)
         {
-            out = out.child(
-                DescriptionList::horizontal()
-                    .columns(2)
-                    .item(t!("admin.owner").to_string(), r.owner.clone().unwrap_or_else(|| "—".into()), 1)
-                    .item(t!("admin.comment").to_string(), r.comment.clone().unwrap_or_else(|| "—".into()), 1),
-            );
+            out = out.child(DescriptionList::horizontal().columns(2).item(t!("admin.owner").to_string(), r.owner.clone().unwrap_or_else(|| "—".into()), 1).item(
+                t!("admin.comment").to_string(),
+                r.comment.clone().unwrap_or_else(|| "—".into()),
+                1,
+            ));
         }
         match self.role_details.get(name) {
             None | Some(Load::Loading) => out = out.child(t!("tree.loading").to_string()),
@@ -1268,18 +1295,13 @@ impl Render for AdminTab {
 
 /// "key · value" row of the sections; empty becomes "not defined".
 pub(crate) fn kv(label: String, value: Option<String>, theme: &Theme) -> Div {
-    h_flex()
-        .min_h(px(40.))
-        .gap_4()
-        .border_b_1()
-        .border_color(theme.border)
-        .child(div().w(px(130.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
-        .child(match value.filter(|v| !v.is_empty()) {
+    h_flex().min_h(px(40.)).gap_4().border_b_1().border_color(theme.border).child(div().w(px(130.)).flex_shrink_0().text_color(theme.muted_foreground).child(label)).child(
+        match value.filter(|v| !v.is_empty()) {
             Some(v) => div().min_w_0().overflow_hidden().text_ellipsis().font_family(theme.mono_font_family.clone()).child(v),
             None => div().text_color(theme.muted_foreground).child(t!("admin.not_set").to_string()),
-        })
+        },
+    )
 }
-
 
 fn title_case(s: &str) -> String {
     let lower = s.to_lowercase();
@@ -1385,7 +1407,6 @@ fn highlighted(text: &str, toks: &[String], theme: &Theme) -> StyledText {
     let style = HighlightStyle { color: Some(theme.primary), font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() };
     StyledText::new(text.to_string()).with_highlights(unlocks::match_ranges(text, toks).into_iter().map(|r| (r, style)))
 }
-
 
 /// A single line, with ellipsis: long role names don't invade the neighboring column (the panel
 /// shows the full name).

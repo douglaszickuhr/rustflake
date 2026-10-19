@@ -1,10 +1,10 @@
-use std::rc::Rc;
 use rust_i18n::t;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableSelection, TableState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -18,7 +18,7 @@ use rb_core::table::{EditTarget, PendingEdits, TABLE_LIMIT, build_sql, columns_m
 
 use std::collections::HashMap;
 
-use rb_core::table_info::{ColInfo, Facts, LinNode};
+use rb_core::table_info::{ColInfo, DefSort, Facts, LinNode};
 
 use crate::admin_tab::Load;
 use crate::dbt_store::DbtStore;
@@ -75,7 +75,7 @@ pub(crate) struct CustomSection {
 
 /// Columns, classification and masking coming from Snowflake (dbt is merged at draw time).
 /// + the remaining per-column tags and the tag/policy query error (shown in the summary).
-pub(crate) type DefRaw = (Vec<ColInfo>, HashMap<String, (u8, String)>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>, Option<String>);
+pub(crate) type DefRaw = (Vec<ColInfo>, HashMap<String, (u8, String)>, HashMap<String, String>, HashMap<String, Vec<rb_core::table_info::ColTag>>, Option<String>);
 
 pub struct TableTab {
     focus: FocusHandle,
@@ -85,6 +85,11 @@ pub struct TableTab {
     meta: Entity<MetaStore>,
     session: Option<Arc<Session>>,
     filter: Entity<InputState>,
+    /// Definition: search over everything shown, and the sort (column, ascending).
+    pub(crate) def_search: Entity<InputState>,
+    /// Data only queries when first shown (it's no longer the opening section).
+    pub(crate) data_started: bool,
+    pub(crate) def_sort: (DefSort, bool),
     grid: Entity<TableState<ResultGrid>>,
     target: Option<EditTarget>,
     sort: Option<(usize, bool)>,
@@ -111,6 +116,8 @@ pub struct TableTab {
     /// git blame of the model file (loaded when Blame is turned on).
     pub(crate) blame: Option<(String, Load<Vec<rb_core::dbt::BlameLine>>)>,
     pub(crate) show_blame: bool,
+    /// dbt section: model details on the right; × closes, "Details" in the toolbar reopens.
+    pub(crate) dbt_details: bool,
     /// Compiled model SQL (disk or `dbt compile`), by unique_id, with when it was generated.
     pub(crate) compiled: Option<(String, Load<(String, Option<std::time::SystemTime>)>)>,
     pub(crate) compiling: bool,
@@ -127,8 +134,19 @@ pub struct TableTab {
 
 impl TableTab {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(schema: String, table: String, conn: ConnTarget, meta: Entity<MetaStore>, dbt: Option<Entity<DbtStore>>, open_query: OpenQuery, open_table: crate::schema_tree::OpenTable, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        schema: String,
+        table: String,
+        conn: ConnTarget,
+        meta: Entity<MetaStore>,
+        dbt: Option<Entity<DbtStore>>,
+        open_query: OpenQuery,
+        open_table: crate::schema_tree::OpenTable,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("table.filter_placeholder").to_string()));
+        let def_search = cx.new(|cx| InputState::new(window, cx).placeholder(t!("tv.def_search").to_string()));
         let grid = cx.new(|cx| TableState::new(ResultGrid::new(true), window, cx).cell_selectable(true));
 
         let weak = cx.entity().downgrade();
@@ -145,6 +163,12 @@ impl TableTab {
             // The placeholder lives in the field state: it changes along with the language.
             cx.observe_global_in::<Lang>(window, |this, window, cx| {
                 this.filter.update(cx, |s, cx| s.set_placeholder(t!("table.filter_placeholder").to_string(), window, cx));
+                this.def_search.update(cx, |s, cx| s.set_placeholder(t!("tv.def_search").to_string(), window, cx));
+            }),
+            cx.subscribe_in(&def_search, window, |_, _, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
             }),
             cx.subscribe_in(&filter, window, |this, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::PressEnter { .. }) {
@@ -181,6 +205,8 @@ impl TableTab {
             meta,
             session: None,
             filter,
+            def_search,
+            def_sort: Default::default(),
             grid,
             target: None,
             sort: None,
@@ -188,7 +214,8 @@ impl TableTab {
             after_load: None,
             loaded_once: false,
             _busy: None,
-            section: Section::Data,
+            section: Section::Definition,
+            data_started: false,
             dbt: dbt.clone(),
             open_query,
             open_table,
@@ -201,6 +228,7 @@ impl TableTab {
             comment_open: false,
             blame: None,
             show_blame: false,
+            dbt_details: true,
             compiled: None,
             compiling: false,
             compile_live: Vec::new(),
@@ -215,6 +243,7 @@ impl TableTab {
         }
         this.on_meta(cx);
         this.ensure_facts(cx);
+        this.ensure_definition(cx);
         this
     }
 
@@ -239,7 +268,9 @@ impl TableTab {
         let editable = !target.pk().is_empty() && self.meta.read(cx).cache.dialect == Dialect::Postgres;
         self.grid.update(cx, |t, _| t.delegate_mut().edits = editable.then(PendingEdits::default));
         self.target = Some(target);
-        self.load(cx);
+        if self.section == Section::Data {
+            self.load(cx);
+        }
     }
 
     pub fn has_pending(&self, cx: &App) -> bool {
@@ -247,6 +278,7 @@ impl TableTab {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
+        self.data_started = true;
         if self.has_pending(cx) {
             self.status = t!("table.save_before_reload").to_string().into();
             cx.notify();
@@ -385,16 +417,7 @@ impl TableTab {
                             })
                             .child(DataTable::new(grid).stripe(true).bordered(true)),
                     )
-                    .child(
-                        h_flex()
-                            .px_2()
-                            .py_1()
-                            .gap_3()
-                            .text_sm()
-                            .when(c.busy, |d| d.child(Spinner::new().small()))
-                            .child(t!("grid.rows", n = rows).to_string())
-                            .child(c.status.clone()),
-                    )
+                    .child(h_flex().px_2().py_1().gap_3().text_sm().when(c.busy, |d| d.child(Spinner::new().small())).child(t!("grid.rows", n = rows).to_string()).child(c.status.clone()))
                     .into_any_element()
             }
             _ => div().into_any_element(),
@@ -568,13 +591,11 @@ impl TableTab {
                             .child(Button::new("save").label(format!("{} ⌘S", t!("common.save"))).primary().disabled(!pending).on_click(cx.listener(|t, _, _, cx| t.save(cx))))
                     }),
             )
-            .child(
-                div()
-                    .key_context("ResultGrid")
-                    .flex_1()
-                    .on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx)))
-                    .child(if self.text_mode { self.text_view.render(&self.grid, window, cx) } else { DataTable::new(&self.grid).stripe(true).bordered(true).into_any_element() }),
-            )
+            .child(div().key_context("ResultGrid").flex_1().on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx))).child(if self.text_mode {
+                self.text_view.render(&self.grid, window, cx)
+            } else {
+                DataTable::new(&self.grid).stripe(true).bordered(true).into_any_element()
+            }))
             .child(
                 h_flex()
                     .px_2()

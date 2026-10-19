@@ -5,8 +5,8 @@ use gpui_kit::*;
 use rb_core::config::ConnectionConfig;
 use rb_core::dialect::Dialect;
 use rb_core::metadata::{self, ColumnMeta, IndexMeta, MetaCache, MetaRequest, SchemaObjects};
-use rb_core::quick_open::{IndexDiff, refresh_plan};
 use rb_core::org_config::OrgConfig;
+use rb_core::quick_open::{IndexDiff, refresh_plan};
 use rb_core::session::{Credentials, Session};
 
 #[derive(Clone)]

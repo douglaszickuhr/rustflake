@@ -111,29 +111,33 @@ impl Render for Picker {
                     let current = self.current.clone();
                     // Virtualized: the account may have thousands of roles.
                     out = out.child(
-                        uniform_list("picker-list", items.len(), cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
-                            let theme = cx.theme().clone();
-                            range
-                                .map(|i| {
-                                    let name = items[i].clone();
-                                    let cur = current.as_deref() == Some(name.as_str());
-                                    let n = name.clone();
-                                    h_flex()
-                                        .id(("pick", i))
-                                        .gap_2()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded(theme.radius)
-                                        .cursor_pointer()
-                                        .text_sm()
-                                        .font_family(theme.mono_font_family.clone())
-                                        .hover(|d| d.bg(theme.secondary_hover))
-                                        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
-                                        .when(cur, |d| d.child(div().text_color(theme.primary).child("✓")))
-                                        .on_click(cx.listener(move |p, _, w, cx| p.pick(n.clone(), w, cx)))
-                                })
-                                .collect()
-                        }))
+                        uniform_list(
+                            "picker-list",
+                            items.len(),
+                            cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
+                                let theme = cx.theme().clone();
+                                range
+                                    .map(|i| {
+                                        let name = items[i].clone();
+                                        let cur = current.as_deref() == Some(name.as_str());
+                                        let n = name.clone();
+                                        h_flex()
+                                            .id(("pick", i))
+                                            .gap_2()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(theme.radius)
+                                            .cursor_pointer()
+                                            .text_sm()
+                                            .font_family(theme.mono_font_family.clone())
+                                            .hover(|d| d.bg(theme.secondary_hover))
+                                            .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
+                                            .when(cur, |d| d.child(div().text_color(theme.primary).child("✓")))
+                                            .on_click(cx.listener(move |p, _, w, cx| p.pick(n.clone(), w, cx)))
+                                    })
+                                    .collect()
+                            }),
+                        )
                         .h(px(320.)),
                     );
                 }

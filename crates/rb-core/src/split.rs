@@ -23,12 +23,7 @@ pub fn split_statements(src: &str) -> Vec<Range<usize>> {
 /// Statement under the cursor; if the cursor is between statements, the previous one; otherwise the first.
 pub fn statement_at(src: &str, offset: usize) -> Option<Range<usize>> {
     let stmts = split_statements(src);
-    stmts
-        .iter()
-        .find(|r| r.start <= offset && offset <= r.end)
-        .or_else(|| stmts.iter().rev().find(|r| r.end < offset))
-        .or(stmts.first())
-        .cloned()
+    stmts.iter().find(|r| r.start <= offset && offset <= r.end).or_else(|| stmts.iter().rev().find(|r| r.end < offset)).or(stmts.first()).cloned()
 }
 
 fn words(stmt: &str) -> impl Iterator<Item = String> + '_ {
@@ -94,7 +89,16 @@ mod tests {
 
     #[test]
     fn explainable_accepts_queries_and_dml_only() {
-        for s in ["select 1", "/* c */ WITH a AS (select 1) select * from a", "insert into t values (1)", "update t set a = 1", "delete from t", "merge into t using s on true when matched then delete", "values (1)", "table t"] {
+        for s in [
+            "select 1",
+            "/* c */ WITH a AS (select 1) select * from a",
+            "insert into t values (1)",
+            "update t set a = 1",
+            "delete from t",
+            "merge into t using s on true when matched then delete",
+            "values (1)",
+            "table t",
+        ] {
             assert!(explainable(s), "{s}");
         }
         for s in ["create table t (a int)", "drop table t", "alter table t add b int", "begin", "vacuum", "", "explain select 1"] {
@@ -126,10 +130,7 @@ mod tests {
     #[test]
     fn keeps_function_bodies_whole() {
         let src = "create function f() returns int as $$ begin; return 1; end $$ language plpgsql;\nselect f()";
-        assert_eq!(
-            texts(src),
-            vec!["create function f() returns int as $$ begin; return 1; end $$ language plpgsql", "select f()"]
-        );
+        assert_eq!(texts(src), vec!["create function f() returns int as $$ begin; return 1; end $$ language plpgsql", "select f()"]);
     }
 
     #[test]

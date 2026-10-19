@@ -11,11 +11,11 @@ use snowflake_connector_rs::{CellValue, VectorValue};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::DbError;
-use crate::secrets;
 use crate::batch::{Batch, ColumnInfo};
 use crate::config::{ConnectionConfig, SnowflakeAuth, expand_home};
 use crate::explain::{Plan, parse_sf_explain, parse_sf_stats};
 use crate::metadata::{ColumnMeta, SchemaObjects};
+use crate::secrets;
 use crate::session::{Cmd, Credentials, ExecOutcome, FETCH_ROWS, FetchOutcome, Reply};
 use crate::split::{is_read_only_query, is_transaction_control};
 
@@ -468,8 +468,7 @@ impl SfActor {
         };
         self.shared.uses.lock().expect("USE mutex").record(&sql);
         let query_id = Some(cursor.query_id().to_string());
-        let columns: Arc<[ColumnInfo]> =
-            cursor.schema().columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: crate::Type::TEXT }).collect();
+        let columns: Arc<[ColumnInfo]> = cursor.schema().columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: crate::Type::TEXT }).collect();
         let mut pager = Pager::new(cursor, columns.len());
         let (batch, mut more) = match pager.next_batch(FETCH_ROWS as usize).await {
             Ok(b) => b,
@@ -591,11 +590,7 @@ mod tests {
     #[test]
     fn show_objects_split_by_kind() {
         let n = names(&["created_on", "name", "database_name", "schema_name", "kind"]);
-        let rows = vec![
-            row(&["x", "ORDERS", "DB", "S", "TABLE"]),
-            row(&["x", "V_ORDERS", "DB", "S", "VIEW"]),
-            row(&["x", "MV", "DB", "S", "MATERIALIZED_VIEW"]),
-        ];
+        let rows = vec![row(&["x", "ORDERS", "DB", "S", "TABLE"]), row(&["x", "V_ORDERS", "DB", "S", "VIEW"]), row(&["x", "MV", "DB", "S", "MATERIALIZED_VIEW"])];
         let o = parse_objects(&n, &rows);
         assert_eq!((o.tables, o.views, o.matviews), (vec!["ORDERS".into()], vec!["V_ORDERS".into()], vec!["MV".into()]));
     }

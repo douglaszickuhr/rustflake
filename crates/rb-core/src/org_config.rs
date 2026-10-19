@@ -28,6 +28,8 @@ struct RawClass {
     #[serde(default)]
     labels: Vec<String>,
     #[serde(default)]
+    colors: Vec<String>,
+    #[serde(default)]
     values: HashMap<String, u8>,
 }
 
@@ -118,7 +120,35 @@ struct Classification {
     /// db, schema, name.
     tag: [String; 3],
     labels: Vec<String>,
+    colors: Vec<LevelColor>,
     values: HashMap<String, u8>,
+}
+
+/// Badge color of a classification level: a theme color (follows light/dark) or a fixed RGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelColor {
+    Muted,
+    Info,
+    Success,
+    Warning,
+    Danger,
+    Rgb(u32),
+}
+
+impl LevelColor {
+    fn parse(s: &str) -> Option<LevelColor> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "muted" => LevelColor::Muted,
+            "info" => LevelColor::Info,
+            "success" => LevelColor::Success,
+            "warning" => LevelColor::Warning,
+            "danger" => LevelColor::Danger,
+            h => {
+                let hex = h.strip_prefix('#').filter(|x| x.len() == 6)?;
+                LevelColor::Rgb(u32::from_str_radix(hex, 16).ok()?)
+            }
+        })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -164,7 +194,8 @@ impl OrgConfig {
                 if [db, schema, name].iter().any(|p| p.trim().is_empty()) {
                     return Err(t!("err.config_tag").to_string());
                 }
-                Some(Classification { tag: [db.to_string(), schema.to_string(), name.to_string()], labels: c.labels, values: c.values })
+                let colors = c.colors.iter().map(|s| LevelColor::parse(s).ok_or_else(|| t!("err.config_color", color = s).to_string())).collect::<Result<_, _>>()?;
+                Some(Classification { tag: [db.to_string(), schema.to_string(), name.to_string()], labels: c.labels, colors, values: c.values })
             }
         };
         let mut tabs = Vec::new();
@@ -231,6 +262,11 @@ impl OrgConfig {
 
     pub fn level_label(&self, level: u8) -> Option<&str> {
         self.class.as_ref()?.labels.get(usize::from(level).checked_sub(1)?).map(String::as_str)
+    }
+
+    /// `colors[level - 1]`; not configured = muted (no scale is assumed).
+    pub fn level_color(&self, level: u8) -> LevelColor {
+        self.class.as_ref().and_then(|c| c.colors.get(usize::from(level).checked_sub(1)?).copied()).unwrap_or(LevelColor::Muted)
     }
 
     /// The highest level (the one that `forced_by` roles always mask).
@@ -520,5 +556,14 @@ mod tests {
         assert!(errs[0].starts_with("b.toml") && errs[1].starts_with("c.toml"));
         assert!(load_all(Path::new("/nonexistent/rb")).0.is_empty());
     }
-}
 
+    #[test]
+    fn level_colors_come_from_the_config() {
+        let a = OrgConfig::parse("name = 'X'\n[classification]\ntag = 'A.B.C'\ncolors = ['danger', '#FF8800', 'Muted']").unwrap();
+        assert_eq!((a.level_color(1), a.level_color(2), a.level_color(3)), (LevelColor::Danger, LevelColor::Rgb(0xFF8800), LevelColor::Muted));
+        assert_eq!((a.level_color(4), a.level_color(0)), (LevelColor::Muted, LevelColor::Muted), "outside the list = muted");
+        assert_eq!(OrgConfig::none().level_color(3), LevelColor::Muted);
+        let e = OrgConfig::parse("name = 'X'\n[classification]\ntag = 'A.B.C'\ncolors = ['red']").unwrap_err();
+        assert!(e.contains("red"), "{e}");
+    }
+}

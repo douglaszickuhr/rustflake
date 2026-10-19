@@ -257,11 +257,8 @@ pub fn parse_run_results(json: &str, target: &str) -> HashMap<String, (String, S
 /// Git remote → GitHub repo page (SSH, HTTPS or ssh://).
 pub fn github_url(remote: &str) -> Option<String> {
     let r = remote.trim().trim_end_matches(".git");
-    let path = r
-        .strip_prefix("git@github.com:")
-        .or_else(|| r.strip_prefix("https://github.com/"))
-        .or_else(|| r.strip_prefix("ssh://git@github.com/"))
-        .or_else(|| r.strip_prefix("http://github.com/"))?;
+    let path =
+        r.strip_prefix("git@github.com:").or_else(|| r.strip_prefix("https://github.com/")).or_else(|| r.strip_prefix("ssh://git@github.com/")).or_else(|| r.strip_prefix("http://github.com/"))?;
     Some(format!("https://github.com/{}", path.trim_matches('/')))
 }
 
@@ -436,11 +433,7 @@ pub fn aws_login(profile: &str) -> Result<(), DbError> {
         .envs(login_env())
         .output()
         .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { DbError::Config(t!("err.aws_not_found").to_string()) } else { DbError::Io(e.to_string()) })?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(DbError::Config(format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string()))
-    }
+    if out.status.success() { Ok(()) } else { Err(DbError::Config(format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string())) }
 }
 
 /// The project virtualenv's dbt, if any: it is what the project expects.
@@ -673,8 +666,11 @@ mod tests {
 
     #[test]
     fn models_win_over_sources_with_the_same_relation() {
-        let m = parse_manifest(r#"{"nodes": {"model.p.x": {"unique_id": "model.p.x", "name": "x", "resource_type": "model", "relation_name": "D.S.X"}},
-            "sources": {"source.p.s.x": {"unique_id": "source.p.s.x", "name": "x", "resource_type": "source", "relation_name": "D.S.X"}}}"#).unwrap();
+        let m = parse_manifest(
+            r#"{"nodes": {"model.p.x": {"unique_id": "model.p.x", "name": "x", "resource_type": "model", "relation_name": "D.S.X"}},
+            "sources": {"source.p.s.x": {"unique_id": "source.p.s.x", "name": "x", "resource_type": "source", "relation_name": "D.S.X"}}}"#,
+        )
+        .unwrap();
         for _ in 0..5 {
             assert_eq!(m.by_table("D", "S", "X").unwrap().resource_type, "model");
         }
@@ -682,11 +678,14 @@ mod tests {
 
     #[test]
     fn falls_back_to_a_unique_table_name_when_the_target_differs() {
-        let m = parse_manifest(r#"{"nodes": {
+        let m = parse_manifest(
+            r#"{"nodes": {
             "model.p.a": {"unique_id": "model.p.a", "name": "dim_product_groups", "resource_type": "model", "relation_name": "DEV_JD.MART_CX.DIM_PRODUCT_GROUPS"},
             "model.p.b": {"unique_id": "model.p.b", "name": "x", "resource_type": "model", "relation_name": "DEV_JD.S1.DUP"},
             "model.p.c": {"unique_id": "model.p.c", "name": "y", "resource_type": "model", "relation_name": "DEV_JD.S2.DUP"}
-        }}"#).unwrap();
+        }}"#,
+        )
+        .unwrap();
         let (n, exact) = m.find_table("SALES_PROD", "MART_CX", "DIM_PRODUCT_GROUPS").unwrap();
         assert_eq!((n.unique_id.as_str(), exact), ("model.p.a", false));
         assert!(m.find_table("SALES_PROD", "X", "DUP").is_none(), "ambiguous name: no guessing");
@@ -717,7 +716,9 @@ mod tests {
 
     #[test]
     fn expired_aws_sso_is_detected_in_dbt_output() {
-        assert!(needs_aws_login("Runtime Error\n  The SSO session associated with this profile has expired or is otherwise invalid. To refresh this SSO session run aws sso login with the corresponding profile."));
+        assert!(needs_aws_login(
+            "Runtime Error\n  The SSO session associated with this profile has expired or is otherwise invalid. To refresh this SSO session run aws sso login with the corresponding profile."
+        ));
         assert!(needs_aws_login("Error when retrieving token from sso: Token has expired and refresh failed"));
         assert!(!needs_aws_login("The profile 'dev' does not have a target named 'prod'."));
     }
@@ -732,15 +733,21 @@ mod tests {
 
     #[test]
     fn meta_is_flattened_and_deduplicated() {
-        let m = parse_manifest(r#"{"nodes": {"model.p.a": {"unique_id": "model.p.a", "name": "a", "resource_type": "model",
+        let m = parse_manifest(
+            r#"{"nodes": {"model.p.a": {"unique_id": "model.p.a", "name": "a", "resource_type": "model",
             "config": {"meta": {"metaplane": {"createMonitors": {"monitors": ["ROW_COUNT"]}}, "slack_channel": "alerts", "atlan": {"attributes": {"ownerUsers": ["varushi.jain", "x.y"]}}}},
-            "meta": {"metaplane": {"createMonitors": {"monitors": ["ROW_COUNT"]}}, "slack_channel": "alerts", "atlan": {"attributes": {"ownerUsers": ["varushi.jain", "x.y"]}}}}}}"#).unwrap();
+            "meta": {"metaplane": {"createMonitors": {"monitors": ["ROW_COUNT"]}}, "slack_channel": "alerts", "atlan": {"attributes": {"ownerUsers": ["varushi.jain", "x.y"]}}}}}}"#,
+        )
+        .unwrap();
         let n = &m.nodes["model.p.a"];
-        assert_eq!(n.meta, vec![
-            ("atlan.attributes.ownerUsers".to_string(), "varushi.jain, x.y".to_string()),
-            ("metaplane.createMonitors.monitors".to_string(), "ROW_COUNT".to_string()),
-            ("slack_channel".to_string(), "alerts".to_string()),
-        ]);
+        assert_eq!(
+            n.meta,
+            vec![
+                ("atlan.attributes.ownerUsers".to_string(), "varushi.jain, x.y".to_string()),
+                ("metaplane.createMonitors.monitors".to_string(), "ROW_COUNT".to_string()),
+                ("slack_channel".to_string(), "alerts".to_string()),
+            ]
+        );
     }
 
     #[test]

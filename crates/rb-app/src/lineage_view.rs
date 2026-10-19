@@ -65,6 +65,12 @@ pub struct LineageView {
     /// Revealed one by one from a "+N more" box.
     pinned: HashSet<ObjKey>,
     selected: Option<Sel>,
+    /// Drag to pan: where the mouse went down and the scroll offset at that moment.
+    pan: Option<(Point<Pixels>, Point<Pixels>)>,
+    /// Pushing past the left/right edge (drag or scroll) expands that side: amount pushed so far
+    /// with the wheel, and when it last fired (a flick shouldn't open several levels at once).
+    pull: f32,
+    pulled_at: Option<std::time::Instant>,
     visible: Visible,
     layout: Layout,
     columns: HashMap<ObjKey, Load<Vec<String>>>,
@@ -97,6 +103,9 @@ impl LineageView {
             expanded: HashSet::new(),
             pinned: HashSet::new(),
             selected: None,
+            pan: None,
+            pull: 0.0,
+            pulled_at: None,
             visible: Visible::default(),
             layout: Layout::default(),
             columns: HashMap::new(),
@@ -244,6 +253,35 @@ impl LineageView {
         } else if self.graph.frontier.contains(&(k.clone(), dir)) {
             self.center_on(&k, cx);
         }
+    }
+
+    /// Horizontal scroll range: offsets go from `min` (right edge) to 0 (left edge).
+    fn min_offset_x(&self) -> Option<f32> {
+        let area = self.viewport.get()?;
+        let (w, _) = self.content_size();
+        Some((f32::from(area.size.width) - (w * self.zoom + 2.0 * PAD)).min(0.0))
+    }
+
+    /// Opens one more level on `dir`'s side: the outermost visible nodes with something cached outward.
+    fn expand_edge(&mut self, dir: Dir, cx: &mut Context<Self>) {
+        if self.pulled_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(700)) {
+            return;
+        }
+        let side = |c: i32| if dir == Dir::Up { -c } else { c };
+        let nodes: Vec<(ObjKey, i32)> = self.layout.pos.iter().filter_map(|(s, c, _)| if let Slot::Node(k) = s { Some((k.clone(), side(*c))) } else { None }).collect();
+        let Some(outer) = nodes.iter().map(|n| n.1).max().filter(|c| *c >= 0) else { return };
+        let open: Vec<ObjKey> = nodes
+            .into_iter()
+            .filter(|(k, c)| *c == outer && self.graph.side_of(k).is_none_or(|d| d == dir) && !self.expanded.contains(k) && !self.graph.outward(k, dir).is_empty())
+            .map(|(k, _)| k)
+            .collect();
+        self.pulled_at = Some(std::time::Instant::now());
+        if open.is_empty() {
+            return;
+        }
+        self.expanded.extend(open);
+        self.relayout();
+        cx.notify();
     }
 
     fn project(&self, cx: &App) -> Option<Arc<DbtProject>> {
@@ -460,7 +498,8 @@ impl Render for LineageView {
         let mut boxes: Vec<AnyElement> = Vec::new();
         for (i, (slot, col, row)) in self.layout.pos.iter().enumerate() {
             let (x, y) = place(origin, *col, *row);
-            let shell = div().absolute().left(px(x * z)).top(px(y * z)).w(px(BOX_W * z)).h(px(BOX_H * z)).px(px(8.0 * z)).py(px(4.0 * z)).overflow_hidden().rounded(theme.radius).text_size(px(12.0 * z));
+            let shell =
+                div().absolute().left(px(x * z)).top(px(y * z)).w(px(BOX_W * z)).h(px(BOX_H * z)).px(px(8.0 * z)).py(px(4.0 * z)).overflow_hidden().rounded(theme.radius).text_size(px(12.0 * z));
             match slot {
                 Slot::More(m) => {
                     let Some(more) = self.visible.more.get(*m) else { continue };
@@ -506,7 +545,13 @@ impl Render for LineageView {
                         .border_1()
                         .when(is_focus || selected || cols.is_some(), |d| d.border_2())
                         .border_color(border)
-                        .bg(if o.masked { theme.secondary } else if selected { theme.background.blend(theme.primary.opacity(0.08)) } else { theme.background })
+                        .bg(if o.masked {
+                            theme.secondary
+                        } else if selected {
+                            theme.background.blend(theme.primary.opacity(0.08))
+                        } else {
+                            theme.background
+                        })
                         .when(faded, |d| d.opacity(0.4))
                         .cursor_pointer()
                         .child(
@@ -514,10 +559,24 @@ impl Render for LineageView {
                                 .gap_1()
                                 .items_center()
                                 .child(div().size(px(7.0 * z)).flex_shrink_0().rounded_full().bg(dot))
-                                .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font_family.clone()).font_weight(FontWeight::SEMIBOLD).child(if o.masked { t!("lin.no_access").to_string() } else { k.name.clone() }))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .font_family(theme.mono_font_family.clone())
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(if o.masked { t!("lin.no_access").to_string() } else { k.name.clone() }),
+                                )
                                 .when_some(badge, |d, b| d.child(div().flex_shrink_0().text_size(px(10.0 * z)).text_color(theme.muted_foreground).child(b))),
                         )
-                        .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(theme.muted_foreground).child(if k.is_qualified() { format!("{}.{}", k.db, k.schema) } else { k.domain.to_lowercase() }));
+                        .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(theme.muted_foreground).child(if k.is_qualified() {
+                            format!("{}.{}", k.db, k.schema)
+                        } else {
+                            k.domain.to_lowercase()
+                        }));
                     if let Some(c) = cols {
                         let shown = if c.len() > 2 { format!("→ {}, {} +{}", c[0], c[1], c.len() - 2) } else { format!("→ {}", c.join(", ")) };
                         b = b.child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font_family.clone()).text_color(theme.primary).child(shown));
@@ -592,7 +651,8 @@ impl Render for LineageView {
             .items_center()
             .text_sm()
             .when(!self.back.is_empty(), |d| d.child(Button::new("lin-back").label(t!("lin.back").to_string()).ghost().xsmall().on_click(cx.listener(|v, _, _, cx| v.go_back(cx)))))
-            .child(div().font_family(theme.mono_font_family.clone()).child(self.graph.focus.label()))
+            // The table view header already names the table; only after moving to another object.
+            .when(!self.back.is_empty(), |d| d.child(div().font_family(theme.mono_font_family.clone()).child(self.graph.focus.label())))
             .child(self.side_status(Dir::Up, &theme))
             .child(self.side_status(Dir::Down, &theme))
             .when_some(col_label, |d, c| {
@@ -642,19 +702,62 @@ impl Render for LineageView {
                             .overflow_scroll()
                             .track_scroll(&self.scroll)
                             .p(px(PAD))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|v, _, window, cx| v.focus.focus(window, cx)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|v, ev: &MouseDownEvent, window, cx| {
+                                    v.focus.focus(window, cx);
+                                    v.pan = Some((ev.position, v.scroll.offset()));
+                                    v.pulled_at = None;
+                                }),
+                            )
+                            .on_mouse_move(cx.listener(|v, ev: &MouseMoveEvent, _, cx| {
+                                let Some((start, offset)) = v.pan else { return };
+                                if ev.pressed_button != Some(MouseButton::Left) {
+                                    v.pan = None;
+                                    return;
+                                }
+                                let want = offset + (ev.position - start);
+                                v.scroll.set_offset(want);
+                                if let Some(dir) = v.min_offset_x().and_then(|min| edge_pull(f32::from(want.x), min, PULL)) {
+                                    v.expand_edge(dir, cx);
+                                }
+                                cx.notify();
+                            }))
+                            .on_mouse_up(MouseButton::Left, cx.listener(|v, _, _, _| v.pan = None))
+                            .when(self.pan.is_some(), |d| d.cursor_grabbing())
+                            .when(self.pan.is_none(), |d| d.cursor_grab())
                             .child(canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
                             // ⌘ + scroll zooms; registered on a child to run before the area's scrolling.
-                            .child(div().min_w_full().min_h_full().on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
-                                if ev.modifiers.platform {
-                                    cx.stop_propagation();
-                                    v.wheel(ev, cx);
-                                }
-                            })).child(content))
+                            .child(
+                                div()
+                                    .min_w_full()
+                                    .min_h_full()
+                                    .on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
+                                        if ev.modifiers.platform {
+                                            cx.stop_propagation();
+                                            v.wheel(ev, cx);
+                                            return;
+                                        }
+                                        // At an edge, keep pushing the same way: adds up until it opens that side.
+                                        let dx = f32::from(ev.delta.pixel_delta(px(16.0)).x);
+                                        let (x, min) = (f32::from(v.scroll.offset().x), v.min_offset_x().unwrap_or(0.0));
+                                        let at_edge = (dx > 0.0 && x >= -1.0) || (dx < 0.0 && x <= min + 1.0);
+                                        v.pull = if at_edge && v.pull.signum() != -dx.signum() { v.pull + dx } else { 0.0 };
+                                        if let Some(dir) = edge_pull(v.pull, 0.0, PULL) {
+                                            v.pull = 0.0;
+                                            v.expand_edge(dir, cx);
+                                        }
+                                    }))
+                                    .child(content),
+                            )
                             .into_any_element(),
                     })
                     .when(self.selected.is_some(), |d| {
-                        d.child(div().id("lin-details").w(px(320.)).h_full().overflow_y_scroll().border_l_1().border_color(theme.border).p_3().child(self.render_details(window, cx)))
+                        let close = cx.listener(|v, _, _, cx| {
+                            v.selected = None;
+                            cx.notify();
+                        });
+                        d.child(crate::frame::side_panel("lin-details", 320., close, self.render_details(window, cx), cx))
                     }),
             )
     }
@@ -671,16 +774,13 @@ impl LineageView {
                 let Some(m) = self.visible.more.iter().find(|m| m.parent == parent && m.dir == dir).cloned() else { return v_flex() };
                 v_flex().gap_1().child(div().font_weight(FontWeight::SEMIBOLD).child(t!("lin.hidden", n = m.hidden.len()).to_string())).children(m.hidden.into_iter().enumerate().map(|(j, k)| {
                     let key = k.clone();
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .text_sm()
-                        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(mono.clone()).child(k.label()))
-                        .child(Button::new(("lin-show", j)).label(t!("lin.show").to_string()).ghost().xsmall().on_click(cx.listener(move |v, _, _, cx| {
+                    h_flex().gap_2().items_center().text_sm().child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(mono.clone()).child(k.label())).child(
+                        Button::new(("lin-show", j)).label(t!("lin.show").to_string()).ghost().xsmall().on_click(cx.listener(move |v, _, _, cx| {
                             v.pinned.insert(key.clone());
                             v.relayout();
                             cx.notify();
-                        })))
+                        })),
+                    )
                 }))
             }
             Some(Sel::Node(k)) => {
@@ -691,8 +791,15 @@ impl LineageView {
                     .gap_1()
                     .child(div().font_family(mono.clone()).font_weight(FontWeight::SEMIBOLD).whitespace_normal().child(if o.masked { t!("lin.no_access").to_string() } else { k.name.clone() }))
                     .child(div().text_sm().text_color(theme.muted_foreground).child(if k.is_qualified() { format!("{}.{}", k.db, k.schema) } else { String::new() }))
-                    .child(h_flex().gap_1().child(Tag::secondary().small().child(o.kind.clone().unwrap_or_else(|| k.domain.clone()))).when_some(dbt.clone(), |d, (n, layer)| d.child(Tag::info().small().child(format!("dbt {} · {layer}", n.resource_type)))))
-                    .when_some(dbt.as_ref().map(|(n, _)| n.description.clone()).filter(|d| !d.is_empty()), |d, desc| d.child(div().text_sm().whitespace_normal().text_color(theme.muted_foreground).child(desc)));
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(Tag::secondary().small().child(o.kind.clone().unwrap_or_else(|| k.domain.clone())))
+                            .when_some(dbt.clone(), |d, (n, layer)| d.child(Tag::info().small().child(format!("dbt {} · {layer}", n.resource_type)))),
+                    )
+                    .when_some(dbt.as_ref().map(|(n, _)| n.description.clone()).filter(|d| !d.is_empty()), |d, desc| {
+                        d.child(div().text_sm().whitespace_normal().text_color(theme.muted_foreground).child(desc))
+                    });
                 let table_like = o.is_table_like();
                 let can_center = !o.masked && k.is_qualified() && k != self.graph.focus;
                 if table_like || can_center {
@@ -701,8 +808,12 @@ impl LineageView {
                         h_flex()
                             .pt_2()
                             .gap_2()
-                            .when(table_like, |d| d.child(Button::new("lin-open").label(t!("lin.open_table").to_string()).outline().xsmall().on_click(cx.listener(move |v, _, window, cx| v.open(&k1, window, cx)))))
-                            .when(can_center, |d| d.child(Button::new("lin-center").label(t!("lin.center").to_string()).ghost().xsmall().on_click(cx.listener(move |v, _, _, cx| v.center_on(&k2, cx))))),
+                            .when(table_like, |d| {
+                                d.child(Button::new("lin-open").label(t!("lin.open_table").to_string()).outline().xsmall().on_click(cx.listener(move |v, _, window, cx| v.open(&k1, window, cx))))
+                            })
+                            .when(can_center, |d| {
+                                d.child(Button::new("lin-center").label(t!("lin.center").to_string()).ghost().xsmall().on_click(cx.listener(move |v, _, _, cx| v.center_on(&k2, cx))))
+                            }),
                     );
                 }
 
@@ -711,9 +822,27 @@ impl LineageView {
                 out = match self.defs.get(&k) {
                     Some(Load::Ready(Some((label, sql)))) => {
                         let (open_query, sql2) = (self.open_query.clone(), sql.clone());
-                        out.child(h_flex().gap_2().items_center().child(div().flex_1().text_sm().child(label.clone())).child(Button::new("lin-def-open").label(t!("lin.open_sql").to_string()).ghost().xsmall().on_click(move |_, w, cx| open_query(sql2.clone(), w, cx))))
-                            .child(div().id("lin-def").max_h(px(220.)).overflow_y_scroll().p_2().rounded(theme.radius).bg(theme.secondary).text_xs().font_family(mono.clone()).whitespace_normal().child(sql.clone()))
-                            .child(div().text_xs().text_color(theme.muted_foreground).whitespace_normal().child(t!("lin.def_note").to_string()))
+                        out.child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(div().flex_1().text_sm().child(label.clone()))
+                                .child(Button::new("lin-def-open").label(t!("lin.open_sql").to_string()).ghost().xsmall().on_click(move |_, w, cx| open_query(sql2.clone(), w, cx))),
+                        )
+                        .child(
+                            div()
+                                .id("lin-def")
+                                .max_h(px(220.))
+                                .overflow_y_scroll()
+                                .p_2()
+                                .rounded(theme.radius)
+                                .bg(theme.secondary)
+                                .text_xs()
+                                .font_family(mono.clone())
+                                .whitespace_normal()
+                                .child(sql.clone()),
+                        )
+                        .child(div().text_xs().text_color(theme.muted_foreground).whitespace_normal().child(t!("lin.def_note").to_string()))
                     }
                     Some(Load::Ready(None)) => out.child(div().text_sm().text_color(theme.muted_foreground).whitespace_normal().child(t!("lin.no_definition").to_string())),
                     Some(Load::Failed(m)) => out.child(div().text_xs().text_color(theme.danger).whitespace_normal().child(m.clone())),
@@ -728,7 +857,11 @@ impl LineageView {
                 }
                 for (pi, p) in parents.iter().enumerate() {
                     let masked = self.graph.objs.get(p).is_some_and(|o| o.masked);
-                    let mut row = v_flex().gap_1().child(div().text_sm().font_family(mono.clone()).overflow_hidden().text_ellipsis().whitespace_nowrap().child(if masked { t!("lin.no_access").to_string() } else { p.label() }));
+                    let mut row = v_flex().gap_1().child(div().text_sm().font_family(mono.clone()).overflow_hidden().text_ellipsis().whitespace_nowrap().child(if masked {
+                        t!("lin.no_access").to_string()
+                    } else {
+                        p.label()
+                    }));
                     for (qi, proc_) in self.graph.processes(p, &k).iter().enumerate() {
                         let ids = lineage::query_ids(proc_);
                         if ids.is_empty() {
@@ -744,7 +877,13 @@ impl LineageView {
                                     .gap_1()
                                     .items_center()
                                     .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().font_family(mono.clone()).child(id))
-                                    .child(Button::new(("lin-copy", n)).label(t!("lin.copy").to_string()).ghost().xsmall().on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                                    .child(
+                                        Button::new(("lin-copy", n))
+                                            .label(t!("lin.copy").to_string())
+                                            .ghost()
+                                            .xsmall()
+                                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
+                                    )
                                     .child(Button::new(("lin-hist", n)).label(t!("lin.open_sql").to_string()).ghost().xsmall().on_click(move |_, w, cx| open_query(lineage::history_sql(&id2), w, cx))),
                             );
                         }
@@ -782,13 +921,14 @@ impl LineageView {
                         Some(Load::Ready(cols)) => out.children(cols.iter().enumerate().map(|(ci, c)| {
                             let on = cur.as_ref().is_some_and(|(ck, cc)| *ck == k && cc == c);
                             let (key, col) = (k.clone(), c.clone());
-                            Button::new(("lin-col", ci)).label(c.clone()).ghost().xsmall().selected(on).on_click(cx.listener(move |v, _, _, cx| {
+                            // In a row: stretched to the panel width, the label ended up centered.
+                            h_flex().child(Button::new(("lin-col", ci)).label(c.clone()).ghost().xsmall().selected(on).on_click(cx.listener(move |v, _, _, cx| {
                                 if on {
                                     v.clear_column(cx);
                                 } else {
                                     v.select_column(key.clone(), col.clone(), cx);
                                 }
-                            }))
+                            })))
                         })),
                         Some(Load::Failed(m)) => out.child(div().text_xs().text_color(theme.danger).whitespace_normal().child(m.clone())),
                         _ => out.child(Spinner::new().xsmall()),
@@ -797,5 +937,33 @@ impl LineageView {
                 out
             }
         }
+    }
+}
+
+/// How far past an edge the user has to push before that side opens.
+const PULL: f32 = 120.0;
+
+/// `x` past 0 (left edge) by more than `pull` → upstream; below `min` (right edge) → downstream.
+fn edge_pull(x: f32, min: f32, pull: f32) -> Option<Dir> {
+    if x > pull {
+        Some(Dir::Up)
+    } else if x < min - pull {
+        Some(Dir::Down)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Dir, edge_pull};
+
+    #[test]
+    fn pushing_past_an_edge_picks_that_side() {
+        assert_eq!(edge_pull(121.0, -500.0, 120.0), Some(Dir::Up), "past the left edge");
+        assert_eq!(edge_pull(-621.0, -500.0, 120.0), Some(Dir::Down), "past the right edge");
+        assert_eq!(edge_pull(100.0, -500.0, 120.0), None, "not far enough");
+        assert_eq!(edge_pull(-300.0, -500.0, 120.0), None, "inside the range");
+        assert_eq!(edge_pull(-121.0, 0.0, 120.0), Some(Dir::Down), "graph fits: either side can still be pulled");
     }
 }

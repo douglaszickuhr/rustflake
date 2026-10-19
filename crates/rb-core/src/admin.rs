@@ -142,9 +142,7 @@ impl DirectGrant {
 
 /// `SHOW GRANTS TO USER` with the origin of each role.
 pub fn parse_user_grants(names: &[String], rows: &Rows) -> Vec<DirectGrant> {
-    rows.iter()
-        .filter_map(|r| Some(DirectGrant { role: unquote(opt(names, r, "role")?), granted_by: opt(names, r, "granted_by"), created_on: opt(names, r, "created_on") }))
-        .collect()
+    rows.iter().filter_map(|r| Some(DirectGrant { role: unquote(opt(names, r, "role")?), granted_by: opt(names, r, "granted_by"), created_on: opt(names, r, "created_on") })).collect()
 }
 
 pub fn parse_user_roles(names: &[String], rows: &Rows) -> Vec<String> {
@@ -621,10 +619,7 @@ mod tests {
 
     #[test]
     fn effective_chain() {
-        assert_eq!(eff(&["ANALYST"], &[("ANALYST", "READER"), ("READER", "PUBLIC")]), vec![
-            ("READER".into(), "ANALYST → READER".into()),
-            ("PUBLIC".into(), "ANALYST → READER → PUBLIC".into()),
-        ]);
+        assert_eq!(eff(&["ANALYST"], &[("ANALYST", "READER"), ("READER", "PUBLIC")]), vec![("READER".into(), "ANALYST → READER".into()), ("PUBLIC".into(), "ANALYST → READER → PUBLIC".into()),]);
     }
 
     #[test]
@@ -713,7 +708,8 @@ mod tests {
 
     #[test]
     fn role_graph_from_account_usage() {
-        let (n, r) = t(&["GRANTEE_NAME", "NAME"], &[&[Some("ACCOUNTADMIN"), Some("SYSADMIN")], &[Some("SYSADMIN"), Some("DATA_ENG")], &[Some("ACCOUNTADMIN"), Some("SECURITYADMIN")], &[None, Some("X")]]);
+        let (n, r) =
+            t(&["GRANTEE_NAME", "NAME"], &[&[Some("ACCOUNTADMIN"), Some("SYSADMIN")], &[Some("SYSADMIN"), Some("DATA_ENG")], &[Some("ACCOUNTADMIN"), Some("SECURITYADMIN")], &[None, Some("X")]]);
         let g = parse_role_graph(&n, &r);
         assert_eq!(g["ACCOUNTADMIN"], vec!["SYSADMIN", "SECURITYADMIN"]);
         assert!(ROLE_GRAPH_SQL.contains("deleted_on is null"));
@@ -730,14 +726,7 @@ mod tests {
         let direct = vec!["IDP".to_string(), "ANALYST".to_string()];
         let eff = vec![er(&["IDP", "AREA"]), er(&["IDP", "AREA", "BASE"]), er(&["IDP", "AREA", "BASE", "RAW_B"]), er(&["IDP", "AREA", "BASE", "RAW_A"])];
         let rows: Vec<(String, usize, usize)> = role_tree(&direct, &eff).into_iter().map(|r| (r.name, r.depth, r.descendants)).collect();
-        assert_eq!(rows, vec![
-            ("ANALYST".into(), 0, 0),
-            ("IDP".into(), 0, 4),
-            ("AREA".into(), 1, 3),
-            ("BASE".into(), 2, 2),
-            ("RAW_A".into(), 3, 0),
-            ("RAW_B".into(), 3, 0),
-        ]);
+        assert_eq!(rows, vec![("ANALYST".into(), 0, 0), ("IDP".into(), 0, 4), ("AREA".into(), 1, 3), ("BASE".into(), 2, 2), ("RAW_A".into(), 3, 0), ("RAW_B".into(), 3, 0),]);
     }
 
     #[test]
@@ -763,7 +752,13 @@ mod tests {
 
     #[test]
     fn direct_grants_keep_who_granted_and_when() {
-        let (n, r) = t(&["created_on", "role", "granted_to", "grantee_name", "granted_by"], &[&[Some("2026-03-03 10:00:00"), Some("SANDBOX_ADMIN"), Some("USER"), Some("ANA"), Some("SECURITYADMIN")], &[None, Some("\"idp_fr\""), Some("USER"), Some("ANA"), Some("OKTA_PROVISIONER")]]);
+        let (n, r) = t(
+            &["created_on", "role", "granted_to", "grantee_name", "granted_by"],
+            &[
+                &[Some("2026-03-03 10:00:00"), Some("SANDBOX_ADMIN"), Some("USER"), Some("ANA"), Some("SECURITYADMIN")],
+                &[None, Some("\"idp_fr\""), Some("USER"), Some("ANA"), Some("OKTA_PROVISIONER")],
+            ],
+        );
         let g = parse_user_grants(&n, &r);
         assert_eq!(g[0], DirectGrant { role: "SANDBOX_ADMIN".into(), granted_by: Some("SECURITYADMIN".into()), created_on: Some("2026-03-03 10:00:00".into()) });
         assert_eq!(g[1].role, "idp_fr");

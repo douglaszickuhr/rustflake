@@ -1,4 +1,3 @@
-pub mod org_config;
 pub mod admin;
 pub mod batch;
 pub mod complete;
@@ -14,6 +13,7 @@ pub mod lexer;
 pub mod lineage;
 pub mod masking;
 pub mod metadata;
+pub mod org_config;
 pub mod picker;
 pub mod quick_open;
 pub mod secrets;

@@ -1,8 +1,13 @@
 //! Pure frame pieces: context bar text and environment color.
 
-use gpui_kit::Hsla;
+use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::*;
+use gpui_kit::{App, ClickEvent, Hsla, SharedString, Window, div, px};
 use rb_core::config::Environment;
 use rb_core::dialect::Dialect;
+use rust_i18n::t;
 
 use crate::appearance::palette;
 
@@ -67,4 +72,23 @@ mod tests {
         assert!(p[0].ends_with('…') && p[0].starts_with("ANALYTICS_ENGINEERING"));
         assert_eq!(p[1], "WH");
     }
+}
+
+/// Right-side detail panel: the × stays pinned at the top while the body scrolls.
+pub fn side_panel(id: &'static str, width: f32, on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static, body: impl IntoElement, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    v_flex()
+        .w(px(width))
+        .flex_shrink_0()
+        .h_full()
+        .border_l_1()
+        .border_color(theme.border)
+        .child(
+            h_flex()
+                .justify_end()
+                .px_2()
+                .pt_2()
+                .child(Button::new(SharedString::from(format!("{id}-close"))).icon(IconName::Close).ghost().xsmall().tooltip(t!("tv.close_panel").to_string()).on_click(on_close)),
+        )
+        .child(div().id(id).flex_1().min_h_0().overflow_y_scroll().px_4().pb_4().child(body))
 }

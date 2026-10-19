@@ -33,10 +33,5 @@ pub async fn tag_counts(s: &Session, org: &OrgConfig) -> Result<Vec<TagCount>, D
     let Some(sql) = org.tag_counts_sql() else { return Ok(Vec::new()) };
     let (names, rows) = s.query_named(&sql).await?;
     let col = |r: &[Option<String>], c: &str| names.iter().position(|n| n.eq_ignore_ascii_case(c)).and_then(|i| r.get(i).cloned().flatten());
-    Ok(rows
-        .iter()
-        .filter_map(|r| {
-            Some(TagCount { database: col(r, "database")?, schema: col(r, "schema")?, value: col(r, "value")?, columns: col(r, "columns")?.parse().ok()? })
-        })
-        .collect())
+    Ok(rows.iter().filter_map(|r| Some(TagCount { database: col(r, "database")?, schema: col(r, "schema")?, value: col(r, "value")?, columns: col(r, "columns")?.parse().ok()? })).collect())
 }

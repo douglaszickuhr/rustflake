@@ -1,16 +1,16 @@
-use std::ops::Range;
 use rust_i18n::t;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline, InputEvent};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableState};
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Icon, RopeExt as _, Sizable as _, h_flex, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -507,11 +507,8 @@ impl SqlTab {
     fn record_history(&self, outcomes: &[Outcome], src: &str, cx: &mut Context<Self>) {
         let path = history::history_path(self.conn_id());
         let ts = history::now_ms();
-        let entries: Vec<Entry> = outcomes
-            .iter()
-            .zip(&self.messages)
-            .map(|((r, _, _), m)| Entry { ts, sql: src[r.clone()].trim().to_string(), ms: m.ms, rows: m.rows.or(m.affected), error: m.error.clone() })
-            .collect();
+        let entries: Vec<Entry> =
+            outcomes.iter().zip(&self.messages).map(|((r, _, _), m)| Entry { ts, sql: src[r.clone()].trim().to_string(), ms: m.ms, rows: m.rows.or(m.affected), error: m.error.clone() }).collect();
         cx.background_spawn(async move {
             for e in &entries {
                 if let Err(err) = history::append(&path, e) {
@@ -669,7 +666,8 @@ impl Render for SqlTab {
                         i if i == n && msgs => Pane::Messages,
                         _ => Pane::Plan,
                     };
-                    if matches!(t.active, Pane::Plan) && t.plan.is_none()
+                    if matches!(t.active, Pane::Plan)
+                        && t.plan.is_none()
                         && let Some(id) = qid
                     {
                         t.actual_plan(id, window, cx);
@@ -678,8 +676,7 @@ impl Render for SqlTab {
                 })),
                 |bar, p| bar.child(Tab::new().label(p.title.clone())),
             );
-            bar.when(msgs, |b| b.child(Tab::new().label(t!("results.messages").to_string())))
-                .when(has_plan, |b| b.child(Tab::new().label(t!("plan.tab").to_string())))
+            bar.when(msgs, |b| b.child(Tab::new().label(t!("results.messages").to_string()))).when(has_plan, |b| b.child(Tab::new().label(t!("plan.tab").to_string())))
         });
         let content = match self.active {
             Pane::Result(i) => {
@@ -772,9 +769,7 @@ impl Render for SqlTab {
                     .when_some(grid_error, |d, e| d.child(e))
                     .child(div().flex_1())
                     .when_some(query_id, |d, id| d.child(query_id_button("footer-qid", id)))
-                    .when(self.running, |d| {
-                        d.child(Button::new("cancel").label(format!("{} ⌘.", t!("common.cancel"))).ghost().on_click(cx.listener(|t, _, _, _| t.cancel())))
-                    }),
+                    .when(self.running, |d| d.child(Button::new("cancel").label(format!("{} ⌘.", t!("common.cancel"))).ghost().on_click(cx.listener(|t, _, _, _| t.cancel())))),
             )
     }
 }

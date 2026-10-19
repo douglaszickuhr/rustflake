@@ -292,7 +292,21 @@ mod tests {
             &["state", "NAME", "size", "min_cluster_count", "max_cluster_count", "running", "queued", "auto_suspend", "auto_resume", "scaling_policy", "owner", "resource_monitor", "type"],
             &[
                 &[Some("SUSPENDED"), Some("Z_WH"), Some("X-Small"), Some("1"), Some("1"), Some("0"), Some("0"), None, Some("true"), Some("STANDARD"), Some("SYSADMIN"), Some("null"), Some("STANDARD")],
-                &[Some("STARTED"), Some("A_WH"), Some("Medium"), Some("1"), Some("3"), Some("3"), Some("1"), Some("600"), Some("false"), Some("ECONOMY"), Some("SYSADMIN"), Some("RM1"), Some("STANDARD")],
+                &[
+                    Some("STARTED"),
+                    Some("A_WH"),
+                    Some("Medium"),
+                    Some("1"),
+                    Some("3"),
+                    Some("3"),
+                    Some("1"),
+                    Some("600"),
+                    Some("false"),
+                    Some("ECONOMY"),
+                    Some("SYSADMIN"),
+                    Some("RM1"),
+                    Some("STANDARD"),
+                ],
             ],
         );
         let w = parse_warehouses(&n, &r);

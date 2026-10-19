@@ -37,10 +37,7 @@ pub fn one_line(s: &str, max_chars: usize) -> String {
 /// everything else as is; cuts at `max_chars` with `…`.
 pub fn detail_text(s: &str, max_chars: usize) -> String {
     let t = s.trim_start();
-    let pretty = (t.starts_with('{') || t.starts_with('['))
-        .then(|| serde_json::from_str::<serde_json::Value>(t).ok())
-        .flatten()
-        .and_then(|v| serde_json::to_string_pretty(&v).ok());
+    let pretty = (t.starts_with('{') || t.starts_with('[')).then(|| serde_json::from_str::<serde_json::Value>(t).ok()).flatten().and_then(|v| serde_json::to_string_pretty(&v).ok());
     let s = pretty.as_deref().unwrap_or(s);
     match s.char_indices().nth(max_chars) {
         Some((i, _)) => format!("{}…", &s[..i]),
@@ -49,8 +46,7 @@ pub fn detail_text(s: &str, max_chars: usize) -> String {
 }
 
 fn is_textual(ty: &Type) -> bool {
-    matches!(*ty, Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::JSON | Type::JSONB | Type::XML)
-        || matches!(ty.kind(), Kind::Enum(_))
+    matches!(*ty, Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::JSON | Type::JSONB | Type::XML) || matches!(ty.kind(), Kind::Enum(_))
 }
 
 fn decode(ty: &Type, r: &[u8]) -> Option<String> {
@@ -81,11 +77,7 @@ fn decode(ty: &Type, r: &[u8]) -> Option<String> {
             let t = timestamp(i64::from_be_bytes(be(r, 0)?));
             if t.ends_with("infinity") { t } else { t + "+00" }
         }
-        Type::INTERVAL => interval(
-            i64::from_be_bytes(be(r, 0)?),
-            i32::from_be_bytes(be(r, 8)?),
-            i32::from_be_bytes(be(r, 12)?),
-        ),
+        Type::INTERVAL => interval(i64::from_be_bytes(be(r, 0)?), i32::from_be_bytes(be(r, 8)?), i32::from_be_bytes(be(r, 12)?)),
         _ => return None,
     })
 }
@@ -268,9 +260,7 @@ fn array_dim(elem: &Type, r: &[u8], dims: &[usize], pos: &mut usize, out: &mut S
         let v = r.get(*pos..*pos + len as usize)?;
         *pos += len as usize;
         let s = cell_text(elem, v);
-        let needs_quotes = s.is_empty()
-            || s.eq_ignore_ascii_case("null")
-            || s.contains(|c: char| matches!(c, '{' | '}' | ',' | '"' | '\\') || c.is_whitespace());
+        let needs_quotes = s.is_empty() || s.eq_ignore_ascii_case("null") || s.contains(|c: char| matches!(c, '{' | '}' | ',' | '"' | '\\') || c.is_whitespace());
         if needs_quotes {
             out.push('"');
             for c in s.chars() {

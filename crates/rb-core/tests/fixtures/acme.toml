@@ -22,6 +22,8 @@ write = "_RW"
 [classification]
 tag = "GOVERNANCE.TAGS.DATA_CLASSIFICATION"
 labels = ["Public", "Internal", "Confidential", "Restricted"]
+# Badge color per level (same order as labels): muted, info, success, warning, danger or "#RRGGBB".
+colors = ["muted", "muted", "warning", "danger"]
 values = { "C-1 Public" = 1, "C-2 Internal" = 2, "C-3 Confidential" = 3, "C-4 Restricted" = 4, "CONFLICT" = 4, "UNCLASSIFIED" = 4 }
 
 [masking]

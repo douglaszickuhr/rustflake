@@ -49,7 +49,7 @@ pub fn parse_facts(names: &[String], rows: &Rows) -> Option<Facts> {
 
 pub fn columns_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
-        "select column_name, data_type, is_nullable, column_default, comment from {}.information_schema.columns where table_schema = {} and table_name = {} order by ordinal_position",
+        "select ordinal_position, column_name, data_type, is_nullable, column_default, comment from {}.information_schema.columns where table_schema = {} and table_name = {} order by ordinal_position",
         quote_ident(db),
         sql_str(schema),
         sql_str(table)
@@ -58,6 +58,8 @@ pub fn columns_sql(db: &str, schema: &str, table: &str) -> String {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ColInfo {
+    /// `ordinal_position`, 1..n.
+    pub position: usize,
     pub name: String,
     pub kind: String,
     pub nullable: bool,
@@ -69,6 +71,7 @@ pub fn parse_columns(names: &[String], rows: &Rows) -> Vec<ColInfo> {
     rows.iter()
         .filter_map(|r| {
             Some(ColInfo {
+                position: field(names, r, "ordinal_position").and_then(|v| v.parse().ok()).unwrap_or_default(),
                 name: opt(names, r, "column_name")?,
                 kind: opt(names, r, "data_type").unwrap_or_default(),
                 nullable: field(names, r, "is_nullable").is_some_and(|v| v.eq_ignore_ascii_case("YES")),
@@ -82,7 +85,8 @@ pub fn parse_columns(names: &[String], rows: &Rows) -> Vec<ColInfo> {
 /// Column tags, live (INFORMATION_SCHEMA function; ACCOUNT_USAGE lags hours).
 pub fn tags_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
-        "select column_name, tag_name, tag_value, tag_database, tag_schema from table({}.information_schema.tag_references_all_columns({}, 'table'))",
+        // `*`: apply_method only exists on newer accounts; missing = no "assigned by".
+        "select * from table({}.information_schema.tag_references_all_columns({}, 'table'))",
         quote_ident(db),
         sql_str(&fq(db, schema, table))
     )
@@ -108,17 +112,41 @@ pub fn parse_class_tags(org: &OrgConfig, names: &[String], rows: &Rows) -> HashM
         .collect()
 }
 
-/// The column's other tags, for the panel; the classification one becomes the chip.
-pub fn parse_all_tags(org: &OrgConfig, names: &[String], rows: &Rows) -> HashMap<String, Vec<(String, String)>> {
-    let mut m: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for r in rows {
-        let (Some(col), Some(tag)) = (opt(names, r, "column_name"), opt(names, r, "tag_name")) else { continue };
-        // A value outside `values` does not become a chip: it stays here so it doesn't vanish.
-        if is_class(org, names, r) && field(names, r, "tag_value").and_then(|v| org.tag_level(v)).is_some() {
-            continue;
-        }
-        m.entry(col).or_default().push((tag, opt(names, r, "tag_value").unwrap_or_default()));
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ColTag {
+    pub name: String,
+    pub value: String,
+    pub database: String,
+    pub schema: String,
+    /// MANUAL, PROPAGATED, CLASSIFIED, INHERITED… (`apply_method`), when the account has it.
+    pub method: Option<String>,
+    /// Where it is set: COLUMN, or TABLE/SCHEMA/DATABASE when inherited (`level`).
+    pub level: Option<String>,
+}
+
+impl ColTag {
+    /// Set on the column itself (by hand, propagation or classification): what Snowsight lists.
+    pub fn on_column(&self) -> bool {
+        self.level.as_deref().is_none_or(|l| l.eq_ignore_ascii_case("COLUMN"))
     }
+}
+
+/// Every tag of each column, sorted by name like Snowsight's Tags column.
+pub fn parse_all_tags(names: &[String], rows: &Rows) -> HashMap<String, Vec<ColTag>> {
+    let mut m: HashMap<String, Vec<ColTag>> = HashMap::new();
+    for r in rows {
+        let (Some(col), Some(name)) = (opt(names, r, "column_name"), opt(names, r, "tag_name")) else { continue };
+        let s = |k| opt(names, r, k).unwrap_or_default();
+        m.entry(col).or_default().push(ColTag {
+            name,
+            value: s("tag_value"),
+            database: s("tag_database"),
+            schema: s("tag_schema"),
+            method: opt(names, r, "apply_method"),
+            level: opt(names, r, "level"),
+        });
+    }
+    m.values_mut().for_each(|v| v.sort());
     m
 }
 
@@ -157,13 +185,7 @@ pub struct DefRow {
 }
 
 /// Snowflake columns rule; dbt comes in through the description (preferred) and the tests.
-pub fn merge(
-    cols: &[ColInfo],
-    dbt_cols: &[(String, String)],
-    tags: &HashMap<String, (u8, String)>,
-    masking: &HashMap<String, String>,
-    tests: &HashMap<String, Vec<String>>,
-) -> Vec<DefRow> {
+pub fn merge(cols: &[ColInfo], dbt_cols: &[(String, String)], tags: &HashMap<String, (u8, String)>, masking: &HashMap<String, String>, tests: &HashMap<String, Vec<String>>) -> Vec<DefRow> {
     let up = |m: &HashMap<String, Vec<String>>| m.iter().map(|(k, v)| (k.to_uppercase(), v.clone())).collect::<HashMap<_, _>>();
     let tests = up(tests);
     cols.iter()
@@ -189,6 +211,65 @@ pub fn merge(
         .collect()
 }
 
+/// Readable test name: drops the package and the "expect_column_values_to_be_" style prefixes,
+/// `_` becomes a space ("dbt_expectations.expect_column_values_to_be_unique" → "unique").
+pub fn short_test_name(kind: &str) -> String {
+    let base = kind.rsplit('.').next().unwrap_or(kind);
+    let mut s = base;
+    for p in ["expect_column_values_to_be_", "expect_column_values_to_", "expect_column_value_", "expect_column_to_", "expect_column_", "expect_"] {
+        if let Some(rest) = s.strip_prefix(p).filter(|r| !r.is_empty()) {
+            s = rest;
+            break;
+        }
+    }
+    s.replace('_', " ")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DefSort {
+    #[default]
+    Position,
+    Name,
+    Type,
+    Description,
+    Tags,
+    Policy,
+}
+
+/// Definition rows to show: `query` matches (any word, case-insensitive) anything on screen or in the
+/// panel (name, type, description, comment, tags, policy, tests); then sorted, empty values last.
+pub fn def_view(rows: Vec<(DefRow, Vec<ColTag>)>, query: &str, sort: DefSort, asc: bool) -> Vec<(DefRow, Vec<ColTag>)> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut out: Vec<_> = rows
+        .into_iter()
+        .filter(|(r, tags)| {
+            let mut hay =
+                format!("{} {} {} {} {} {}", r.col.name, r.col.kind, r.desc.as_deref().unwrap_or(""), r.col.comment.as_deref().unwrap_or(""), r.masked_by.as_deref().unwrap_or(""), r.tests.join(" "));
+            for t in tags {
+                hay.push_str(&format!(" {} {}", t.name, t.value));
+            }
+            let hay = hay.to_lowercase();
+            words.iter().all(|w| hay.contains(w.as_str()))
+        })
+        .collect();
+    let key = |(r, tags): &(DefRow, Vec<ColTag>)| -> Option<String> {
+        match sort {
+            DefSort::Position => Some(format!("{:09}", r.col.position)),
+            DefSort::Name => Some(r.col.name.to_lowercase()),
+            DefSort::Type => Some(r.col.kind.to_lowercase()),
+            DefSort::Description => r.desc.as_ref().map(|d| d.to_lowercase()),
+            DefSort::Tags => tags.iter().find(|t| t.on_column()).map(|t| format!("{} {}", t.name, t.value).to_lowercase()),
+            DefSort::Policy => r.masked_by.as_ref().map(|p| p.rsplit('.').next().unwrap_or(p).to_lowercase()),
+        }
+    };
+    out.sort_by(|a, b| match (key(a), key(b)) {
+        (Some(x), Some(y)) if asc => x.cmp(&y),
+        (Some(x), Some(y)) => y.cmp(&x),
+        (x, y) => x.is_none().cmp(&y.is_none()),
+    });
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Summary {
     pub columns: usize,
@@ -207,10 +288,7 @@ pub fn summary(rows: &[DefRow]) -> Summary {
 }
 
 pub fn column_lineage_sql(db: &str, schema: &str, table: &str, column: &str) -> String {
-    format!(
-        "select * from table(snowflake.core.get_lineage({}, 'COLUMN', 'UPSTREAM', 5))",
-        sql_str(&format!("{}.{}", fq(db, schema, table), quote_ident(column)))
-    )
+    format!("select * from table(snowflake.core.get_lineage({}, 'COLUMN', 'UPSTREAM', 5))", sql_str(&format!("{}.{}", fq(db, schema, table), quote_ident(column))))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -231,7 +309,11 @@ pub fn parse_column_lineage(names: &[String], rows: &Rows) -> Vec<LinNode> {
         let (db, schema) = (opt(names, r, "source_object_database").unwrap_or_default(), opt(names, r, "source_object_schema").unwrap_or_default());
         // Self-edge only if it is truly the same object (database and schema too).
         let same = |c: &str, v: &str| opt(names, r, c).is_none_or(|x| x == v);
-        if same("target_object_database", &db) && same("target_object_schema", &schema) && Some(&object) == opt(names, r, "target_object_name").as_ref() && Some(&column) == opt(names, r, "target_column_name").as_ref() {
+        if same("target_object_database", &db)
+            && same("target_object_schema", &schema)
+            && Some(&object) == opt(names, r, "target_object_name").as_ref()
+            && Some(&column) == opt(names, r, "target_column_name").as_ref()
+        {
             continue;
         }
         let distance = opt(names, r, "distance").and_then(|d| d.parse().ok()).unwrap_or(0);
@@ -272,7 +354,7 @@ mod tests {
     }
 
     fn cols() -> Vec<ColInfo> {
-        let c = |n: &str, comment: Option<&str>| ColInfo { name: n.into(), kind: "VARCHAR".into(), nullable: true, default: None, comment: comment.map(String::from) };
+        let c = |n: &str, comment: Option<&str>| ColInfo { position: 0, name: n.into(), kind: "VARCHAR".into(), nullable: true, default: None, comment: comment.map(String::from) };
         vec![c("USAGE_DATE", None), c("REGION", Some("Region code")), c("ACCOUNT_ID", Some("acct")), c("_LOADED_AT", None)]
     }
 
@@ -300,7 +382,10 @@ mod tests {
     fn only_the_classification_tag_and_masking_policies_count() {
         let (n, r) = t(
             &["COLUMN_NAME", "TAG_NAME", "TAG_VALUE", "TAG_DATABASE", "TAG_SCHEMA"],
-            &[&[Some("A"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("GOVERNANCE"), Some("TAGS")], &[Some("B"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("OTHER"), Some("TAGS")]],
+            &[
+                &[Some("A"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("GOVERNANCE"), Some("TAGS")],
+                &[Some("B"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("OTHER"), Some("TAGS")],
+            ],
         );
         let tg = parse_class_tags(&crate::org_config::acme(), &n, &r);
         assert_eq!(tg.len(), 1, "same name in another database is not the org's tag");
@@ -335,7 +420,17 @@ mod tests {
     #[test]
     fn same_named_objects_in_other_databases_are_distinct() {
         let (n, r) = t(
-            &["SOURCE_OBJECT_DATABASE", "SOURCE_OBJECT_SCHEMA", "SOURCE_OBJECT_NAME", "SOURCE_COLUMN_NAME", "TARGET_OBJECT_DATABASE", "TARGET_OBJECT_SCHEMA", "TARGET_OBJECT_NAME", "TARGET_COLUMN_NAME", "DISTANCE"],
+            &[
+                "SOURCE_OBJECT_DATABASE",
+                "SOURCE_OBJECT_SCHEMA",
+                "SOURCE_OBJECT_NAME",
+                "SOURCE_COLUMN_NAME",
+                "TARGET_OBJECT_DATABASE",
+                "TARGET_OBJECT_SCHEMA",
+                "TARGET_OBJECT_NAME",
+                "TARGET_COLUMN_NAME",
+                "DISTANCE",
+            ],
             &[
                 &[Some("RAW"), Some("S"), Some("ORDERS"), Some("ID"), Some("STG"), Some("S"), Some("ORDERS"), Some("ID"), Some("2")],
                 &[Some("STG"), Some("S"), Some("ORDERS"), Some("ID"), Some("M"), Some("S"), Some("ORDERS"), Some("ID"), Some("1")],
@@ -346,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn all_column_tags_are_kept_for_the_panel() {
+    fn all_column_tags_are_kept_sorted_by_name() {
         let (n, r) = t(
             &["COLUMN_NAME", "TAG_NAME", "TAG_VALUE", "TAG_DATABASE", "TAG_SCHEMA"],
             &[
@@ -356,12 +451,55 @@ mod tests {
             ],
         );
         let a = crate::org_config::acme();
-        let all = parse_all_tags(&a, &n, &r);
-        assert_eq!(all["A"], vec![("OWNER_TEAM".to_string(), "SALES".to_string()), ("PII".to_string(), "False".to_string())]);
-        assert!(!all.contains_key("B"), "the classification one already shows in the chip");
+        let all = parse_all_tags(&n, &r);
+        let nv = |c: &str| all[c].iter().map(|t| (t.name.as_str(), t.value.as_str())).collect::<Vec<_>>();
+        assert_eq!(nv("A"), vec![("OWNER_TEAM", "SALES"), ("PII", "False")]);
+        assert_eq!(nv("B"), vec![("DATA_CLASSIFICATION", "C-2 Internal")], "classification is a tag like any other");
+        assert_eq!((all["B"][0].database.as_str(), all["B"][0].method.as_deref()), ("GOVERNANCE", None), "no apply_method column = None");
+        assert!(all["B"][0].on_column(), "no level column = counts as the column's own");
+        let (n, r) = t(
+            &["COLUMN_NAME", "TAG_NAME", "TAG_VALUE", "LEVEL"],
+            &[&[Some("A"), Some("PWI"), Some("False"), Some("SCHEMA")], &[Some("A"), Some("SECURITY_FIELD_CATEGORY"), Some("CONFLICT"), Some("COLUMN")]],
+        );
+        let own: Vec<_> = parse_all_tags(&n, &r)["A"].iter().filter(|t| t.on_column()).map(|t| t.name.clone()).collect();
+        assert_eq!(own, vec!["SECURITY_FIELD_CATEGORY"], "inherited from schema/table is not the column's");
         assert!(!parse_class_tags(&a, &n, &r).contains_key("A"), "the other tags are not classification");
-        assert!(parse_all_tags(&crate::org_config::OrgConfig::none(), &n, &r).contains_key("B"), "without an org every tag is just a tag");
-        let (n, r) = t(&["COLUMN_NAME", "TAG_NAME", "TAG_VALUE", "TAG_DATABASE", "TAG_SCHEMA"], &[&[Some("C"), Some("DATA_CLASSIFICATION"), Some("C-9 Secret"), Some("GOVERNANCE"), Some("TAGS")]]);
-        assert_eq!(parse_all_tags(&a, &n, &r)["C"], vec![("DATA_CLASSIFICATION".to_string(), "C-9 Secret".to_string())], "unknown value stays visible");
+    }
+
+    #[test]
+    fn def_view_searches_everything_and_sorts_empty_last() {
+        let row = |pos, name: &str, desc: Option<&str>, policy: Option<&str>| DefRow {
+            col: ColInfo { position: pos, name: name.into(), kind: "TEXT".into(), nullable: true, default: None, comment: None },
+            desc: desc.map(String::from),
+            source: if desc.is_some() { DescSource::Dbt } else { DescSource::None },
+            level: None,
+            tag: None,
+            masked_by: policy.map(String::from),
+            tests: vec![],
+        };
+        let tag = |n: &str, v: &str| ColTag { name: n.into(), value: v.into(), database: "D".into(), schema: "S".into(), method: None, level: Some("COLUMN".into()) };
+        let rows = vec![
+            (row(2, "B_COL", Some("billing city"), Some("DB.SC.MASK_X")), vec![tag("SECURITY_FIELD_CATEGORY", "CONFLICT")]),
+            (row(1, "A_COL", None, None), vec![]),
+            (row(3, "C_COL", Some("country"), None), vec![]),
+        ];
+        let names = |v: Vec<(DefRow, Vec<ColTag>)>| v.into_iter().map(|(r, _)| r.col.name).collect::<Vec<_>>();
+        assert_eq!(names(def_view(rows.clone(), "", DefSort::Position, true)), ["A_COL", "B_COL", "C_COL"]);
+        assert_eq!(names(def_view(rows.clone(), "", DefSort::Position, false)), ["C_COL", "B_COL", "A_COL"]);
+        assert_eq!(names(def_view(rows.clone(), "conflict", DefSort::Position, true)), ["B_COL"], "tag value");
+        assert_eq!(names(def_view(rows.clone(), "mask_x", DefSort::Position, true)), ["B_COL"], "policy");
+        assert_eq!(names(def_view(rows.clone(), "COUNTRY c_col", DefSort::Position, true)), ["C_COL"], "all words, any case");
+        assert_eq!(names(def_view(rows.clone(), "", DefSort::Description, true)), ["B_COL", "C_COL", "A_COL"], "no description last");
+        assert_eq!(names(def_view(rows.clone(), "", DefSort::Description, false)), ["C_COL", "B_COL", "A_COL"], "still last when descending");
+        assert_eq!(names(def_view(rows, "", DefSort::Policy, true))[0], "B_COL");
+    }
+
+    #[test]
+    fn test_names_are_shortened() {
+        assert_eq!(short_test_name("dbt_expectations.expect_column_values_to_be_unique"), "unique");
+        assert_eq!(short_test_name("expect_column_values_to_match_regex"), "match regex");
+        assert_eq!(short_test_name("not_null"), "not null");
+        assert_eq!(short_test_name("accepted_values"), "accepted values");
+        assert_eq!(short_test_name("expect_"), "expect ", "nothing left after the prefix: keep it");
     }
 }

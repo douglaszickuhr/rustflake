@@ -121,12 +121,7 @@ impl DefinitionProvider for SqlDefinition {
         let origin = lsp_types::Range { start: text.offset_to_position(range.start), end: text.offset_to_position(range.end) };
         // The URI only identifies "open table"; which table lives in `target`.
         let Ok(target_uri) = "rustflake:table".parse() else { return Task::ready(Ok(Vec::new())) };
-        let link = lsp_types::LocationLink {
-            origin_selection_range: Some(origin),
-            target_uri,
-            target_range: Default::default(),
-            target_selection_range: Default::default(),
-        };
+        let link = lsp_types::LocationLink { origin_selection_range: Some(origin), target_uri, target_range: Default::default(), target_selection_range: Default::default() };
         Task::ready(Ok(vec![link]))
     }
 }

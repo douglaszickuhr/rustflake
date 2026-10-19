@@ -146,10 +146,7 @@ impl ResultSet {
             })
             .collect();
         let line = |vals: &mut dyn Iterator<Item = &str>, right: bool| {
-            let parts: Vec<String> = vals
-                .zip(&cols)
-                .map(|(v, &(w, num))| if right && num { format!("{v:>w$}") } else { format!("{v:<w$}") })
-                .collect();
+            let parts: Vec<String> = vals.zip(&cols).map(|(v, &(w, num))| if right && num { format!("{v:>w$}") } else { format!("{v:<w$}") }).collect();
             parts.join("|").trim_end().to_string()
         };
         let mut out = line(&mut self.columns.iter().map(|c| c.name.as_str()), false);
@@ -191,10 +188,7 @@ mod tests {
     use super::*;
 
     fn cols() -> Arc<[ColumnInfo]> {
-        Arc::from(vec![
-            ColumnInfo { name: "id".into(), type_: Type::INT4 },
-            ColumnInfo { name: "t".into(), type_: Type::TEXT },
-        ])
+        Arc::from(vec![ColumnInfo { name: "id".into(), type_: Type::INT4 }, ColumnInfo { name: "t".into(), type_: Type::TEXT }])
     }
 
     fn batch(rows: &[(i32, Option<&str>)]) -> Batch {
@@ -209,11 +203,7 @@ mod tests {
     #[test]
     fn text_table_aligns_and_cuts() {
         let rs = ResultSet::new(cols(), batch(&[(1, Some("ab")), (1234, None), (7, Some("a very long value here"))]), false);
-        assert_eq!(
-            rs.to_text_table(10),
-            "id  |t\n----+-----------\n   1|ab\n1234|\n   7|a very lon…\n",
-            "numbers right, text left, NULL empty, cut with …"
-        );
+        assert_eq!(rs.to_text_table(10), "id  |t\n----+-----------\n   1|ab\n1234|\n   7|a very lon…\n", "numbers right, text left, NULL empty, cut with …");
         let empty = ResultSet::new(cols(), Batch::empty(2), false);
         assert_eq!(empty.to_text_table(10), "id|t\n--+-\n");
     }

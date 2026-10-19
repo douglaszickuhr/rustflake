@@ -33,7 +33,8 @@ pub struct DbtStore {
 
 impl DbtStore {
     pub fn new(cfg: Option<DbtConfig>, cx: &mut Context<Self>) -> Self {
-        let mut s = DbtStore { cfg, project: Load::Loading, refreshing: false, refresh_error: None, aws_logging_in: false, live: Vec::new(), aws_profiles: Vec::new(), shell_profile: None, generation: 0 };
+        let mut s =
+            DbtStore { cfg, project: Load::Loading, refreshing: false, refresh_error: None, aws_logging_in: false, live: Vec::new(), aws_profiles: Vec::new(), shell_profile: None, generation: 0 };
         s.reload(cx);
         s
     }
@@ -196,7 +197,9 @@ impl Render for DbtStore {
                 let (models, sources, seeds) = p.manifest.counts();
                 card.child(h_flex().gap_2().child(div().text_color(theme.success).child("✓")).child(format!("{} · {}", t!("dbt.manifest_found"), parsed_ago(p))).child(div().flex_1()).child(refresh))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(t!("dbt.counts", models = models, sources = sources, seeds = seeds).to_string()))
-                    .when_some(p.git.repo.clone(), |d, r| d.child(div().text_xs().text_color(theme.muted_foreground).child(t!("dbt.github", repo = r.trim_start_matches("https://"), branch = p.git.branch).to_string())))
+                    .when_some(p.git.repo.clone(), |d, r| {
+                        d.child(div().text_xs().text_color(theme.muted_foreground).child(t!("dbt.github", repo = r.trim_start_matches("https://"), branch = p.git.branch).to_string()))
+                    })
             }
             Load::Failed(m) => card.child(h_flex().gap_2().child(div().flex_1().text_color(theme.warning).child(m.clone())).child(refresh)),
         };

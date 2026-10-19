@@ -245,6 +245,11 @@ en = "configuration: the `%{kind}` rule needs the named group `%{group}`"
 pt = "configuração: a regra `%{kind}` precisa do grupo `%{group}`"
 es = "configuración: la regla `%{kind}` necesita el grupo `%{group}`"
 
+[err.config_color]
+en = "configuration: classification color \"%{color}\" must be muted, info, success, warning, danger or #RRGGBB"
+pt = "configuração: a cor de classificação \"%{color}\" precisa ser muted, info, success, warning, danger ou #RRGGBB"
+es = "configuración: el color de clasificación \"%{color}\" debe ser muted, info, success, warning, danger o #RRGGBB"
+
 [err.config_tag]
 en = "configuration: `classification.tag` must be DB.SCHEMA.NAME"
 pt = "configuração: `classification.tag` precisa ser DB.SCHEMA.NOME"

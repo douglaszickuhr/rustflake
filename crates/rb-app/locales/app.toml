@@ -1828,10 +1828,50 @@ en = "Description"
 pt = "Descrição"
 es = "Descripción"
 
+[tv.col_policy]
+en = "Policy"
+pt = "Política"
+es = "Política"
+
+[tv.tag_value]
+en = "Value"
+pt = "Valor"
+es = "Valor"
+
+[tv.tag_location]
+en = "Defined in"
+pt = "Definida em"
+es = "Definida en"
+
+[tv.tag_assigned_by]
+en = "Assigned by"
+pt = "Atribuída por"
+es = "Asignada por"
+
+[tv.close_panel]
+en = "Close"
+pt = "Fechar"
+es = "Cerrar"
+
+[tv.def_search]
+en = "Search columns, descriptions, tags, policies…"
+pt = "Buscar colunas, descrições, tags, políticas…"
+es = "Buscar columnas, descripciones, etiquetas, políticas…"
+
+[tv.def_matches]
+en = "%{n} shown"
+pt = "%{n} exibidas"
+es = "%{n} mostradas"
+
 [tv.col_class]
-en = "Classification"
-pt = "Classificação"
-es = "Clasificación"
+en = "Class"
+pt = "Classe"
+es = "Clase"
+
+[tv.details]
+en = "Details"
+pt = "Detalhes"
+es = "Detalles"
 
 [tv.col_tests]
 en = "dbt tests"
@@ -1982,11 +2022,6 @@ es = "Abrir en GitHub"
 en = "Open in editor"
 pt = "Abrir no editor"
 es = "Abrir en el editor"
-
-[tv.not_classified]
-en = "not classified"
-pt = "sem classificação"
-es = "sin clasificar"
 
 [tv.class_unavailable]
 en = "classification unavailable: %{error}"
