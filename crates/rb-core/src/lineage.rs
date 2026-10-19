@@ -122,21 +122,26 @@ fn opt(names: &[String], r: &[Option<String>], col: &str) -> Option<String> {
     field(names, r, col).filter(|v| !v.is_empty()).map(String::from)
 }
 
-/// Domains of table-like objects become TABLE (the kind keeps the specific one).
+/// Domains of table-like objects become TABLE (the kind keeps the specific one); any other domain stays as
+/// Snowflake wrote it, because "Center here" passes it back to `GET_LINEAGE`.
 fn normalize(domain: String, kind: Option<String>) -> (String, Option<String>) {
     let kind = kind.map(|k| k.to_uppercase().replace('_', " "));
-    match domain.as_str() {
-        "VIEW" | "MATERIALIZED VIEW" | "DYNAMIC TABLE" | "EXTERNAL TABLE" | "ICEBERG TABLE" | "EVENT TABLE" => ("TABLE".into(), kind.or(Some(domain))),
+    let spaced = domain.replace('_', " ");
+    match spaced.as_str() {
+        "VIEW" | "MATERIALIZED VIEW" | "DYNAMIC TABLE" | "EXTERNAL TABLE" | "ICEBERG TABLE" | "EVENT TABLE" | "HYBRID TABLE" => ("TABLE".into(), kind.or(Some(spaced))),
         _ => (domain, kind),
     }
 }
 
-fn parse_obj(names: &[String], r: &[Option<String>], side: &str, row: usize) -> (Obj, Option<String>) {
+/// Unique across fetches: masked objects without names must never merge.
+static MASKED_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn parse_obj(names: &[String], r: &[Option<String>], side: &str) -> (Obj, Option<String>) {
     let g = |c: &str| opt(names, r, &format!("{side}_{c}"));
     let masked = g("status").is_some_and(|s| s.eq_ignore_ascii_case("MASKED"));
-    let (domain, kind) = normalize(g("object_domain").unwrap_or_default().to_uppercase().replace('_', " "), g("type"));
-    // Masked objects may come without names: a per-row name keeps them apart (never merged).
-    let name = g("object_name").unwrap_or_else(|| format!("#{row}-{side}"));
+    let (domain, kind) = normalize(g("object_domain").unwrap_or_default().to_uppercase(), g("type"));
+    // Masked objects may come without names: a unique name keeps them apart (never merged).
+    let name = g("object_name").unwrap_or_else(|| format!("#{}", MASKED_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let key = ObjKey { domain, db: g("object_database").unwrap_or_default(), schema: g("object_schema").unwrap_or_default(), name };
     (Obj { key, kind, masked }, g("column_name"))
 }
@@ -144,9 +149,9 @@ fn parse_obj(names: &[String], r: &[Option<String>], side: &str, row: usize) -> 
 /// Rows without the edge from an object (or column) to itself (incremental MERGE).
 pub fn parse_rows(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<Row> {
     let mut out = Vec::new();
-    for (i, r) in rows.iter().enumerate() {
-        let (src, src_col) = parse_obj(names, r, "source", i);
-        let (dst, dst_col) = parse_obj(names, r, "target", i);
+    for r in rows {
+        let (src, src_col) = parse_obj(names, r, "source");
+        let (dst, dst_col) = parse_obj(names, r, "target");
         if src.key == dst.key && src_col == dst_col {
             continue;
         }
@@ -211,7 +216,8 @@ impl Graph {
                 if o.key != self.focus {
                     self.side.entry(o.key.clone()).or_insert(dir);
                 }
-                self.objs.entry(o.key.clone()).or_insert_with(|| o.clone());
+                // The focus starts without a kind when the tab didn't know it yet (e.g. a dynamic table).
+                self.objs.entry(o.key.clone()).and_modify(|e| e.kind = e.kind.take().or_else(|| o.kind.clone())).or_insert_with(|| o.clone());
             }
             let (s, d) = (r.src.key, r.dst.key);
             self.parents.entry(d.clone()).or_default().insert(s.clone());
@@ -335,7 +341,7 @@ impl Graph {
     /// Column rows (`column_lineage_sql`) onto the objects of this graph.
     pub fn column_path(&self, rows: &[Row]) -> ColumnPath {
         let index: HashMap<(&str, &str, &str), &ObjKey> =
-            self.objs.keys().filter(|k| k.domain == "TABLE").map(|k| ((k.db.as_str(), k.schema.as_str(), k.name.as_str()), k)).collect();
+            self.objs.values().filter(|o| o.key.domain == "TABLE" && !o.masked).map(|o| ((o.key.db.as_str(), o.key.schema.as_str(), o.key.name.as_str()), &o.key)).collect();
         let find = |o: &Obj| index.get(&(o.key.db.as_str(), o.key.schema.as_str(), o.key.name.as_str())).map(|k| (*k).clone());
         let mut p = ColumnPath::default();
         let mut outside: HashSet<(String, String, String)> = HashSet::new();
@@ -693,6 +699,49 @@ mod tests {
         assert!(r[0].src.masked && r[1].src.masked);
         assert_ne!(r[0].src.key, r[1].src.key);
         assert!(!r[0].src.is_table_like());
+    }
+
+    #[test]
+    fn masked_names_are_unique_across_fetches() {
+        let masked = || {
+            let mut r = row("D.S.X", "D.S.T", 2);
+            (r[1], r[2], r[3], r[5]) = (None, None, None, Some("MASKED".into()));
+            r
+        };
+        let (a, b) = (parse_rows(&names(), &[masked()]), parse_rows(&names(), &[masked()]));
+        assert_ne!(a[0].src.key, b[0].src.key, "same row index in two fetches must not merge");
+    }
+
+    #[test]
+    fn other_domains_keep_their_raw_name() {
+        let mut r = row("D.S.F", "D.S.T", 1);
+        r[4] = Some("FEATURE_VIEW".into());
+        r[6] = Some("feature_view".into());
+        let rows = parse_rows(&names(), &[r]);
+        assert_eq!(rows[0].src.key.domain, "FEATURE_VIEW", "passed back to GET_LINEAGE as is");
+        assert_eq!(rows[0].src.kind.as_deref(), Some("FEATURE VIEW"));
+    }
+
+    #[test]
+    fn focus_kind_comes_from_the_rows_when_unknown() {
+        let mut r = row("D.S.A", "D.S.T", 1);
+        r[13] = Some("VIEW".into());
+        let mut g = focus();
+        g.add(Dir::Up, parse_rows(&names(), &[r]));
+        assert_eq!(g.objs[&k("D.S.T")].kind.as_deref(), Some("VIEW"));
+    }
+
+    #[test]
+    fn masked_nodes_never_match_column_rows() {
+        let mut r = row("D.S.X", "D.S.T", 1);
+        (r[1], r[2], r[3], r[5]) = (None, None, None, Some("MASKED".into()));
+        let mut g = focus();
+        g.add(Dir::Up, parse_rows(&names(), &[r]));
+        let masked = g.objs.values().find(|o| o.masked).expect("masked node").key.clone();
+        let col = Row { src: Obj { key: masked.clone(), kind: None, masked: true }, dst: Obj { key: k("D.S.T"), kind: None, masked: false }, src_col: Some("C".into()), dst_col: Some("Y".into()), distance: 1, process: None, dir: Some(Dir::Up) };
+        let p = g.column_path(&[col]);
+        assert!(!p.cols.contains_key(&masked));
+        assert_eq!(p.outside, 1);
     }
 
     // Task 2: graph and visibility.

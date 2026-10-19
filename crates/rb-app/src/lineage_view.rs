@@ -38,10 +38,15 @@ const CAP: usize = 30;
 /// (from, to, back edge, color, width), zoomed content coordinates.
 type Line = ((f32, f32), (f32, f32), bool, Hsla, f32);
 
+fn place((c0, r0): (i32, f32), col: i32, row: f32) -> (f32, f32) {
+    (MARGIN + (col - c0) as f32 * (BOX_W + GAP_X), (row - r0) * (BOX_H + GAP_Y))
+}
+
 #[derive(Clone, PartialEq)]
 enum Sel {
     Node(ObjKey),
-    More(usize),
+    /// Parent and direction: indices into `Visible::more` change on every relayout.
+    More(ObjKey, Dir),
 }
 
 pub struct LineageView {
@@ -125,7 +130,7 @@ impl LineageView {
                     let (n, r) = s.query_named(&lineage::lineage_sql(&key, dir, MAX_DISTANCE)).await?;
                     Ok(lineage::parse_rows(&n, &r))
                 },
-                move |v: &mut Self, res, _| {
+                move |v: &mut Self, res, cx| {
                     if v.generation != generation {
                         return;
                     }
@@ -136,8 +141,14 @@ impl LineageView {
                         }
                         Err(e) => Load::Failed(e.to_string()),
                     };
-                    v.fitted = false;
+                    // Fit once both sides are in (not again when the second one arrives after a zoom).
+                    v.fitted = v.sides.iter().any(|s| matches!(s, Load::Loading));
                     v.relayout();
+                    // After Reload the selected object wasn't in the graph yet: its panel can load now.
+                    if let Some(Sel::Node(k)) = v.selected.clone() {
+                        v.ensure_def(&k, cx);
+                        v.ensure_columns(&k, cx);
+                    }
                 },
             );
         }
@@ -193,8 +204,7 @@ impl LineageView {
 
     /// Top-left corner of a box in content coordinates (unzoomed).
     fn xy(&self, col: i32, row: f32) -> (f32, f32) {
-        let (c0, r0) = self.origin();
-        (MARGIN + (col - c0) as f32 * (BOX_W + GAP_X), (row - r0) * (BOX_H + GAP_Y))
+        place(self.origin(), col, row)
     }
 
     fn content_size(&self) -> (f32, f32) {
@@ -339,11 +349,12 @@ impl LineageView {
     }
 
     fn fit(&mut self) {
-        let size = self.viewport.get().map(|b| (f32::from(b.size.width), f32::from(b.size.height)));
-        if let Some(v) = size.filter(|v| v.0 > 2.0 * PAD && v.1 > 2.0 * PAD) {
+        let Some(v) = self.viewport.get().map(|b| (f32::from(b.size.width), f32::from(b.size.height))) else { return };
+        // Measured but too small to fit (narrow window): keep the zoom instead of retrying every frame.
+        if v.0 > 2.0 * PAD && v.1 > 2.0 * PAD {
             self.zoom = fit_zoom(self.content_size(), (v.0 - 2.0 * PAD, v.1 - 2.0 * PAD));
-            self.fitted = true;
         }
+        self.fitted = true;
     }
 
     fn wheel(&mut self, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -398,7 +409,9 @@ impl Render for LineageView {
 
         // Edges, in content coordinates already zoomed: source's right middle → target's left middle;
         // back edges (cycle through the focus) dip below, dashed.
-        let at = |s: &Slot| self.layout.pos.iter().find(|p| &p.0 == s).map(|p| self.xy(p.1, p.2));
+        let origin = self.origin();
+        let placed: HashMap<&Slot, (f32, f32)> = self.layout.pos.iter().map(|p| (&p.0, place(origin, p.1, p.2))).collect();
+        let at = |s: &Slot| placed.get(s).copied();
         let mut lines: Vec<Line> = Vec::new();
         for (a, b, back) in &self.layout.edges {
             let (Some(pa), Some(pb)) = (at(&Slot::Node(a.clone())), at(&Slot::Node(b.clone()))) else { continue };
@@ -446,13 +459,14 @@ impl Render for LineageView {
 
         let mut boxes: Vec<AnyElement> = Vec::new();
         for (i, (slot, col, row)) in self.layout.pos.iter().enumerate() {
-            let (x, y) = self.xy(*col, *row);
+            let (x, y) = place(origin, *col, *row);
             let shell = div().absolute().left(px(x * z)).top(px(y * z)).w(px(BOX_W * z)).h(px(BOX_H * z)).px(px(8.0 * z)).py(px(4.0 * z)).overflow_hidden().rounded(theme.radius).text_size(px(12.0 * z));
             match slot {
                 Slot::More(m) => {
-                    let n = self.visible.more.get(*m).map_or(0, |m| m.hidden.len());
-                    let selected = self.selected == Some(Sel::More(*m));
-                    let m = *m;
+                    let Some(more) = self.visible.more.get(*m) else { continue };
+                    let n = more.hidden.len();
+                    let id = Sel::More(more.parent.clone(), more.dir);
+                    let selected = self.selected.as_ref() == Some(&id);
                     boxes.push(
                         shell
                             .id(("lin-more", i))
@@ -467,7 +481,7 @@ impl Render for LineageView {
                             .text_color(theme.muted_foreground)
                             .child(t!("lin.more", n = n).to_string())
                             .on_click(cx.listener(move |v, _, window, cx| {
-                                v.selected = Some(Sel::More(m));
+                                v.selected = Some(id.clone());
                                 v.focus.focus(window, cx);
                                 cx.notify();
                             }))
@@ -653,8 +667,8 @@ impl LineageView {
         let mono = theme.mono_font_family.clone();
         match self.selected.clone() {
             None => v_flex(),
-            Some(Sel::More(i)) => {
-                let Some(m) = self.visible.more.get(i).cloned() else { return v_flex() };
+            Some(Sel::More(parent, dir)) => {
+                let Some(m) = self.visible.more.iter().find(|m| m.parent == parent && m.dir == dir).cloned() else { return v_flex() };
                 v_flex().gap_1().child(div().font_weight(FontWeight::SEMIBOLD).child(t!("lin.hidden", n = m.hidden.len()).to_string())).children(m.hidden.into_iter().enumerate().map(|(j, k)| {
                     let key = k.clone();
                     h_flex()
