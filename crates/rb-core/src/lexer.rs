@@ -69,10 +69,7 @@ pub fn tokenize(src: &str) -> Vec<Token> {
             b'$' => match dollar_tag_end(b, i) {
                 Some(open_end) => {
                     let tag = &b[i..open_end];
-                    i = b[open_end..]
-                        .windows(tag.len())
-                        .position(|w| w == tag)
-                        .map_or(b.len(), |p| open_end + p + tag.len());
+                    i = b[open_end..].windows(tag.len()).position(|w| w == tag).map_or(b.len(), |p| open_end + p + tag.len());
                     TokKind::DollarStr
                 }
                 None if b.get(i + 1).is_some_and(u8::is_ascii_digit) => {
@@ -170,18 +167,107 @@ pub fn ident_text(tok: &str) -> String {
 
 /// Postgres reserved words (including those that can only be function or type).
 const RESERVED: &[&str] = &[
-    "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "authorization",
-    "binary", "both", "case", "cast", "check", "collate", "collation", "column", "concurrently",
-    "constraint", "create", "cross", "current_catalog", "current_date", "current_role",
-    "current_schema", "current_time", "current_timestamp", "current_user", "default", "deferrable",
-    "desc", "distinct", "do", "else", "end", "except", "false", "fetch", "for", "foreign", "freeze",
-    "from", "full", "grant", "group", "having", "ilike", "in", "initially", "inner", "intersect",
-    "into", "is", "isnull", "join", "lateral", "leading", "left", "like", "limit", "localtime",
-    "localtimestamp", "natural", "not", "notnull", "null", "offset", "on", "only", "or", "order",
-    "outer", "overlaps", "placing", "primary", "references", "returning", "right", "select",
-    "session_user", "similar", "some", "symmetric", "system_user", "table", "tablesample", "then",
-    "to", "trailing", "true", "union", "unique", "user", "using", "variadic", "verbose", "when",
-    "where", "window", "with",
+    "all",
+    "analyse",
+    "analyze",
+    "and",
+    "any",
+    "array",
+    "as",
+    "asc",
+    "asymmetric",
+    "authorization",
+    "binary",
+    "both",
+    "case",
+    "cast",
+    "check",
+    "collate",
+    "collation",
+    "column",
+    "concurrently",
+    "constraint",
+    "create",
+    "cross",
+    "current_catalog",
+    "current_date",
+    "current_role",
+    "current_schema",
+    "current_time",
+    "current_timestamp",
+    "current_user",
+    "default",
+    "deferrable",
+    "desc",
+    "distinct",
+    "do",
+    "else",
+    "end",
+    "except",
+    "false",
+    "fetch",
+    "for",
+    "foreign",
+    "freeze",
+    "from",
+    "full",
+    "grant",
+    "group",
+    "having",
+    "ilike",
+    "in",
+    "initially",
+    "inner",
+    "intersect",
+    "into",
+    "is",
+    "isnull",
+    "join",
+    "lateral",
+    "leading",
+    "left",
+    "like",
+    "limit",
+    "localtime",
+    "localtimestamp",
+    "natural",
+    "not",
+    "notnull",
+    "null",
+    "offset",
+    "on",
+    "only",
+    "or",
+    "order",
+    "outer",
+    "overlaps",
+    "placing",
+    "primary",
+    "references",
+    "returning",
+    "right",
+    "select",
+    "session_user",
+    "similar",
+    "some",
+    "symmetric",
+    "system_user",
+    "table",
+    "tablesample",
+    "then",
+    "to",
+    "trailing",
+    "true",
+    "union",
+    "unique",
+    "user",
+    "using",
+    "variadic",
+    "verbose",
+    "when",
+    "where",
+    "window",
+    "with",
 ];
 
 /// Quotes the identifier only when Postgres would require it.
@@ -197,17 +283,109 @@ pub fn quote_always(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Each part always quoted, joined by `.`: `["DB", "my s"]` → `"DB"."my s"`.
+pub fn qualify(parts: &[&str]) -> String {
+    parts.iter().map(|p| quote_always(p)).collect::<Vec<_>>().join(".")
+}
+
+/// Snowflake string literal. There `\` also escapes inside '...': both are doubled.
+pub fn sql_str(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
+}
+
 /// Snowflake reserved words (cannot be an unquoted identifier).
 const RESERVED_SNOWFLAKE: &[&str] = &[
-    "ALL", "ALTER", "AND", "ANY", "AS", "BETWEEN", "BY", "CASE", "CAST", "CHECK", "COLUMN", "CONNECT",
-    "CONNECTION", "CONSTRAINT", "CREATE", "CROSS", "CURRENT", "CURRENT_DATE", "CURRENT_TIME",
-    "CURRENT_TIMESTAMP", "CURRENT_USER", "DATABASE", "DELETE", "DISTINCT", "DROP", "ELSE", "EXISTS",
-    "FALSE", "FOLLOWING", "FOR", "FROM", "FULL", "GRANT", "GROUP", "GSCLUSTER", "HAVING", "ILIKE", "IN",
-    "INCREMENT", "INNER", "INSERT", "INTERSECT", "INTO", "IS", "ISSUE", "JOIN", "LATERAL", "LEFT", "LIKE",
-    "LOCALTIME", "LOCALTIMESTAMP", "MINUS", "NATURAL", "NOT", "NULL", "OF", "ON", "OR", "ORDER",
-    "ORGANIZATION", "QUALIFY", "REGEXP", "REVOKE", "RIGHT", "RLIKE", "ROW", "ROWS", "SAMPLE", "SCHEMA",
-    "SELECT", "SET", "SOME", "START", "TABLE", "TABLESAMPLE", "THEN", "TO", "TRIGGER", "TRUE", "TRY_CAST",
-    "UNION", "UNIQUE", "UPDATE", "USING", "VALUES", "VIEW", "WHEN", "WHENEVER", "WHERE", "WINDOW", "WITH",
+    "ALL",
+    "ALTER",
+    "AND",
+    "ANY",
+    "AS",
+    "BETWEEN",
+    "BY",
+    "CASE",
+    "CAST",
+    "CHECK",
+    "COLUMN",
+    "CONNECT",
+    "CONNECTION",
+    "CONSTRAINT",
+    "CREATE",
+    "CROSS",
+    "CURRENT",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+    "CURRENT_TIMESTAMP",
+    "CURRENT_USER",
+    "DATABASE",
+    "DELETE",
+    "DISTINCT",
+    "DROP",
+    "ELSE",
+    "EXISTS",
+    "FALSE",
+    "FOLLOWING",
+    "FOR",
+    "FROM",
+    "FULL",
+    "GRANT",
+    "GROUP",
+    "GSCLUSTER",
+    "HAVING",
+    "ILIKE",
+    "IN",
+    "INCREMENT",
+    "INNER",
+    "INSERT",
+    "INTERSECT",
+    "INTO",
+    "IS",
+    "ISSUE",
+    "JOIN",
+    "LATERAL",
+    "LEFT",
+    "LIKE",
+    "LOCALTIME",
+    "LOCALTIMESTAMP",
+    "MINUS",
+    "NATURAL",
+    "NOT",
+    "NULL",
+    "OF",
+    "ON",
+    "OR",
+    "ORDER",
+    "ORGANIZATION",
+    "QUALIFY",
+    "REGEXP",
+    "REVOKE",
+    "RIGHT",
+    "RLIKE",
+    "ROW",
+    "ROWS",
+    "SAMPLE",
+    "SCHEMA",
+    "SELECT",
+    "SET",
+    "SOME",
+    "START",
+    "TABLE",
+    "TABLESAMPLE",
+    "THEN",
+    "TO",
+    "TRIGGER",
+    "TRUE",
+    "TRY_CAST",
+    "UNION",
+    "UNIQUE",
+    "UPDATE",
+    "USING",
+    "VALUES",
+    "VIEW",
+    "WHEN",
+    "WHENEVER",
+    "WHERE",
+    "WINDOW",
+    "WITH",
 ];
 
 /// Quotes only when Snowflake would change the unquoted name (it folds to uppercase).
@@ -229,10 +407,7 @@ mod tests {
 
     #[test]
     fn words_numbers_punct() {
-        assert_eq!(
-            kinds("select a1, 3.5 from t;"),
-            vec![(Word, "select"), (Word, "a1"), (Punct, ","), (Number, "3.5"), (Word, "from"), (Word, "t"), (Semicolon, ";")]
-        );
+        assert_eq!(kinds("select a1, 3.5 from t;"), vec![(Word, "select"), (Word, "a1"), (Punct, ","), (Number, "3.5"), (Word, "from"), (Word, "t"), (Semicolon, ";")]);
     }
 
     #[test]
@@ -252,10 +427,7 @@ mod tests {
 
     #[test]
     fn dollar_quoting() {
-        assert_eq!(
-            kinds("$$a;b$$ $fn$ x $$ ; $fn$"),
-            vec![(DollarStr, "$$a;b$$"), (DollarStr, "$fn$ x $$ ; $fn$")]
-        );
+        assert_eq!(kinds("$$a;b$$ $fn$ x $$ ; $fn$"), vec![(DollarStr, "$$a;b$$"), (DollarStr, "$fn$ x $$ ; $fn$")]);
     }
 
     #[test]
@@ -265,10 +437,7 @@ mod tests {
 
     #[test]
     fn comments() {
-        assert_eq!(
-            kinds("-- a;b\nx /* a /* b; */ c */"),
-            vec![(Comment, "-- a;b"), (Word, "x"), (Comment, "/* a /* b; */ c */")]
-        );
+        assert_eq!(kinds("-- a;b\nx /* a /* b; */ c */"), vec![(Comment, "-- a;b"), (Word, "x"), (Comment, "/* a /* b; */ c */")]);
     }
 
     #[test]

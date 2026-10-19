@@ -19,11 +19,7 @@ struct Env {
 fn env() -> Option<Env> {
     let addr = std::env::var("RB_TEST_SSH").ok()?;
     let (host, port) = addr.rsplit_once(':').expect("RB_TEST_SSH = host:port");
-    Some(Env {
-        host: host.into(),
-        port: port.parse().expect("port"),
-        dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/test-ssh"),
-    })
+    Some(Env { host: host.into(), port: port.parse().expect("port"), dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/test-ssh") })
 }
 
 fn skip() {
@@ -42,15 +38,7 @@ fn run<F: Future>(f: F) -> F::Output {
 }
 
 fn target(e: &Env, key: &str, known_hosts: PathBuf, agent: Option<PathBuf>) -> SshTarget {
-    SshTarget {
-        hostname: e.host.clone(),
-        port: e.port,
-        user: "rb".into(),
-        identity_files: vec![e.dir.join(key)],
-        identities_explicit: true,
-        agent,
-        known_hosts,
-    }
+    SshTarget { hostname: e.host.clone(), port: e.port, user: "rb".into(), identity_files: vec![e.dir.join(key)], identities_explicit: true, agent, known_hosts }
 }
 
 /// Temporary known_hosts with rb-sshd's key, learned through the trust flow.
@@ -70,15 +58,7 @@ fn ssh_err(res: Option<DbError>, needle: &str) {
 
 #[test]
 fn unreachable_bastion() {
-    let t = SshTarget {
-        hostname: "127.0.0.1".into(),
-        port: 1,
-        user: "x".into(),
-        identity_files: vec![],
-        identities_explicit: false,
-        agent: None,
-        known_hosts: scratch("unreach").join("known_hosts"),
-    };
+    let t = SshTarget { hostname: "127.0.0.1".into(), port: 1, user: "x".into(), identity_files: vec![], identities_explicit: false, agent: None, known_hosts: scratch("unreach").join("known_hosts") };
     ssh_err(run(Tunnel::connect(t, None)).err(), "bastion 127.0.0.1:1 unreachable");
 }
 
@@ -142,17 +122,13 @@ fn agent_only_authentication() {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    let added = std::process::Command::new("ssh-add")
-        .arg(e.dir.join("id_agent"))
-        .env("SSH_AUTH_SOCK", &sock)
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
+    let added = std::process::Command::new("ssh-add").arg(e.dir.join("id_agent")).env("SSH_AUTH_SOCK", &sock).stderr(Stdio::null()).status().unwrap();
     let mut t = target(&e, "id_agent", kh, Some(sock.clone()));
     t.identity_files.clear();
     t.identities_explicit = false;
     let res = run(Tunnel::connect(t, None)).err();
     agent.kill().ok();
+    let _ = agent.wait();
     let _ = std::fs::remove_file(&sock);
     assert!(added.success());
     assert_eq!(res, None);
@@ -172,13 +148,7 @@ fn channels_to_open_and_closed_ports() {
 /// Engine that only sees the temporary home; destination `rb-pg:5432` only resolves inside the bastion.
 fn tunneled(e: &Env) -> (Engine, ConnectionConfig) {
     let home = scratch("home");
-    let env = SshEnv {
-        config_file: home.join("nenhum"),
-        known_hosts: trusted_known_hosts(e),
-        agent: None,
-        user: "rb".into(),
-        home,
-    };
+    let env = SshEnv { config_file: home.join("nenhum"), known_hosts: trusted_known_hosts(e), agent: None, user: "rb".into(), home };
     let cfg = ConnectionConfig {
         environment: None,
         id: "ssh-test".into(),
@@ -188,12 +158,7 @@ fn tunneled(e: &Env) -> (Engine, ConnectionConfig) {
         database: "postgres".into(),
         user: "postgres".into(),
         ssl: SslMode::Disable,
-        ssh: Some(SshConfig {
-            host: e.host.clone(),
-            user: Some("rb".into()),
-            port: Some(e.port),
-            identity_file: Some(e.dir.join("id_plain").display().to_string()),
-        }),
+        ssh: Some(SshConfig { host: e.host.clone(), user: Some("rb".into()), port: Some(e.port), identity_file: Some(e.dir.join("id_plain").display().to_string()) }),
 
         snowflake: None,
     };
@@ -271,11 +236,7 @@ fn slow_channel_does_not_block_others_and_times_out() {
 #[test]
 fn host_known_under_another_key_type_is_not_unknown() {
     let Some(e) = env() else { return skip() };
-    let out = std::process::Command::new("ssh-keyscan")
-        .args(["-t", "ecdsa", "-p", &e.port.to_string(), &e.host])
-        .stderr(Stdio::null())
-        .output()
-        .unwrap();
+    let out = std::process::Command::new("ssh-keyscan").args(["-t", "ecdsa", "-p", &e.port.to_string(), &e.host]).stderr(Stdio::null()).output().unwrap();
     let line = String::from_utf8(out.stdout).unwrap();
     assert!(line.contains("ecdsa-sha2"), "{line}");
     let kh = scratch("ecdsa").join("known_hosts");

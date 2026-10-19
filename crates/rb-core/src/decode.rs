@@ -37,10 +37,7 @@ pub fn one_line(s: &str, max_chars: usize) -> String {
 /// everything else as is; cuts at `max_chars` with `…`.
 pub fn detail_text(s: &str, max_chars: usize) -> String {
     let t = s.trim_start();
-    let pretty = (t.starts_with('{') || t.starts_with('['))
-        .then(|| serde_json::from_str::<serde_json::Value>(t).ok())
-        .flatten()
-        .and_then(|v| serde_json::to_string_pretty(&v).ok());
+    let pretty = (t.starts_with('{') || t.starts_with('[')).then(|| serde_json::from_str::<serde_json::Value>(t).ok()).flatten().and_then(|v| serde_json::to_string_pretty(&v).ok());
     let s = pretty.as_deref().unwrap_or(s);
     match s.char_indices().nth(max_chars) {
         Some((i, _)) => format!("{}…", &s[..i]),
@@ -49,8 +46,7 @@ pub fn detail_text(s: &str, max_chars: usize) -> String {
 }
 
 fn is_textual(ty: &Type) -> bool {
-    matches!(*ty, Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::JSON | Type::JSONB | Type::XML)
-        || matches!(ty.kind(), Kind::Enum(_))
+    matches!(*ty, Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::JSON | Type::JSONB | Type::XML) || matches!(ty.kind(), Kind::Enum(_))
 }
 
 fn decode(ty: &Type, r: &[u8]) -> Option<String> {
@@ -74,18 +70,14 @@ fn decode(ty: &Type, r: &[u8]) -> Option<String> {
         Type::CHAR => (*r.first()? as char).to_string(),
         Type::UUID => uuid(r)?,
         Type::BYTEA => format!("\\x{}", hex(r)),
-        Type::DATE => date(i32::from_be_bytes(be(r, 0)?)),
+        Type::DATE => date(i32::from_be_bytes(be(r, 0)?))?,
         Type::TIME => time(i64::from_be_bytes(be(r, 0)?)),
-        Type::TIMESTAMP => timestamp(i64::from_be_bytes(be(r, 0)?)),
+        Type::TIMESTAMP => timestamp(i64::from_be_bytes(be(r, 0)?))?,
         Type::TIMESTAMPTZ => {
-            let t = timestamp(i64::from_be_bytes(be(r, 0)?));
+            let t = timestamp(i64::from_be_bytes(be(r, 0)?))?;
             if t.ends_with("infinity") { t } else { t + "+00" }
         }
-        Type::INTERVAL => interval(
-            i64::from_be_bytes(be(r, 0)?),
-            i32::from_be_bytes(be(r, 8)?),
-            i32::from_be_bytes(be(r, 12)?),
-        ),
+        Type::INTERVAL => interval(i64::from_be_bytes(be(r, 0)?), i32::from_be_bytes(be(r, 8)?), i32::from_be_bytes(be(r, 12)?)),
         _ => return None,
     })
 }
@@ -168,33 +160,21 @@ fn numeric(r: &[u8]) -> Option<String> {
     Some(s)
 }
 
-const PG_EPOCH_UNIX_DAYS: i64 = 10_957; // 2000-01-01 - 1970-01-01
 const DAY_US: i64 = 86_400_000_000;
 
-/// Days since 1970-01-01 to (year, month, day). Algorithm "civil_from_days" by H. Hinnant.
-fn civil(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    (y, m, d)
+/// Days since Postgres's epoch (2000-01-01). ponytail: beyond chrono's ±262k years → raw bytes shown.
+fn ymd(days_since_2000: i64) -> Option<String> {
+    let epoch = chrono::NaiveDate::from_ymd_opt(2000, 1, 1)?;
+    let d = chrono::Days::new(days_since_2000.unsigned_abs());
+    let day = if days_since_2000 < 0 { epoch.checked_sub_days(d) } else { epoch.checked_add_days(d) }?;
+    Some(day.format("%Y-%m-%d").to_string())
 }
 
-fn ymd(days_since_2000: i64) -> String {
-    let (y, m, d) = civil(days_since_2000 + PG_EPOCH_UNIX_DAYS);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-fn date(days: i32) -> String {
+fn date(days: i32) -> Option<String> {
     match days {
-        i32::MAX => "infinity".into(),
-        i32::MIN => "-infinity".into(),
-        d => ymd(d as i64),
+        i32::MAX => Some("infinity".into()),
+        i32::MIN => Some("-infinity".into()),
+        d => ymd(d.into()),
     }
 }
 
@@ -207,11 +187,11 @@ fn time(us: i64) -> String {
     out
 }
 
-fn timestamp(us: i64) -> String {
+fn timestamp(us: i64) -> Option<String> {
     match us {
-        i64::MAX => "infinity".into(),
-        i64::MIN => "-infinity".into(),
-        us => format!("{} {}", ymd(us.div_euclid(DAY_US)), time(us.rem_euclid(DAY_US))),
+        i64::MAX => Some("infinity".into()),
+        i64::MIN => Some("-infinity".into()),
+        us => Some(format!("{} {}", ymd(us.div_euclid(DAY_US))?, time(us.rem_euclid(DAY_US)))),
     }
 }
 
@@ -268,9 +248,7 @@ fn array_dim(elem: &Type, r: &[u8], dims: &[usize], pos: &mut usize, out: &mut S
         let v = r.get(*pos..*pos + len as usize)?;
         *pos += len as usize;
         let s = cell_text(elem, v);
-        let needs_quotes = s.is_empty()
-            || s.eq_ignore_ascii_case("null")
-            || s.contains(|c: char| matches!(c, '{' | '}' | ',' | '"' | '\\') || c.is_whitespace());
+        let needs_quotes = s.is_empty() || s.eq_ignore_ascii_case("null") || s.contains(|c: char| matches!(c, '{' | '}' | ',' | '"' | '\\') || c.is_whitespace());
         if needs_quotes {
             out.push('"');
             for c in s.chars() {

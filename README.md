@@ -6,10 +6,11 @@ It speaks **PostgreSQL** and **Snowflake**, starts in well under a second and st
 ## Features
 
 **Connections**
-- PostgreSQL (with SSL modes) and Snowflake (SSO in the browser, key-pair, or programmatic access token).
+- PostgreSQL (SSL `disable`, `prefer` (the default, like libpq) or `require`) and Snowflake (SSO in the browser, key-pair, or programmatic access token).
 - In-process SSH tunnel: reads `~/.ssh/config` aliases, asks before trusting unknown hosts (`known_hosts`), supports keys with passphrases and the SSH agent.
 - Passwords, passphrases and tokens live in the macOS Keychain, never in the config file.
 - Snowflake SSO caches the ID token in the Keychain, so reopening the app doesn't open the browser again while the token is valid.
+  See [the ID token caveat](#snowflake-id-token-caveat) below.
 - Per-connection environment color, database filter (Snowflake) and recent role/warehouse/database/schema picker.
 
 **Editor**
@@ -36,6 +37,16 @@ It speaks **PostgreSQL** and **Snowflake**, starts in well under a second and st
 **App**
 - Quick open (⌘K) across schemas, tables, open tabs and script contents.
 - English, Portuguese and Spanish UI; light, dark or system theme.
+
+## Snowflake ID token caveat
+
+Snowflake only issues an SSO ID token to clients it recognizes, so the vendored connector logs in as
+`CLIENT_APP_ID="Go"` (see `vendor/snowflake-connector-rs/PATCH.md`). Consequences:
+
+- Admins see rustflake sessions as the Go driver in `LOGIN_HISTORY`, `QUERY_HISTORY` and `SESSIONS`.
+- Results then come back as Arrow by default, so rustflake asks for `GO_QUERY_RESULT_FORMAT=JSON`.
+- The account needs `ALLOW_ID_TOKEN = TRUE`; without it every launch opens the browser again.
+- It relies on undocumented server behaviour: if Snowflake changes it, SSO keeps working but the token cache stops.
 
 ## Requirements
 
@@ -83,13 +94,15 @@ From then on, `cargo run` signs the binary before launching it (see `.cargo/conf
 
 ## Where things are stored
 
-Everything lives under `~/Library/Application Support/rustflake/`:
+Everything lives under `~/Library/Application Support/rustflake/`, which is owner-only (`0700`; new files `0600`),
+since scripts and history may contain passwords:
 
 | Path | Contents |
 |---|---|
 | `connections.toml` | Connections and settings (no secrets) |
 | `scripts/<connection id>/` | SQL scripts; closed tabs move to `scripts/closed/` |
 | `history/<connection id>.jsonl` | Query history |
+| `settings.toml` | Language, theme, recent picks and the connections to reopen |
 | `configurations/` | Optional company convention files (see the example above) |
 
 ## Project layout

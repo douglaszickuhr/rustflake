@@ -55,8 +55,8 @@ mod tests {
             ("select * from t where a = :name", ":name"),
             ("select '-- not a comment' as x", "'-- not a comment'"),
             ("select \"Order Items\".id from \"Order Items\"", "\"Order Items\""),
-            ("select 1 -- fim\n", "-- fim"),
-            ("select /* meio */ 1", "/* meio */"),
+            ("select 1 -- end\n", "-- end"),
+            ("select /* middle */ 1", "/* middle */"),
         ] {
             assert!(format_sql(src).contains(keep), "{src} → {}", format_sql(src));
         }
@@ -64,26 +64,22 @@ mod tests {
 
     #[test]
     fn dollar_quoted_bodies_stay_intact() {
-        let body = "$$ begin raise notice 'oi'; end $$";
+        let body = "$$ begin raise notice 'hi'; end $$";
         let out = format_sql(&format!("create function f() returns void language plpgsql as {body};"));
         assert!(out.contains(body), "{out}");
     }
 
     #[test]
     fn script_with_dollar_body_still_formats_the_other_statements() {
-        let out = format_sql("-- cria\ncreate function f() returns int language sql as $$ select 1 $$; select a from t");
-        assert!(out.starts_with("-- cria\ncreate function f() returns int language sql as $$ select 1 $$;"), "{out}");
+        let out = format_sql("-- create\ncreate function f() returns int language sql as $$ select 1 $$; select a from t");
+        assert!(out.starts_with("-- create\ncreate function f() returns int language sql as $$ select 1 $$;"), "{out}");
         assert!(out.ends_with("SELECT\n  a\nFROM\n  t"), "{out}");
     }
 
     #[test]
     fn backslashes_in_strings_never_change_literals() {
         // sqlformat reads `\'` as an escaped quote; on Postgres (standard_conforming_strings) `'\'` is a complete string.
-        for src in [
-            r"select 'a\' as x, 'b' as y from t",
-            r"select * from t where a like 'a\_%' escape '\' and c = 'k'",
-            r"select E'\\' as bs, 'x' as y",
-        ] {
+        for src in [r"select 'a\' as x, 'b' as y from t", r"select * from t where a like 'a\_%' escape '\' and c = 'k'", r"select E'\\' as bs, 'x' as y"] {
             let out = format_sql(src);
             for lit in ["'b'", "'k'", "'x'"] {
                 if src.contains(lit) {

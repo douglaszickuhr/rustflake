@@ -38,13 +38,7 @@ fn abandoning_a_partial_result_closes_its_transaction() {
         assert!(out.more);
         std::thread::sleep(Duration::from_millis(300));
         // If the portal's transaction were still open, xact_start would be ~300 ms ago.
-        let r = s
-            .query_text(
-                "select (clock_timestamp() - xact_start < interval '200 ms')::text from pg_stat_activity where pid = pg_backend_pid()",
-                &[],
-            )
-            .await
-            .unwrap();
+        let r = s.query_text("select (clock_timestamp() - xact_start < interval '200 ms')::text from pg_stat_activity where pid = pg_backend_pid()", &[]).await.unwrap();
         assert_eq!(r[0][0].as_deref(), Some("true"));
         let f = s.fetch_more(out.exec_id).await.unwrap();
         assert_eq!((f.batch.rows(), f.more), (0, false));
@@ -94,5 +88,20 @@ fn large_dml_returning_is_committed_immediately() {
         let r = other.query_text(&format!("select count(*)::text from {t} where v = 1"), &[]).await.unwrap();
         assert_eq!(r[0][0].as_deref(), Some("3000"));
         s.execute(format!("drop table {t}")).await.unwrap();
+    });
+}
+
+/// Takes a minute: `cargo test -p rb-core --test session_lifecycle idle -- --ignored`.
+#[test]
+#[ignore]
+fn idle_cursor_is_closed_and_a_late_fetch_says_so() {
+    let Some((_e, s)) = common::open() else { return common::skip() };
+    block_on(async {
+        let out = s.execute("select g from generate_series(1, 5000) g".into()).await.unwrap();
+        assert!(out.more);
+        std::thread::sleep(Duration::from_secs(62));
+        let late = s.fetch_more(out.exec_id).await;
+        assert!(matches!(late, Err(DbError::Unsupported(ref m)) if m.contains("idle")), "{late:?}");
+        assert_eq!(s.execute("select 1".into()).await.unwrap().batch.rows(), 1, "the session keeps working");
     });
 }

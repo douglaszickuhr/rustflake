@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::DbError;
+// Owner-only: the SQL may contain a password (`ALTER USER … PASSWORD`).
+use crate::config::open_private;
 
 pub const MAX_ENTRIES: usize = 5_000;
 
@@ -33,20 +35,6 @@ fn io(e: impl std::fmt::Display) -> DbError {
     DbError::Io(e.to_string())
 }
 
-/// Owner-only read: the SQL may contain a password (`ALTER USER … PASSWORD`).
-fn open_private(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
-    let mut o = std::fs::OpenOptions::new();
-    o.create(true).write(true);
-    if append {
-        o.append(true);
-    } else {
-        o.truncate(true);
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    o.open(path)
-}
-
 pub fn append(path: &Path, e: &Entry) -> Result<(), DbError> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(io)?;
@@ -60,10 +48,7 @@ pub fn append(path: &Path, e: &Entry) -> Result<(), DbError> {
 pub fn load(path: &Path) -> Vec<Entry> {
     let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
     let lines = text.lines().count();
-    let mut all: Vec<Entry> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).map_err(|e| tracing::warn!("{}: invalid line: {e}", path.display())).ok())
-        .collect();
+    let mut all: Vec<Entry> = text.lines().filter_map(|l| serde_json::from_str(l).map_err(|e| tracing::warn!("{}: invalid line: {e}", path.display())).ok()).collect();
     if all.len() > MAX_ENTRIES || all.len() != lines {
         all.drain(..all.len().saturating_sub(MAX_ENTRIES));
         let tmp = path.with_extension("jsonl.tmp");
@@ -106,25 +91,22 @@ mod tests {
         append(&p, &e(2, weird)).unwrap();
         let got = load(&p);
         assert_eq!(got.iter().map(|x| x.sql.as_str()).collect::<Vec<_>>(), [weird, "select 1"]);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-        }
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]
     fn corrupt_lines_are_skipped_and_excess_is_trimmed() {
         let p = tmp("trim");
         append(&p, &e(1, "a")).unwrap();
-        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(b"{quebrado\n").unwrap();
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(b"{broken\n").unwrap();
         for i in 0..MAX_ENTRIES as i64 + 10 {
             append(&p, &e(i + 2, "b")).unwrap();
         }
         let got = load(&p);
         assert_eq!(got.len(), MAX_ENTRIES);
         assert_eq!(got[0].ts, MAX_ENTRIES as i64 + 11);
-        assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), MAX_ENTRIES, "arquivo reescrito");
+        assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), MAX_ENTRIES, "file rewritten");
     }
 
     #[test]

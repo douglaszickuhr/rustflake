@@ -18,6 +18,9 @@ const BOX_H: f32 = 84.0;
 const GAP_X: f32 = 32.0;
 const GAP_Y: f32 = 56.0;
 
+/// Arrow: from, to (content coordinates, already zoomed) and stroke width.
+type Edge = ((f32, f32), (f32, f32), f32);
+
 /// 0 = neutral, 1 = strong red; saturates at 50%.
 fn heat(pct: f64) -> f32 {
     (pct / 50.0).clamp(0.0, 1.0) as f32
@@ -122,7 +125,9 @@ impl PlanView {
     fn render_overview(&self, p: &Profile, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let head = |s: String| div().pt_2().font_weight(FontWeight::SEMIBOLD).child(s);
-        let row = |k: String, v: String| h_flex().justify_between().gap_2().text_sm().child(div().text_color(theme.muted_foreground).child(k)).child(div().font_family(theme.mono_font_family.clone()).child(v));
+        let row = |k: String, v: String| {
+            h_flex().justify_between().gap_2().text_sm().child(div().text_color(theme.muted_foreground).child(k)).child(div().font_family(theme.mono_font_family.clone()).child(v))
+        };
         let mut out = v_flex().gap_2();
 
         let top = top_nodes(&self.plan.root, 5);
@@ -261,7 +266,7 @@ impl Render for PlanView {
         let nodes: Vec<&PlanNode> = self.placed.iter().map(|p| node_at(&self.plan.root, &p.path).expect("layout only has valid paths")).collect();
 
         // Child (top) → parent (bottom) arrows, in content coordinates already zoomed.
-        let edges: Vec<((f32, f32), (f32, f32), f32)> = self
+        let edges: Vec<Edge> = self
             .placed
             .iter()
             .zip(&nodes)
@@ -358,11 +363,7 @@ impl Render for PlanView {
             PlanNote::NoCost { .. } => t!("plan.note_no_cost").to_string(),
             PlanNote::Cached => t!("plan.note_cached").to_string(),
         });
-        let header = if self.plan.analyzed {
-            t!("plan.real", time = self.plan.total_ms.map_or(String::new(), |ms| format!("{ms:.1} ms"))).to_string()
-        } else {
-            t!("plan.estimated").to_string()
-        };
+        let header = if self.plan.analyzed { t!("plan.real", time = self.plan.total_ms.map_or(String::new(), |ms| format!("{ms:.1} ms"))).to_string() } else { t!("plan.estimated").to_string() };
         let viewport = self.viewport.clone();
         let content = div().relative().w(px(w * z)).h(px(h * z)).child(arrows).children(labels).children(boxes);
         v_flex()
@@ -389,12 +390,18 @@ impl Render for PlanView {
                             .p(px(PAD))
                             .child(canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
                             // ⌘ + scroll zooms; registered on a child to run before the area's scrolling.
-                            .child(div().min_w_full().min_h_full().on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
-                                if ev.modifiers.platform {
-                                    cx.stop_propagation();
-                                    v.wheel(ev, cx);
-                                }
-                            })).child(content)),
+                            .child(
+                                div()
+                                    .min_w_full()
+                                    .min_h_full()
+                                    .on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
+                                        if ev.modifiers.platform {
+                                            cx.stop_propagation();
+                                            v.wheel(ev, cx);
+                                        }
+                                    }))
+                                    .child(content),
+                            ),
                     )
                     .child(div().id("plan-details").w(px(280.)).h_full().overflow_y_scroll().border_l_1().border_color(theme.border).p_3().child(self.render_details(cx))),
             )
@@ -403,9 +410,12 @@ impl Render for PlanView {
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn heat_is_clamped() {
         assert_eq!(heat(0.0), 0.0);
         assert_eq!(heat(25.0), 0.5);

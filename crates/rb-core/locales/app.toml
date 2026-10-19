@@ -5,6 +5,16 @@ en = "session closed"
 pt = "sessão encerrada"
 es = "sesión cerrada"
 
+[err.batch_too_large]
+en = "result block larger than 4 GiB: select fewer or smaller columns"
+pt = "bloco de resultado maior que 4 GiB: selecione menos colunas ou colunas menores"
+es = "bloque de resultado mayor que 4 GiB: selecciona menos columnas o columnas más pequeñas"
+
+[err.cursor_idle]
+en = "the result cursor was closed after %{secs} s idle (it held a transaction open): run the query again"
+pt = "o cursor do resultado foi fechado após %{secs} s parado (ele mantinha uma transação aberta): rode a consulta de novo"
+es = "el cursor del resultado se cerró tras %{secs} s inactivo (mantenía una transacción abierta): ejecuta la consulta de nuevo"
+
 [err.prefix.connection]
 en = "connection"
 pt = "conexão"
@@ -36,9 +46,9 @@ pt = "host %{host}:%{port} não está no known_hosts (%{fingerprint})"
 es = "el host %{host}:%{port} no está en known_hosts (%{fingerprint})"
 
 [err.manual_transactions]
-en = "manual transactions (BEGIN/START/SAVEPOINT): rustflake runs in autocommit"
-pt = "transações manuais (BEGIN/START/SAVEPOINT): o rustflake roda em autocommit"
-es = "transacciones manuales (BEGIN/START/SAVEPOINT): rustflake funciona en autocommit"
+en = "manual transactions (BEGIN/COMMIT/ROLLBACK/SAVEPOINT): rustflake runs in autocommit"
+pt = "transações manuais (BEGIN/COMMIT/ROLLBACK/SAVEPOINT): o rustflake roda em autocommit"
+es = "transacciones manuales (BEGIN/COMMIT/ROLLBACK/SAVEPOINT): rustflake funciona en autocommit"
 
 [err.expected_one_row]
 en = "expected to change 1 row, changed %{n}: %{sql}"

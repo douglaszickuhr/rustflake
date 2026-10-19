@@ -3,8 +3,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use crate::org_config::OrgConfig;
 use crate::admin::RoleKind;
+use crate::org_config::OrgConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ItemKind {
@@ -89,7 +89,7 @@ pub fn all_paths(direct: &[String], inherits: &HashMap<String, Vec<String>>, tar
         if out.len() >= limit || steps > 50_000 {
             break;
         }
-        let last = path.last().expect("caminho nunca vazio");
+        let last = path.last().expect("path is never empty");
         if last == target {
             out.push(path);
             continue;
@@ -200,12 +200,10 @@ mod tests {
 
     #[test]
     fn every_path_to_a_role_up_to_a_limit() {
-        let g: HashMap<String, Vec<String>> = [("IDP", vec!["AREA", "SB"]), ("AREA", vec!["BASE", "X"]), ("BASE", vec!["X"]), ("SB", vec!["X"]), ("X", vec!["IDP"])]
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), s(&v)))
-            .collect();
+        let g: HashMap<String, Vec<String>> =
+            [("IDP", vec!["AREA", "SB"]), ("AREA", vec!["BASE", "X"]), ("BASE", vec!["X"]), ("SB", vec!["X"]), ("X", vec!["IDP"])].into_iter().map(|(k, v)| (k.to_string(), s(&v))).collect();
         let p: Vec<String> = all_paths(&s(&["IDP"]), &g, "X", 10).into_iter().map(|p| p.join(">")).collect();
-        assert_eq!(p, vec!["IDP>AREA>X", "IDP>SB>X", "IDP>AREA>BASE>X"], "mais curtos primeiro; ciclo X→IDP ignorado");
+        assert_eq!(p, vec!["IDP>AREA>X", "IDP>SB>X", "IDP>AREA>BASE>X"], "shortest first; the X→IDP cycle is ignored");
         assert_eq!(all_paths(&s(&["IDP"]), &g, "X", 1).len(), 1);
         assert_eq!(all_paths(&s(&["IDP"]), &g, "IDP", 5), vec![s(&["IDP"])], "direct: the path is the role itself");
     }

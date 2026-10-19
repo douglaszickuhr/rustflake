@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn available_roles_come_as_a_json_array() {
         assert_eq!(parse_available_roles(r#"["PUBLIC","DATA_FR","\"low\""]"#), s(&["DATA_FR", "PUBLIC", "low"]));
-        assert!(parse_available_roles("lixo").is_empty());
+        assert!(parse_available_roles("garbage").is_empty());
     }
 
     #[test]

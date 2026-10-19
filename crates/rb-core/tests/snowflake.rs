@@ -71,9 +71,7 @@ fn drop_schema(s: &Session, name: &str) {
 
 fn texts(s: &Session, sql: &str) -> Vec<Vec<Option<String>>> {
     let out = block_on(s.execute(sql.into())).unwrap();
-    (0..out.batch.rows())
-        .map(|r| (0..out.columns.len()).map(|c| out.batch.cell(r, c).map(|b| String::from_utf8(b.to_vec()).unwrap())).collect())
-        .collect()
+    (0..out.batch.rows()).map(|r| (0..out.columns.len()).map(|c| out.batch.cell(r, c).map(|b| String::from_utf8(b.to_vec()).unwrap())).collect()).collect()
 }
 
 #[test]

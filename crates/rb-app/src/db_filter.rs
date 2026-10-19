@@ -79,18 +79,10 @@ impl Render for DbFilterEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chips = self.tags.iter().enumerate().map(|(i, t)| {
             let tag = if t.starts_with('!') { Tag::danger() } else { Tag::secondary() };
-            let tag = tag.child(
-                h_flex().gap_1().child(t.clone()).child(
-                    div()
-                        .id(("dbf-rm", i))
-                        .cursor_pointer()
-                        .child("×")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.tags.remove(i);
-                            cx.notify();
-                        })),
-                ),
-            );
+            let tag = tag.child(h_flex().gap_1().child(t.clone()).child(div().id(("dbf-rm", i)).cursor_pointer().child("×").on_click(cx.listener(move |this, _, _, cx| {
+                this.tags.remove(i);
+                cx.notify();
+            }))));
             div().id(("dbf-tag", i)).child(tag).on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                 if ev.click_count() == 2 {
                     this.edit(i, window, cx);
@@ -107,12 +99,7 @@ impl Render for DbFilterEditor {
             }))
             .when(!self.tags.is_empty(), |d| d.child(h_flex().flex_wrap().gap_1().children(chips)))
             .child(Input::new(&self.input))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(t!("filter.hint").to_string()),
-            )
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("filter.hint").to_string()))
     }
 }
 
@@ -145,13 +132,16 @@ pub fn open(current: Vec<String>, apply: impl Fn(Vec<String>, &mut Window, &mut 
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
     fn v(x: &[&str]) -> Vec<String> {
         x.iter().map(|s| s.to_string()).collect()
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn merge_appends_or_returns_to_the_edited_slot_without_duplicates() {
         let mut tags = v(&["A*", "C*"]);
         merge(&mut tags, None, v(&["b*", "a*"]));

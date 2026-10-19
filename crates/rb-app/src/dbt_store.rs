@@ -11,9 +11,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::config::DbtConfig;
 use rb_core::dbt::{self, DbtProject};
-use rb_core::user_view;
 
-use crate::admin_tab::Load;
+use crate::ui::Load;
 
 pub struct DbtStore {
     pub cfg: Option<DbtConfig>,
@@ -33,7 +32,8 @@ pub struct DbtStore {
 
 impl DbtStore {
     pub fn new(cfg: Option<DbtConfig>, cx: &mut Context<Self>) -> Self {
-        let mut s = DbtStore { cfg, project: Load::Loading, refreshing: false, refresh_error: None, aws_logging_in: false, live: Vec::new(), aws_profiles: Vec::new(), shell_profile: None, generation: 0 };
+        let mut s =
+            DbtStore { cfg, project: Load::Loading, refreshing: false, refresh_error: None, aws_logging_in: false, live: Vec::new(), aws_profiles: Vec::new(), shell_profile: None, generation: 0 };
         s.reload(cx);
         s
     }
@@ -118,7 +118,16 @@ impl DbtStore {
         cx.notify();
         let log = dbt::log_path();
         let log2 = log.clone();
-        let task = cx.background_spawn(async move { dbt::refresh_logged(&cfg, &log2) });
+        let have_profiles = !self.aws_profiles.is_empty();
+        // On an expired AWS SSO, the profiles (and the login shell's) are read here too: off the UI thread.
+        let task = cx.background_spawn(async move {
+            let res = dbt::refresh_logged(&cfg, &log2).map_err(|e| e.to_string());
+            let profiles = match &res {
+                Err(msg) if !have_profiles && dbt::needs_aws_login(msg) => Some((dbt::read_aws_profiles(), dbt::shell_aws_profile())),
+                _ => None,
+            };
+            (res, profiles)
+        });
         // Follows the log while dbt runs.
         cx.spawn(async move |this, cx| {
             loop {
@@ -140,21 +149,17 @@ impl DbtStore {
         })
         .detach();
         cx.spawn(async move |this, cx| {
-            let res = task.await;
+            let (res, profiles) = task.await;
             this.update(cx, |s, cx| {
                 s.refreshing = false;
                 s.live.clear();
+                // Expired AWS SSO: the profiles recommend the login.
+                if let Some((all, shell)) = profiles {
+                    (s.aws_profiles, s.shell_profile) = (all, shell);
+                }
                 match res {
                     Ok(()) => s.reload(cx),
-                    Err(e) => {
-                        let msg = e.to_string();
-                        // Expired AWS SSO: loads the profiles to recommend the login.
-                        if dbt::needs_aws_login(&msg) && s.aws_profiles.is_empty() {
-                            s.aws_profiles = dbt::read_aws_profiles();
-                            s.shell_profile = dbt::shell_aws_profile();
-                        }
-                        s.refresh_error = Some(msg);
-                    }
+                    Err(msg) => s.refresh_error = Some(msg),
                 }
                 cx.notify();
             })
@@ -167,15 +172,7 @@ impl DbtStore {
 /// "generated 3 h ago".
 pub fn parsed_ago(p: &DbtProject) -> String {
     let Some(secs) = p.parsed_at.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64) else { return String::new() };
-    let s = user_view::span(user_view::now() - secs);
-    let n = match s {
-        user_view::Span::Minutes(n) => t!("span.minutes", n = n),
-        user_view::Span::Hours(n) => t!("span.hours", n = n),
-        user_view::Span::Days(n) => t!("span.days", n = n),
-        user_view::Span::Months(n) => t!("span.months", n = n),
-        user_view::Span::Years(n) => t!("span.years", n = n),
-    };
-    t!("dbt.parsed_ago", ago = n).to_string()
+    t!("dbt.parsed_ago", ago = crate::ui::since(secs)).to_string()
 }
 
 impl Render for DbtStore {
@@ -196,7 +193,9 @@ impl Render for DbtStore {
                 let (models, sources, seeds) = p.manifest.counts();
                 card.child(h_flex().gap_2().child(div().text_color(theme.success).child("✓")).child(format!("{} · {}", t!("dbt.manifest_found"), parsed_ago(p))).child(div().flex_1()).child(refresh))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(t!("dbt.counts", models = models, sources = sources, seeds = seeds).to_string()))
-                    .when_some(p.git.repo.clone(), |d, r| d.child(div().text_xs().text_color(theme.muted_foreground).child(t!("dbt.github", repo = r.trim_start_matches("https://"), branch = p.git.branch).to_string())))
+                    .when_some(p.git.repo.clone(), |d, r| {
+                        d.child(div().text_xs().text_color(theme.muted_foreground).child(t!("dbt.github", repo = r.trim_start_matches("https://"), branch = p.git.branch).to_string()))
+                    })
             }
             Load::Failed(m) => card.child(h_flex().gap_2().child(div().flex_1().text_color(theme.warning).child(m.clone())).child(refresh)),
         };

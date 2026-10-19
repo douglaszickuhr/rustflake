@@ -1,5 +1,4 @@
 mod admin_tab;
-mod warehouse_tab;
 mod appearance;
 mod completion;
 mod conn_dialog;
@@ -16,8 +15,12 @@ mod picker;
 mod plan_view;
 mod quick_open;
 mod schema_tree;
+mod settings;
 mod sql_tab;
+mod table_sections;
 mod table_tab;
+mod ui;
+mod warehouse_tab;
 mod workspace;
 mod zoom;
 
@@ -28,7 +31,34 @@ use gpui_kit::*;
 rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustflake, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment, EditConnection, ClearLineage]);
+gpui_kit::actions!(
+    rustflake,
+    [
+        RunStatement,
+        RunScript,
+        CancelQuery,
+        SaveEdits,
+        NewSqlTab,
+        CloseTab,
+        RefreshNode,
+        CopyCells,
+        Quit,
+        QuickOpen,
+        QuickPrev,
+        QuickNext,
+        TabKey,
+        FormatSql,
+        ShowHistory,
+        ExplainEstimate,
+        ExplainAnalyze,
+        PlanZoomIn,
+        PlanZoomOut,
+        PlanFit,
+        ToggleComment,
+        EditConnection,
+        ClearLineage
+    ]
+);
 
 /// Database runtime shared by the application.
 pub struct Db(pub Engine);
@@ -70,14 +100,18 @@ fn set_dock_icon() {
     let Some(mtm) = MainThreadMarker::new() else { return };
     let data = NSData::with_bytes(include_bytes!("../assets/app-icon.png"));
     if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
-        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+        // AppKit marks the setter unsafe; the image is a valid NSImage and we are on the main thread.
+        #[allow(unsafe_code)]
+        unsafe {
+            NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image))
+        };
     }
 }
 
 fn main() {
     let started = Instant::now();
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
-    rb_core::config::migrate_legacy_dir();
+    rb_core::config::prepare_app_dir();
     let engine = Engine::new().expect("create database runtime");
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
@@ -95,6 +129,7 @@ fn main() {
         if let Err(e) = cx.text_system().add_fonts(fonts) {
             tracing::warn!("Geist fonts: {e}");
         }
+        settings::init(cx);
         lang::init(cx);
         appearance::init(cx);
         #[cfg(target_os = "macos")]
@@ -143,7 +178,9 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
 
         let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
-        let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), titlebar: Some(TitlebarOptions {
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
                 title: None,
                 appears_transparent: true,
                 // Vertical center of the title row (44px + 2px strip).
@@ -151,8 +188,7 @@ fn main() {
             }),
             ..gpui_kit::component::TitleBar::window_options()
         };
-        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| workspace::Workspace::new(window, cx)))
-            .expect("open window");
+        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| workspace::Workspace::new(window, cx))).expect("open window");
         cx.activate(true);
         tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "window opened");
     });

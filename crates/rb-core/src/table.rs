@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rust_i18n::t;
 use crate::DbError;
-use crate::lexer::quote_always;
+use crate::lexer::{qualify, quote_always};
 use crate::metadata::ColumnMeta;
 use crate::session::SqlWithParams;
+use rust_i18n::t;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditTarget {
@@ -25,10 +25,6 @@ pub struct PendingEdits {
     changed: BTreeMap<usize, BTreeMap<usize, Option<String>>>,
     deleted: BTreeSet<usize>,
     inserted: Vec<BTreeMap<usize, Option<String>>>,
-}
-
-pub fn qualified(schema: &str, table: &str) -> String {
-    format!("{}.{}", quote_always(schema), quote_always(table))
 }
 
 /// SELECT for the table tab. The filter is a raw WHERE expression typed by the user;
@@ -99,7 +95,7 @@ pub fn build_sql(t: &EditTarget, edits: &[RowEdit]) -> Result<Vec<SqlWithParams>
     if pk_cols.is_empty() {
         return Err(DbError::Edit(t!("err.edit.no_pk").to_string()));
     }
-    let table = qualified(&t.schema, &t.table);
+    let table = qualify(&[&t.schema, &t.table]);
     let mut out = Vec::new();
     for e in edits {
         let mut params = Vec::new();
@@ -125,11 +121,7 @@ pub fn build_sql(t: &EditTarget, edits: &[RowEdit]) -> Result<Vec<SqlWithParams>
                     format!("INSERT INTO {table} DEFAULT VALUES")
                 } else {
                     let cols = values.iter().map(|(i, _)| quote_always(&t.columns[*i].name)).collect::<Vec<_>>().join(", ");
-                    let vals = values
-                        .iter()
-                        .map(|(i, v)| bind(&mut params, v, &t.columns[*i].cast_type))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                    let vals = values.iter().map(|(i, v)| bind(&mut params, v, &t.columns[*i].cast_type)).collect::<Vec<_>>().join(", ");
                     format!("INSERT INTO {table} ({cols}) VALUES ({vals})")
                 }
             }
@@ -188,10 +180,7 @@ impl PendingEdits {
         let pk = target.pk();
         let pk_of = |row: usize| pk.iter().map(|&c| original(row, c)).collect::<Vec<_>>();
         let mut out: Vec<RowEdit> = self.deleted.iter().map(|&r| RowEdit::Delete { pk: pk_of(r) }).collect();
-        out.extend(self.changed.iter().filter(|(r, _)| !self.deleted.contains(r)).map(|(&r, cols)| RowEdit::Update {
-            pk: pk_of(r),
-            changes: cols.iter().map(|(&c, v)| (c, v.clone())).collect(),
-        }));
+        out.extend(self.changed.iter().filter(|(r, _)| !self.deleted.contains(r)).map(|(&r, cols)| RowEdit::Update { pk: pk_of(r), changes: cols.iter().map(|(&c, v)| (c, v.clone())).collect() }));
         out.extend(self.inserted.iter().map(|vals| RowEdit::Insert { values: vals.iter().map(|(&c, v)| (c, v.clone())).collect() }));
         out
     }
@@ -209,13 +198,12 @@ mod tests {
         EditTarget {
             schema: "Sales".into(),
             table: "Order Items".into(),
-            columns: vec![
-                col("id", "integer", true, false),
-                col("Name", "text", false, false),
-                col("twice", "integer", false, true),
-                col("mood", "\"Sales\".mood", false, false),
-            ],
+            columns: vec![col("id", "integer", true, false), col("Name", "text", false, false), col("twice", "integer", false, true), col("mood", "\"Sales\".mood", false, false)],
         }
+    }
+
+    fn q(schema: &str, table: &str) -> String {
+        qualify(&[schema, table])
     }
 
     fn s(v: &str) -> Option<String> {
@@ -224,25 +212,22 @@ mod tests {
 
     #[test]
     fn select_sql_quotes_identifiers() {
-        assert_eq!(select_sql(&qualified("Sales", "Order Items"), None, None, Some(TABLE_LIMIT)), r#"SELECT * FROM "Sales"."Order Items" LIMIT 1000"#);
+        assert_eq!(select_sql(&q("Sales", "Order Items"), None, None, Some(TABLE_LIMIT)), r#"SELECT * FROM "Sales"."Order Items" LIMIT 1000"#);
         assert_eq!(
-            select_sql(&qualified("public", "t"), Some(" a > 1 -- x "), Some(("Name", false)), Some(TABLE_LIMIT)),
+            select_sql(&q("public", "t"), Some(" a > 1 -- x "), Some(("Name", false)), Some(TABLE_LIMIT)),
             "SELECT * FROM \"public\".\"t\" WHERE (a > 1 -- x\n) ORDER BY \"Name\" DESC LIMIT 1000"
         );
-        assert_eq!(select_sql(&qualified("public", "t"), Some("   "), Some(("id", true)), Some(TABLE_LIMIT)), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC LIMIT 1000"#);
+        assert_eq!(select_sql(&q("public", "t"), Some("   "), Some(("id", true)), Some(TABLE_LIMIT)), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC LIMIT 1000"#);
     }
 
     #[test]
     fn select_sql_without_limit_leaves_paging_to_the_cursor() {
-        assert_eq!(select_sql(&qualified("public", "t"), None, Some(("id", true)), None), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC"#);
+        assert_eq!(select_sql(&q("public", "t"), None, Some(("id", true)), None), r#"SELECT * FROM "public"."t" ORDER BY "id" ASC"#);
     }
 
     #[test]
     fn generated_sql_always_quotes_identifiers() {
-        assert_eq!(
-            select_sql(&qualified("public", "t"), None, Some(("current_date", true)), Some(TABLE_LIMIT)),
-            r#"SELECT * FROM "public"."t" ORDER BY "current_date" ASC LIMIT 1000"#
-        );
+        assert_eq!(select_sql(&q("public", "t"), None, Some(("current_date", true)), Some(TABLE_LIMIT)), r#"SELECT * FROM "public"."t" ORDER BY "current_date" ASC LIMIT 1000"#);
         let t = EditTarget { schema: "public".into(), table: "t".into(), columns: vec![col("left", "integer", true, false), col("full", "text", false, false)] };
         let sql = build_sql(&t, &[RowEdit::Update { pk: vec![s("1")], changes: vec![(1, s("x"))] }]).unwrap();
         assert_eq!(sql[0].sql, r#"UPDATE "public"."t" SET "full" = ($1::text)::text WHERE "left" = ($2::text)::integer"#);
@@ -263,11 +248,7 @@ mod tests {
 
     #[test]
     fn insert_and_delete() {
-        let sql = build_sql(
-            &target(),
-            &[RowEdit::Insert { values: vec![(0, s("1")), (1, s("x"))] }, RowEdit::Insert { values: vec![] }, RowEdit::Delete { pk: vec![s("9")] }],
-        )
-        .unwrap();
+        let sql = build_sql(&target(), &[RowEdit::Insert { values: vec![(0, s("1")), (1, s("x"))] }, RowEdit::Insert { values: vec![] }, RowEdit::Delete { pk: vec![s("9")] }]).unwrap();
         assert_eq!(sql[0].sql, r#"INSERT INTO "Sales"."Order Items" ("id", "Name") VALUES (($1::text)::integer, ($2::text)::text)"#);
         assert_eq!(sql[1].sql, r#"INSERT INTO "Sales"."Order Items" DEFAULT VALUES"#);
         assert_eq!(sql[2].sql, r#"DELETE FROM "Sales"."Order Items" WHERE "id" = ($1::text)::integer"#);
@@ -313,7 +294,7 @@ mod tests {
         let mut p = PendingEdits::default();
         assert!(p.is_empty());
         p.set(0, 1, s("new"), 2);
-        p.set(1, 1, s("vai sumir"), 2);
+        p.set(1, 1, s("will vanish"), 2);
         p.toggle_delete(1, 2);
         p.add_row();
         p.set(2, 0, s("10"), 2); // row 2 = first inserted
@@ -326,11 +307,7 @@ mod tests {
         let original = |row: usize, _col: usize| s(&format!("pk{row}"));
         assert_eq!(
             p.to_row_edits(&target(), original),
-            vec![
-                RowEdit::Delete { pk: vec![s("pk1")] },
-                RowEdit::Update { pk: vec![s("pk0")], changes: vec![(1, s("new"))] },
-                RowEdit::Insert { values: vec![(0, s("10"))] },
-            ]
+            vec![RowEdit::Delete { pk: vec![s("pk1")] }, RowEdit::Update { pk: vec![s("pk0")], changes: vec![(1, s("new"))] }, RowEdit::Insert { values: vec![(0, s("10"))] },]
         );
         p.toggle_delete(1, 2);
         assert!(!p.is_deleted(1));

@@ -26,9 +26,12 @@ pub fn zoom_anchor(offset: f32, pointer: f32, z0: f32, z1: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn wheel_zoom_is_smooth_and_clamped() {
         assert!(wheel_zoom(1.0, 10.0) > 1.0, "scrolling up zooms in");
         assert!(wheel_zoom(1.0, -10.0) < 1.0);
@@ -37,7 +40,7 @@ mod tests {
         assert_eq!(wheel_zoom(0.25, -1000.0), 0.25);
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn zoom_keeps_the_point_under_the_pointer() {
         // No scroll, pointer at 116 px (16 margin + 100 content): content point 100 at zoom 1.
         let off = zoom_anchor(0.0, 116.0, 1.0, 2.0);
@@ -46,7 +49,7 @@ mod tests {
         assert_eq!(zoom_anchor(0.0, 500.0, 1.0, 0.25), 0.0, "zooming out at the start: never scrolls before the beginning");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn step_and_fit_are_clamped() {
         assert_eq!(step_zoom(2.0, true), 2.0);
         assert_eq!(step_zoom(0.25, false), 0.25);

@@ -11,15 +11,15 @@ use snowflake_connector_rs::{CellValue, VectorValue};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::DbError;
-use crate::secrets;
 use crate::batch::{Batch, ColumnInfo};
 use crate::config::{ConnectionConfig, SnowflakeAuth, expand_home};
 use crate::explain::{Plan, parse_sf_explain, parse_sf_stats};
 use crate::metadata::{ColumnMeta, SchemaObjects};
-use crate::session::{Cmd, Credentials, ExecOutcome, FETCH_ROWS, FetchOutcome, Reply};
+use crate::secrets;
+use crate::session::{Cmd, Credentials, ExecOutcome, FETCH_ROWS, FetchOutcome, Reply, Table};
 use crate::split::{is_read_only_query, is_transaction_control};
 
-type Rows = Vec<Vec<Option<String>>>;
+type OwnedRows = Vec<Vec<Option<String>>>;
 
 /// Text shown in the grid. Decimal stays exact; timestamps in ISO 8601.
 pub fn cell_text(v: &CellValue) -> Option<String> {
@@ -46,7 +46,7 @@ pub fn cell_text(v: &CellValue) -> Option<String> {
 
 /// Source of row blocks (the connector's cursor; in tests, a queue).
 pub(crate) trait Chunks {
-    fn next_chunk(&mut self) -> impl Future<Output = Result<Option<Rows>, DbError>> + Send;
+    fn next_chunk(&mut self) -> impl Future<Output = Result<Option<OwnedRows>, DbError>> + Send;
 }
 
 /// Splits blocks of any size into batches of `n` rows.
@@ -79,7 +79,7 @@ impl<C: Chunks> Pager<C> {
         let mut batch = Batch::empty(self.ncols);
         for row in self.buf.drain(..take) {
             let cells: Vec<Option<&[u8]>> = row.iter().map(|c| c.as_deref().map(str::as_bytes)).collect();
-            batch.push_row(&cells);
+            batch.push_row(&cells)?;
         }
         // Batch ends exactly at a block end: checks for another block so "more" is answered correctly.
         while self.buf.is_empty() && !self.done {
@@ -89,25 +89,57 @@ impl<C: Chunks> Pager<C> {
     }
 }
 
-fn col_index(names: &[String], col: &str) -> Option<usize> {
-    names.iter().position(|n| n.eq_ignore_ascii_case(col))
+/// Rows of a `SHOW` or query result, as text.
+pub type Rows = [Vec<Option<String>>];
+
+/// One result row read by column name (case-insensitive): `SHOW` column order is not a contract.
+#[derive(Clone, Copy)]
+pub(crate) struct Named<'a> {
+    names: &'a [String],
+    row: &'a [Option<String>],
 }
 
-pub(crate) fn field<'a>(names: &[String], row: &'a [Option<String>], col: &str) -> Option<&'a str> {
-    col_index(names, col).and_then(|i| row.get(i)).and_then(|v| v.as_deref())
+pub(crate) fn named<'a>(names: &'a [String], rows: &'a Rows) -> impl Iterator<Item = Named<'a>> + 'a {
+    rows.iter().map(move |row| Named { names, row })
 }
 
-/// Values of a `SHOW` column (column names case-insensitive).
-pub fn first_named(names: &[String], rows: &[Vec<Option<String>>], col: &str) -> Vec<String> {
-    rows.iter().filter_map(|r| field(names, r, col).map(String::from)).collect()
+impl<'a> Named<'a> {
+    pub(crate) fn new(names: &'a [String], row: &'a [Option<String>]) -> Self {
+        Named { names, row }
+    }
+
+    /// Raw value; `None` = NULL or no such column.
+    pub(crate) fn get(&self, col: &str) -> Option<&'a str> {
+        let i = self.names.iter().position(|n| n.eq_ignore_ascii_case(col))?;
+        self.row.get(i)?.as_deref()
+    }
+
+    /// Non-empty text.
+    pub(crate) fn text(&self, col: &str) -> Option<String> {
+        self.get(col).filter(|v| !v.is_empty()).map(String::from)
+    }
+
+    pub(crate) fn flag(&self, col: &str) -> bool {
+        self.get(col).is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    }
+
+    /// Parsed number; missing or invalid = the default (0).
+    pub(crate) fn num<T: std::str::FromStr + Default>(&self, col: &str) -> T {
+        self.get(col).and_then(|v| v.parse().ok()).unwrap_or_default()
+    }
+}
+
+/// Values of a `SHOW` column.
+pub fn first_named(names: &[String], rows: &Rows, col: &str) -> Vec<String> {
+    named(names, rows).filter_map(|r| r.get(col).map(String::from)).collect()
 }
 
 /// `SHOW OBJECTS IN SCHEMA`.
-pub fn parse_objects(names: &[String], rows: &[Vec<Option<String>>]) -> SchemaObjects {
+pub fn parse_objects(names: &[String], rows: &Rows) -> SchemaObjects {
     let mut o = SchemaObjects::default();
-    for r in rows {
-        let Some(name) = field(names, r, "name") else { continue };
-        let kind = field(names, r, "kind").unwrap_or("TABLE");
+    for r in named(names, rows) {
+        let Some(name) = r.get("name") else { continue };
+        let kind = r.get("kind").unwrap_or("TABLE");
         let list = if kind.contains("MATERIALIZED") {
             &mut o.matviews
         } else if kind.contains("VIEW") {
@@ -120,24 +152,24 @@ pub fn parse_objects(names: &[String], rows: &[Vec<Option<String>>]) -> SchemaOb
     o
 }
 
-/// `SHOW USER FUNCTIONS IN SCHEMA`: `arguments` = `NOME(TIPOS) RETURN TIPO`.
-pub fn parse_functions(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<String> {
+/// `SHOW USER FUNCTIONS IN SCHEMA`: `arguments` = `NAME(TYPES) RETURN TYPE`.
+pub fn parse_functions(names: &[String], rows: &Rows) -> Vec<String> {
     first_named(names, rows, "arguments").into_iter().map(|a| a.split(" RETURN ").next().unwrap_or(&a).to_string()).collect()
 }
 
 /// `DESCRIBE TABLE` / `DESCRIBE VIEW`.
-pub fn parse_describe(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<ColumnMeta> {
-    rows.iter()
+pub fn parse_describe(names: &[String], rows: &Rows) -> Vec<ColumnMeta> {
+    named(names, rows)
         .filter_map(|r| {
-            let name = field(names, r, "name")?.to_string();
-            let type_name = field(names, r, "type").unwrap_or("").to_string();
+            let name = r.get("name")?.to_string();
+            let type_name = r.get("type").unwrap_or("").to_string();
             Some(ColumnMeta {
                 name,
                 cast_type: type_name.clone(),
                 type_name,
-                nullable: field(names, r, "null?") != Some("N"),
-                default: field(names, r, "default").map(String::from),
-                is_pk: field(names, r, "primary key") == Some("Y"),
+                nullable: r.get("null?") != Some("N"),
+                default: r.get("default").map(String::from),
+                is_pk: r.get("primary key") == Some("Y"),
                 generated: false,
             })
         })
@@ -167,7 +199,7 @@ pub(crate) fn sf_err(e: sf::Error) -> DbError {
 }
 
 impl Chunks for sf::ResultCursor {
-    async fn next_chunk(&mut self) -> Result<Option<Rows>, DbError> {
+    async fn next_chunk(&mut self) -> Result<Option<OwnedRows>, DbError> {
         let Some(table) = self.next_table().await.map_err(sf_err)? else { return Ok(None) };
         let mut rows = Vec::with_capacity(table.row_count());
         for row in table.dynamic_rows().map_err(sf_err)? {
@@ -196,10 +228,16 @@ struct Sso {
     keychain: String,
 }
 
+/// The Keychain blocks (and may show a prompt): off the runtime's workers.
+async fn keychain<T: Send + 'static>(f: impl FnOnce() -> Result<T, DbError> + Send + 'static) -> Result<T, DbError> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| DbError::Keychain(e.to_string()))?
+}
+
 impl Sso {
     /// Tries the stored ID token; if it doesn't exist or is rejected (expired), deletes it and returns None.
     async fn with_cached_token(&self) -> Option<sf::Session> {
-        let token = match secrets::get_password(&self.keychain) {
+        let account = self.keychain.clone();
+        let token = match keychain(move || secrets::get_password(&account)).await {
             Ok(Some(t)) => t,
             Ok(None) => {
                 tracing::info!("no stored ID token; browser login");
@@ -224,20 +262,22 @@ impl Sso {
             }
             Err(e) => {
                 tracing::info!("ID token rejected ({e}); falling back to browser login");
-                let _ = secrets::delete_password(&self.keychain);
+                let account = self.keychain.clone();
+                let _ = keychain(move || secrets::delete_password(&account)).await;
                 None
             }
         }
     }
 
     /// Stores the ID token that came from the browser login.
-    fn remember(&self, s: &sf::Session) {
-        let Some(t) = s.id_token() else {
+    async fn remember(&self, s: &sf::Session) {
+        let Some(t) = s.id_token().map(String::from) else {
             // No token: the account lacks ALLOW_ID_TOKEN or the server doesn't issue one to this client.
             tracing::warn!("SSO login returned no ID token; the next login will open the browser again");
             return;
         };
-        match secrets::set_password(&self.keychain, t) {
+        let account = self.keychain.clone();
+        match keychain(move || secrets::set_password(&account, &t)).await {
             Ok(()) => tracing::info!("ID token stored in the Keychain"),
             Err(e) => tracing::warn!("could not store the ID token in the Keychain: {e}"),
         }
@@ -249,7 +289,7 @@ impl Sso {
             return Ok(s);
         }
         let s = create_session(browser).await?;
-        self.remember(&s);
+        self.remember(&s).await;
         Ok(s)
     }
 }
@@ -343,11 +383,11 @@ pub(crate) struct UseLog(Vec<(String, String)>);
 impl UseLog {
     /// Stores the statement if it is a `USE`; the most recent of each kind replaces the previous one.
     pub(crate) fn record(&mut self, sql: &str) {
-        let mut words = sql.split_whitespace();
-        if !words.next().is_some_and(|w| w.eq_ignore_ascii_case("use")) {
+        let mut words = crate::split::words(sql);
+        if words.next().as_deref() != Some("use") {
             return;
         }
-        let kind = match words.next().map(str::to_ascii_lowercase).as_deref() {
+        let kind = match words.next().as_deref() {
             Some(k @ ("warehouse" | "role" | "database" | "schema" | "secondary")) => k.to_string(),
             _ => "plain".into(),
         };
@@ -440,7 +480,7 @@ impl SfActor {
         Ok(plan)
     }
 
-    async fn query_named(&self, sql: &str) -> Result<(Vec<String>, Rows), DbError> {
+    async fn query_named(&self, sql: &str) -> Result<Table, DbError> {
         let mut cursor = self.submit(sql).await?;
         let names = cursor.schema().columns().iter().map(|c| c.name().to_string()).collect();
         let mut rows = Vec::new();
@@ -468,8 +508,7 @@ impl SfActor {
         };
         self.shared.uses.lock().expect("USE mutex").record(&sql);
         let query_id = Some(cursor.query_id().to_string());
-        let columns: Arc<[ColumnInfo]> =
-            cursor.schema().columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: crate::Type::TEXT }).collect();
+        let columns: Arc<[ColumnInfo]> = cursor.schema().columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: crate::Type::TEXT }).collect();
         let mut pager = Pager::new(cursor, columns.len());
         let (batch, mut more) = match pager.next_batch(FETCH_ROWS as usize).await {
             Ok(b) => b,
@@ -521,8 +560,8 @@ mod tests {
         assert_eq!(log.replay(), vec!["USE ROLE r1", "use warehouse B", "  use database D", "use secondary roles all"]);
         log.record("use schema S2");
         assert_eq!(log.replay().last().map(String::as_str), Some("use schema S2"));
-        log.record("use PUBLIC");
-        assert_eq!(log.replay().last().map(String::as_str), Some("use PUBLIC"));
+        log.record("-- back\nuse PUBLIC");
+        assert_eq!(log.replay().last().map(String::as_str), Some("-- back\nuse PUBLIC"));
     }
 
     #[test]
@@ -591,11 +630,7 @@ mod tests {
     #[test]
     fn show_objects_split_by_kind() {
         let n = names(&["created_on", "name", "database_name", "schema_name", "kind"]);
-        let rows = vec![
-            row(&["x", "ORDERS", "DB", "S", "TABLE"]),
-            row(&["x", "V_ORDERS", "DB", "S", "VIEW"]),
-            row(&["x", "MV", "DB", "S", "MATERIALIZED_VIEW"]),
-        ];
+        let rows = vec![row(&["x", "ORDERS", "DB", "S", "TABLE"]), row(&["x", "V_ORDERS", "DB", "S", "VIEW"]), row(&["x", "MV", "DB", "S", "MATERIALIZED_VIEW"])];
         let o = parse_objects(&n, &rows);
         assert_eq!((o.tables, o.views, o.matviews), (vec!["ORDERS".into()], vec!["V_ORDERS".into()], vec!["MV".into()]));
     }
@@ -610,7 +645,7 @@ mod tests {
     #[test]
     fn describe_reads_type_null_default_and_pk() {
         let n = names(&["name", "type", "kind", "null?", "default", "primary key", "unique key"]);
-        let rows = vec![row(&["ID", "NUMBER(38,0)", "COLUMN", "N", "", "Y", "N"]), row(&["NOME", "VARCHAR(16777216)", "COLUMN", "Y", "'x'", "N", "N"])];
+        let rows = vec![row(&["ID", "NUMBER(38,0)", "COLUMN", "N", "", "Y", "N"]), row(&["NAME", "VARCHAR(16777216)", "COLUMN", "Y", "'x'", "N", "N"])];
         let c = parse_describe(&n, &rows);
         assert_eq!((c[0].name.as_str(), c[0].type_name.as_str(), c[0].nullable, c[0].is_pk), ("ID", "NUMBER(38,0)", false, true));
         assert_eq!((c[1].nullable, c[1].default.as_deref(), c[1].is_pk), (true, Some("'x'"), false));

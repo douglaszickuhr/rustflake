@@ -18,11 +18,12 @@ use rb_core::session::Session;
 use rb_core::warehouse::{self, Suspend, WarehouseInfo, WhGrant, WhUsage};
 
 use crate::Db;
-use crate::admin_tab::{Load, Target, explain, human_ms, kv};
+use crate::admin_tab::{Target, explain, human_ms, kv};
 use crate::lang::Lang;
 use crate::meta::ConnTarget;
 use crate::plan_view::PlanView;
 use crate::sql_tab::query_id_button;
+use crate::ui::{Load, section};
 
 /// Opens (or focuses) Users & Roles on the clicked role/user.
 pub type Goto = Rc<dyn Fn(Target, &mut Window, &mut App)>;
@@ -257,27 +258,31 @@ impl WarehouseTab {
         col = col.child(div().text_xs().text_color(theme.muted_foreground).child(t!("admin.of", n = items.len(), total = total).to_string()));
         let selected = self.selected.clone();
         col.child(
-            uniform_list("wh-list", items.len(), cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
-                let theme = cx.theme();
-                range
-                    .map(|i| {
-                        let w = items[i].clone();
-                        let name = w.name.clone();
-                        let active = selected.as_deref() == Some(w.name.as_str());
-                        v_flex()
-                            .id(("wh-item", i))
-                            .px_2()
-                            .py_1()
-                            .rounded(theme.radius)
-                            .cursor_pointer()
-                            .when(active, |d| d.bg(theme.secondary))
-                            .hover(|d| d.bg(theme.secondary_hover))
-                            .child(div().text_sm().font_family(theme.mono_font_family.clone()).overflow_hidden().text_ellipsis().whitespace_nowrap().child(w.name.clone()))
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(list_meta(&w)))
-                            .on_click(cx.listener(move |t, _, _, cx| t.select(name.clone(), cx)))
-                    })
-                    .collect()
-            }))
+            uniform_list(
+                "wh-list",
+                items.len(),
+                cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
+                    let theme = cx.theme();
+                    range
+                        .map(|i| {
+                            let w = items[i].clone();
+                            let name = w.name.clone();
+                            let active = selected.as_deref() == Some(w.name.as_str());
+                            v_flex()
+                                .id(("wh-item", i))
+                                .px_2()
+                                .py_1()
+                                .rounded(theme.radius)
+                                .cursor_pointer()
+                                .when(active, |d| d.bg(theme.secondary))
+                                .hover(|d| d.bg(theme.secondary_hover))
+                                .child(div().text_sm().font_family(theme.mono_font_family.clone()).overflow_hidden().text_ellipsis().whitespace_nowrap().child(w.name.clone()))
+                                .child(div().text_xs().text_color(theme.muted_foreground).child(list_meta(&w)))
+                                .on_click(cx.listener(move |t, _, _, cx| t.select(name.clone(), cx)))
+                        })
+                        .collect()
+                }),
+            )
             .flex_1(),
         )
     }
@@ -330,15 +335,7 @@ impl WarehouseTab {
 
         let left = v_flex().flex_grow(1.).flex_basis(px(420.)).min_w_0().gap_6().child(config).child(self.render_access(&name, cx));
         let right = v_flex().flex_grow(1.).flex_basis(px(420.)).min_w_0().gap_6().child(self.render_credits(&name, cx)).child(self.render_usage(&name, window, cx));
-        v_flex()
-            .id("wh-details")
-            .size_full()
-            .p_4()
-            .gap_6()
-            .overflow_y_scroll()
-            .child(header)
-            .child(h_flex().items_start().flex_wrap().gap_10().child(left).child(right))
-            .into_any_element()
+        v_flex().id("wh-details").size_full().p_4().gap_6().overflow_y_scroll().child(header).child(h_flex().items_start().flex_wrap().gap_10().child(left).child(right)).into_any_element()
     }
 
     /// Roles with a privilege on the warehouse and how many users reach it via inheritance.
@@ -365,16 +362,12 @@ impl WarehouseTab {
             Some(Load::Ready((graph, users))) => {
                 let who = warehouse::users_reaching(&usable, graph, users);
                 let open = self.users_open;
-                out = out.child(
-                    Button::new("wh-users")
-                        .label(format!("{} {}", if open { "▾" } else { "▸" }, t!("wh.users_reach", n = who.len())))
-                        .ghost()
-                        .small()
-                        .on_click(cx.listener(|t, _, _, cx| {
-                            t.users_open = !t.users_open;
-                            cx.notify();
-                        })),
-                );
+                out = out.child(Button::new("wh-users").label(format!("{} {}", if open { "▾" } else { "▸" }, t!("wh.users_reach", n = who.len()))).ghost().small().on_click(cx.listener(
+                    |t, _, _, cx| {
+                        t.users_open = !t.users_open;
+                        cx.notify();
+                    },
+                )));
                 if open {
                     let mut list = h_flex().flex_wrap().gap_1();
                     for (i, u) in who.into_iter().enumerate() {
@@ -412,15 +405,20 @@ impl WarehouseTab {
 
     fn render_usage(&mut self, name: &str, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let mut out = v_flex()
-            .gap_2()
-            .child(h_flex().items_baseline().child(section(t!("wh.usage").to_string(), &theme)).child(div().flex_1()).child(div().text_xs().text_color(theme.muted_foreground).child(t!("admin.activity_lag").to_string())));
+        let mut out = v_flex().gap_2().child(
+            h_flex()
+                .items_baseline()
+                .child(section(t!("wh.usage").to_string(), &theme))
+                .child(div().flex_1())
+                .child(div().text_xs().text_color(theme.muted_foreground).child(t!("admin.activity_lag").to_string())),
+        );
         let u = match self.usage.get(name) {
             Some(Load::Ready(u)) => u.clone(),
             Some(Load::Failed(m)) => return out.child(div().text_sm().text_color(theme.danger).child(m.clone())),
             _ => return out.child(t!("tree.loading").to_string()),
         };
-        let row = |k: String, v: String| h_flex().justify_between().text_sm().child(div().text_color(theme.muted_foreground).child(k)).child(div().font_family(theme.mono_font_family.clone()).child(v));
+        let row =
+            |k: String, v: String| h_flex().justify_between().text_sm().child(div().text_color(theme.muted_foreground).child(k)).child(div().font_family(theme.mono_font_family.clone()).child(v));
 
         out = out.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(t!("wh.top_users").to_string()));
         for (i, x) in u.top_users.iter().enumerate() {
@@ -458,7 +456,15 @@ impl WarehouseTab {
                     .py_1()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(div().text_xs().font_family(theme.mono_font_family.clone()).overflow_hidden().text_ellipsis().whitespace_nowrap().child(q.text.split_whitespace().collect::<Vec<_>>().join(" ")))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family(theme.mono_font_family.clone())
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(q.text.split_whitespace().collect::<Vec<_>>().join(" ")),
+                    )
                     .child(
                         h_flex()
                             .gap_2()
@@ -485,18 +491,10 @@ fn list_meta(w: &WarehouseInfo) -> String {
     }
 }
 
-fn section(title: String, theme: &gpui_kit::component::Theme) -> Div {
-    div().pt_1().pb_1().text_xs().text_color(theme.muted_foreground).child(title.to_uppercase())
-}
-
 /// Without an active warehouse ACCOUNT_USAGE doesn't run; without IMPORTED PRIVILEGES it doesn't even exist.
 fn usage_error(e: &rb_core::DbError) -> String {
     let msg = e.to_string();
-    if msg.to_ascii_lowercase().contains("no active warehouse") {
-        format!("{msg}\n{}", t!("admin.hint_warehouse"))
-    } else {
-        explain(e, "admin.hint_activity")
-    }
+    if msg.to_ascii_lowercase().contains("no active warehouse") { format!("{msg}\n{}", t!("admin.hint_warehouse")) } else { explain(e, "admin.hint_activity") }
 }
 
 /// Plan dialog content: loads in the background.

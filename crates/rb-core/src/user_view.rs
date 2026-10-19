@@ -1,23 +1,11 @@
 //! Pure pieces of the user page: relative time, list row, grouped logins, filtered tree.
 
-use crate::admin::{LoginEvent, TreeRow, UserInfo};
+use crate::admin::{LoginEvent, UserInfo};
 
 /// `YYYY-MM-DD HH:MM:SS…` → Unix seconds. ponytail: ignores the time zone (Snowflake returns UTC here).
 pub fn parse_ts(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
-    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[13] != b':' {
-        return None;
-    }
-    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
-    let (y, m, d, hh, mm, ss) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
-    // Days since 1970-01-01 (Howard Hinnant's civil algorithm).
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
+    let t = chrono::NaiveDateTime::parse_from_str(s.get(..19)?, "%Y-%m-%d %H:%M:%S").ok()?;
+    Some(t.and_utc().timestamp())
 }
 
 pub fn now() -> i64 {
@@ -99,16 +87,6 @@ pub fn intensity(n: u64) -> u8 {
     }
 }
 
-/// For each visible row: is it the parent's last child? (`└` instead of `├`).
-pub fn last_child(rows: &[&TreeRow]) -> Vec<bool> {
-    (0..rows.len())
-        .map(|i| {
-            let d = rows[i].depth;
-            rows[i + 1..].iter().find(|r| r.depth <= d).is_none_or(|r| r.depth < d)
-        })
-        .collect()
-}
-
 /// Provisioned by SCIM: the owner is the IdP provisioner's role (`OKTA_PROVISIONER`,
 /// `AAD_PROVISIONER`, `GENERIC_SCIM_PROVISIONER`).
 pub fn scim_managed(owner: Option<&str>) -> bool {
@@ -134,7 +112,7 @@ pub fn auth_summary(u: &UserInfo, recent: &[LoginEvent]) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::admin::{LoginEvent, TreeRow, UserInfo};
+    use crate::admin::{LoginEvent, UserInfo};
 
     const DAY: i64 = 86_400;
 
@@ -185,14 +163,6 @@ mod tests {
     #[test]
     fn intensity_levels() {
         assert_eq!([0, 1, 4, 5, 49, 50, 690].map(intensity), [0, 1, 1, 2, 2, 3, 3]);
-    }
-
-    #[test]
-    fn connectors_mark_the_last_child() {
-        let r = |n: &str, d| TreeRow { name: n.into(), depth: d, descendants: 0 };
-        let rows = [r("A", 0), r("B", 1), r("C", 2), r("D", 1), r("E", 0)];
-        let refs: Vec<&TreeRow> = rows.iter().collect();
-        assert_eq!(last_child(&refs), vec![false, false, true, true, true]);
     }
 
     #[test]

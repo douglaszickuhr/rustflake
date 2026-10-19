@@ -1,10 +1,10 @@
-use std::rc::Rc;
 use rust_i18n::t;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableSelection, TableState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -20,11 +20,11 @@ use std::collections::HashMap;
 
 use rb_core::table_info::{ColInfo, Facts, LinNode};
 
-use crate::admin_tab::Load;
 use crate::dbt_store::DbtStore;
 use crate::grid::{self, ResultGrid};
 use crate::lang::Lang;
 use crate::meta::{ConnTarget, MetaStore};
+use crate::ui::Load;
 use crate::{CancelQuery, CopyCells, Db, SaveEdits};
 
 /// Opens a SQL tab with the text (Query button).
@@ -74,15 +74,28 @@ pub(crate) struct CustomSection {
 }
 
 /// Columns, classification and masking coming from Snowflake (dbt is merged at draw time).
-/// + the remaining per-column tags and the tag/policy query error (shown in the summary).
-pub(crate) type DefRaw = (Vec<ColInfo>, HashMap<String, (u8, String)>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>, Option<String>);
+#[derive(Clone)]
+pub(crate) struct DefRaw {
+    pub(crate) cols: Vec<ColInfo>,
+    /// Column → (level, tag) of the configured classification tag.
+    pub(crate) class_tags: HashMap<String, (u8, String)>,
+    /// Column → masking policy.
+    pub(crate) masking: HashMap<String, String>,
+    /// Column → its other tags (name, value).
+    pub(crate) other_tags: HashMap<String, Vec<(String, String)>>,
+    /// Tags or policies didn't load (shown in the summary instead of "nothing classified").
+    pub(crate) tag_error: Option<String>,
+}
+
+/// Model unique_id and its compiled SQL with when it was generated.
+pub(crate) type Compiled = (String, Load<(String, Option<std::time::SystemTime>)>);
 
 pub struct TableTab {
     focus: FocusHandle,
     pub(crate) schema: String,
     pub(crate) table: String,
-    conn: ConnTarget,
-    meta: Entity<MetaStore>,
+    pub(crate) conn: ConnTarget,
+    pub(crate) meta: Entity<MetaStore>,
     session: Option<Arc<Session>>,
     filter: Entity<InputState>,
     grid: Entity<TableState<ResultGrid>>,
@@ -112,7 +125,7 @@ pub struct TableTab {
     pub(crate) blame: Option<(String, Load<Vec<rb_core::dbt::BlameLine>>)>,
     pub(crate) show_blame: bool,
     /// Compiled model SQL (disk or `dbt compile`), by unique_id, with when it was generated.
-    pub(crate) compiled: Option<(String, Load<(String, Option<std::time::SystemTime>)>)>,
+    pub(crate) compiled: Option<Compiled>,
     pub(crate) compiling: bool,
     /// Last lines of the running `dbt compile`.
     pub(crate) compile_live: Vec<String>,
@@ -127,12 +140,22 @@ pub struct TableTab {
 
 impl TableTab {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(schema: String, table: String, conn: ConnTarget, meta: Entity<MetaStore>, dbt: Option<Entity<DbtStore>>, open_query: OpenQuery, open_table: crate::schema_tree::OpenTable, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        schema: String,
+        table: String,
+        conn: ConnTarget,
+        meta: Entity<MetaStore>,
+        dbt: Option<Entity<DbtStore>>,
+        open_query: OpenQuery,
+        open_table: crate::schema_tree::OpenTable,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("table.filter_placeholder").to_string()));
         let grid = cx.new(|cx| TableState::new(ResultGrid::new(true), window, cx).cell_selectable(true));
 
         let weak = cx.entity().downgrade();
-        let on_sort: Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)> = Rc::new(move |col, sort, _, cx| {
+        let on_sort: grid::OnSort = Rc::new(move |col, sort, _, cx| {
             let weak = weak.clone();
             // The grid is mid-update now; reloading later avoids a double borrow.
             cx.defer(move |cx| {
@@ -385,16 +408,7 @@ impl TableTab {
                             })
                             .child(DataTable::new(grid).stripe(true).bordered(true)),
                     )
-                    .child(
-                        h_flex()
-                            .px_2()
-                            .py_1()
-                            .gap_3()
-                            .text_sm()
-                            .when(c.busy, |d| d.child(Spinner::new().small()))
-                            .child(t!("grid.rows", n = rows).to_string())
-                            .child(c.status.clone()),
-                    )
+                    .child(h_flex().px_2().py_1().gap_3().text_sm().when(c.busy, |d| d.child(Spinner::new().small())).child(t!("grid.rows", n = rows).to_string()).child(c.status.clone()))
                     .into_any_element()
             }
             _ => div().into_any_element(),
@@ -568,13 +582,11 @@ impl TableTab {
                             .child(Button::new("save").label(format!("{} ⌘S", t!("common.save"))).primary().disabled(!pending).on_click(cx.listener(|t, _, _, cx| t.save(cx))))
                     }),
             )
-            .child(
-                div()
-                    .key_context("ResultGrid")
-                    .flex_1()
-                    .on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx)))
-                    .child(if self.text_mode { self.text_view.render(&self.grid, window, cx) } else { DataTable::new(&self.grid).stripe(true).bordered(true).into_any_element() }),
-            )
+            .child(div().key_context("ResultGrid").flex_1().on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx))).child(if self.text_mode {
+                self.text_view.render(&self.grid, window, cx)
+            } else {
+                DataTable::new(&self.grid).stripe(true).bordered(true).into_any_element()
+            }))
             .child(
                 h_flex()
                     .px_2()
@@ -596,6 +608,3 @@ impl TableTab {
             .into_any_element()
     }
 }
-
-#[path = "table_sections.rs"]
-pub(crate) mod sections;
