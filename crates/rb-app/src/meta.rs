@@ -12,7 +12,8 @@ use rb_core::session::{Credentials, Session};
 #[derive(Clone)]
 pub struct ConnTarget {
     pub cfg: ConnectionConfig,
-    pub creds: Credentials,
+    /// One copy per connection: tabs and tasks share it.
+    pub creds: Arc<Credentials>,
     /// Company conventions (configuration chosen on the connection); with no configuration, `OrgConfig::none()`.
     pub org: Arc<OrgConfig>,
 }
@@ -21,7 +22,6 @@ pub struct ConnTarget {
 pub struct MetaStore {
     pub session: Arc<Session>,
     pub cache: MetaCache,
-    pub error: Option<String>,
     inflight: HashSet<MetaRequest>,
 }
 
@@ -35,7 +35,7 @@ enum Loaded {
 impl MetaStore {
     pub fn new(session: Arc<Session>, cx: &mut Context<Self>) -> Self {
         let cache = MetaCache { dialect: session.dialect(), ..Default::default() };
-        let mut this = MetaStore { session, cache, error: None, inflight: HashSet::new() };
+        let mut this = MetaStore { session, cache, inflight: HashSet::new() };
         this.reload_roots(cx);
         this
     }
@@ -63,7 +63,8 @@ impl MetaStore {
                         m.cache.warehouse = ctx.warehouse;
                         m.cache.role = ctx.role;
                     }
-                    Err(e) => m.error = Some(e.to_string()),
+                    // The tree keeps what it had; the next expand or ↻ retries.
+                    Err(e) => tracing::warn!("catalog roots: {e}"),
                 }
                 cx.notify();
             })
@@ -131,7 +132,7 @@ impl MetaStore {
                         m.cache.schemas.sort();
                         m.cache.loaded_dbs.insert(db);
                     }
-                    (Err(e), _) => m.error = Some(e.to_string()),
+                    (Err(e), req) => tracing::warn!("catalog {req:?}: {e}"),
                     _ => unreachable!("response always matches the request"),
                 }
                 cx.notify();

@@ -17,8 +17,8 @@ use rb_core::org_config::TabKind;
 use rb_core::user_view;
 use rust_i18n::t;
 
-use super::{Section, TableTab};
-use crate::admin_tab::Load;
+use crate::table_tab::{Section, TableTab, spawn_query};
+use crate::ui::Load;
 use crate::dbt_store::parsed_ago;
 
 /// Node type color (dbt model / source / seed / outside dbt), same as lineage.
@@ -31,28 +31,8 @@ pub(crate) fn kind_dot(kind: &str, theme: &gpui_kit::component::Theme) -> Hsla {
     }
 }
 
-/// "3 months ago" from the commit's Unix second.
-fn when_from(secs: i64) -> String {
-    let n = match user_view::span(user_view::now() - secs) {
-        user_view::Span::Minutes(n) => t!("span.minutes", n = n),
-        user_view::Span::Hours(n) => t!("span.hours", n = n),
-        user_view::Span::Days(n) => t!("span.days", n = n),
-        user_view::Span::Months(n) => t!("span.months", n = n),
-        user_view::Span::Years(n) => t!("span.years", n = n),
-    };
-    t!("admin.ago", ago = n).to_string()
-}
-
 fn ago(ts: &str) -> Option<String> {
-    let t = user_view::parse_ts(ts)?;
-    let n = match user_view::span(user_view::now() - t) {
-        user_view::Span::Minutes(n) => t!("span.minutes", n = n),
-        user_view::Span::Hours(n) => t!("span.hours", n = n),
-        user_view::Span::Days(n) => t!("span.days", n = n),
-        user_view::Span::Months(n) => t!("span.months", n = n),
-        user_view::Span::Years(n) => t!("span.years", n = n),
-    };
-    Some(t!("admin.ago", ago = n).to_string())
+    user_view::parse_ts(ts).map(crate::ui::ago)
 }
 
 impl TableTab {
@@ -88,7 +68,7 @@ impl TableTab {
         run: impl AsyncFnOnce(&rb_core::session::Session) -> Result<T, rb_core::DbError> + 'static,
         done: impl FnOnce(&mut Self, Result<T, rb_core::DbError>, &mut Context<Self>) + 'static,
     ) {
-        super::spawn_query(self.conn.clone(), cx, run, done);
+        spawn_query(self.conn.clone(), cx, run, done);
     }
 
     pub(crate) fn ensure_facts(&mut self, cx: &mut Context<Self>) {
@@ -138,7 +118,7 @@ impl TableTab {
                         HashMap::new()
                     }
                 };
-                Ok((cols, tags, masks, others, err))
+                Ok(crate::table_tab::DefRaw { cols, class_tags: tags, masking: masks, other_tags: others, tag_error: err })
             },
             |t, res, _| t.def_raw = Some(res.map_or_else(|e| Load::Failed(e.to_string()), Load::Ready)),
         );
@@ -304,7 +284,7 @@ impl TableTab {
     /// Board 7: columns with description (dbt or comment), classification, masking and tests.
     pub(crate) fn render_definition(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let (cols, tags, masks, others, tag_err) = match &self.def_raw {
+        let crate::table_tab::DefRaw { cols, class_tags: tags, masking: masks, other_tags: others, tag_error: tag_err } = match &self.def_raw {
             Some(Load::Ready(r)) => r.clone(),
             Some(Load::Failed(m)) => return div().p_4().text_color(theme.danger).child(m.clone()).into_any_element(),
             _ => return div().p_4().text_color(theme.muted_foreground).child(t!("tree.loading").to_string()).into_any_element(),
@@ -477,7 +457,7 @@ impl TableTab {
         out
     }
 
-    /// `dbt compile --select <modelo>` with live output; when done, shows the compiled SQL.
+    /// `dbt compile --select <model>` with live output; when done, shows the compiled SQL.
     fn compile(&mut self, node: Node, cx: &mut Context<Self>) {
         let Some(cfg) = self.dbt.as_ref().and_then(|d| d.read(cx).cfg.clone()) else { return };
         if self.compiling {
@@ -565,7 +545,7 @@ impl TableTab {
                     let l = &lines[i];
                     // Only the first line of each chunk shows the commit; the rest stay clean.
                     let first = i == 0 || lines[i - 1].sha != l.sha;
-                    let who = if l.uncommitted { t!("tv.uncommitted").to_string() } else { format!("{} · {}", l.author, when_from(l.time)) };
+                    let who = if l.uncommitted { t!("tv.uncommitted").to_string() } else { format!("{} · {}", l.author, crate::ui::ago(l.time)) };
                     let url = commit_url(&git, &l.sha);
                     let summary = l.summary.clone();
                     h_flex()
@@ -737,7 +717,7 @@ impl TableTab {
                 _ => None,
             }, |d, m| d.child(div().id("tv-compile-err").px_3().py_1().max_h(px(160.)).overflow_y_scroll().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.danger).child(m)))
             .child(div().px_3().py_1().text_xs().text_color(theme.muted_foreground).child(match (compiled, compiled_sql.as_ref().and_then(|c| c.1)) {
-                (true, Some(t)) => t!("tv.compiled_ago", ago = when_from(t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0))).to_string(),
+                (true, Some(t)) => t!("tv.compiled_ago", ago = crate::ui::ago(t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0))).to_string(),
                 _ => format!("{} @ {}", project.git.branch, project.git.sha),
             }));
         h_flex()

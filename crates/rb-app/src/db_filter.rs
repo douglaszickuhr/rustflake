@@ -145,13 +145,16 @@ pub fn open(current: Vec<String>, apply: impl Fn(Vec<String>, &mut Window, &mut 
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
     fn v(x: &[&str]) -> Vec<String> {
         x.iter().map(|s| s.to_string()).collect()
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn merge_appends_or_returns_to_the_edited_slot_without_duplicates() {
         let mut tags = v(&["A*", "C*"]);
         merge(&mut tags, None, v(&["b*", "a*"]));

@@ -19,7 +19,7 @@ use rb_core::batch::ResultSet;
 use rb_core::error::error_byte_offset;
 use rb_core::history::{self, Entry};
 use rb_core::session::{ExecOutcome, Session};
-use rb_core::split::{explain_prefix, split_statements, statement_at};
+use rb_core::split::{explain_prefix, is_use, split_statements, statement_at};
 
 use crate::completion::{SqlCompletion, SqlDefinition};
 use crate::grid::{self, ResultGrid};
@@ -132,7 +132,12 @@ pub(crate) fn sql_head(sql: &str) -> String {
     if line.chars().count() > 80 { line.chars().take(80).collect::<String>() + "…" } else { line }
 }
 
-type Outcome = (Range<usize>, Duration, Result<ExecOutcome, DbError>);
+/// One executed statement: where it is in the script, how long it took, what came back.
+struct Outcome {
+    range: Range<usize>,
+    took: Duration,
+    res: Result<ExecOutcome, DbError>,
+}
 
 pub struct SqlTab {
     focus: FocusHandle,
@@ -249,14 +254,13 @@ impl SqlTab {
         self._save = Some(cx.spawn(async move |_, cx| {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             let text = cx.update(|cx| editor.read(cx).value().to_string());
-            let res = cx.background_spawn(async move { std::fs::write(&path, text) }).await;
+            let res = cx.background_spawn(async move { rb_core::config::write_private(&path, &text) }).await;
             if let Err(e) = res {
                 tracing::warn!("failed to save script: {e}");
             }
         }));
     }
 
-    /// Synchronous write on tab close (small file).
     /// Saves, renames the file and keeps saving under the new name.
     pub fn rename(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), DbError> {
         // The scheduled save would write to the old path and recreate the file.
@@ -267,8 +271,9 @@ impl SqlTab {
         Ok(())
     }
 
+    /// Synchronous write (tab close, quit): a small file.
     pub fn save_now(&self, cx: &App) {
-        if let Err(e) = std::fs::write(&self.path, self.editor.read(cx).value().as_ref()) {
+        if let Err(e) = rb_core::config::write_private(&self.path, self.editor.read(cx).value().as_ref()) {
             tracing::warn!("failed to save script: {e}");
         }
     }
@@ -291,7 +296,7 @@ impl SqlTab {
             let inner = inner.to_string();
             return self.explain_sql(src, inner, analyze, window, cx);
         }
-        self.ran_use = ranges.iter().any(|r| src[r.clone()].trim_start().get(..4).is_some_and(|w| w.eq_ignore_ascii_case("use ")));
+        self.ran_use = ranges.iter().any(|r| is_use(&src[r.clone()]));
         self.running = true;
         self.error = None;
         self.status = t!("sql.running").to_string().into();
@@ -317,7 +322,7 @@ impl SqlTab {
                 let started = Instant::now();
                 let res = session.execute(src[r.clone()].to_string()).await;
                 let failed = res.is_err();
-                outcomes.push((r, started.elapsed(), res));
+                outcomes.push(Outcome { range: r, took: started.elapsed(), res });
                 if failed {
                     break;
                 }
@@ -327,21 +332,22 @@ impl SqlTab {
         .detach();
     }
 
-    fn finish(&mut self, mut outcomes: Vec<Outcome>, total: usize, src: &str, session: Arc<Session>, window: &mut Window, cx: &mut Context<Self>) {
+    fn finish(&mut self, outcomes: Vec<Outcome>, total: usize, src: &str, session: Arc<Session>, window: &mut Window, cx: &mut Context<Self>) {
         self.stop_running(cx);
-        let failure = match outcomes.last_mut() {
-            Some((r, _, res)) if res.is_err() => Some((r.clone(), std::mem::replace(res, Err(DbError::Connection(String::new()))).unwrap_err())),
+        // Only the last statement can have failed: the run stops at the first error.
+        let failure = match outcomes.last() {
+            Some(Outcome { range, res: Err(e), .. }) => Some((range.clone(), e.clone())),
             _ => None,
         };
         if self.ran_use && failure.is_none() {
             self.meta.update(cx, |m, cx| m.reload_roots(cx));
         }
-        let has_columns: Vec<bool> = outcomes.iter().map(|(_, _, r)| r.as_ref().is_ok_and(|o| !o.columns.is_empty())).collect();
+        let has_columns: Vec<bool> = outcomes.iter().map(|o| o.res.as_ref().is_ok_and(|o| !o.columns.is_empty())).collect();
         let (with_rows, show_messages) = panes(&has_columns, total);
 
         self.messages = outcomes
             .iter()
-            .map(|(r, took, res)| {
+            .map(|Outcome { range: r, took, res }| {
                 let sql_head = sql_head(&src[r.clone()]);
                 match res {
                     Ok(o) => Message {
@@ -371,8 +377,8 @@ impl SqlTab {
         self._grid_subs.clear();
         let executed = outcomes.len();
         let mut results = Vec::new();
-        for (k, &i) in with_rows.iter().enumerate() {
-            let Ok(out) = std::mem::replace(&mut outcomes[i].2, Err(DbError::Connection(String::new()))) else { continue };
+        let with_out = outcomes.into_iter().enumerate().filter(|(i, _)| with_rows.contains(i)).filter_map(|(i, o)| o.res.ok().map(|out| (i, out)));
+        for (k, (i, out)) in with_out.enumerate() {
             let truncated = out.more && cursor_closed(i, executed);
             let rs = ResultSet::new(out.columns, out.batch, out.more && !truncated);
             let grid = self.new_grid(window, cx);
@@ -390,7 +396,7 @@ impl SqlTab {
         self.results = results;
         self.show_messages = show_messages;
         self.plan = None;
-        self.active = if failure.is_some() && show_messages || with_rows.is_empty() && show_messages { Pane::Messages } else { Pane::Result(n - 1) };
+        self.active = if show_messages && (failure.is_some() || with_rows.is_empty()) { Pane::Messages } else { Pane::Result(n - 1) };
 
         match failure {
             Some((r, e)) => self.show_error(src, Some(r), e, window, cx),
@@ -510,7 +516,7 @@ impl SqlTab {
         let entries: Vec<Entry> = outcomes
             .iter()
             .zip(&self.messages)
-            .map(|((r, _, _), m)| Entry { ts, sql: src[r.clone()].trim().to_string(), ms: m.ms, rows: m.rows.or(m.affected), error: m.error.clone() })
+            .map(|(o, m)| Entry { ts, sql: src[o.range.clone()].trim().to_string(), ms: m.ms, rows: m.rows.or(m.affected), error: m.error.clone() })
             .collect();
         cx.background_spawn(async move {
             for e in &entries {
@@ -643,11 +649,11 @@ impl Render for SqlTab {
             _ => None,
         };
 
-        // Snowflake: with query id, the Plano tab exists right after execution and fetches the real plan when opened.
+        // Snowflake: with query id, the Plan tab exists right after execution and fetches the real plan when opened.
         let run_qid = self.results.iter().rev().find_map(|p| p.query_id.clone()).or_else(|| self.messages.iter().rev().find_map(|m| m.query_id.clone()));
         let has_plan = self.plan.is_some() || run_qid.is_some();
         let tabs = (self.results.len() > 1 || self.show_messages || has_plan).then(|| {
-            // Tab order: results, Mensagens (if any), Plano (if any).
+            // Tab order: results, Messages (if any), Plan (if any).
             let n = self.results.len();
             let msgs = self.show_messages;
             let selected = match self.active {
@@ -792,9 +798,12 @@ pub(crate) fn query_id_button(id: impl Into<ElementId>, query_id: String) -> But
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn statements_become_result_tabs_and_messages() {
         assert_eq!(panes(&[true], 1), (vec![0], false), "one statement: grid only");
         assert_eq!(panes(&[true, false, true], 3), (vec![0, 2], true));
@@ -802,7 +811,7 @@ mod tests {
         assert_eq!(panes(&[true, false], 3), (vec![0], true), "error on 2nd of 3: the 1st stays, messages appear");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn only_the_last_executed_statement_keeps_its_cursor() {
         assert!(cursor_closed(0, 2), "SELECT followed by UPDATE: the UPDATE closed the cursor");
         assert!(!cursor_closed(1, 2));
@@ -810,7 +819,7 @@ mod tests {
         assert!(cursor_closed(0, 2), "error on 2nd: the 1st also lost its cursor");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn history_insert_starts_a_new_statement_when_needed() {
         assert_eq!(text_for_insert("", "select 2"), "select 2");
         assert_eq!(text_for_insert("select 1;\n", "select 2"), "select 2");
@@ -820,13 +829,13 @@ mod tests {
         assert_eq!(text_for_insert("   ", "select 2"), "select 2");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn format_target_is_selection_or_everything() {
         assert_eq!(format_target("select 1; select 2", 0..0), 0..18);
         assert_eq!(format_target("select 1; select 2", 10..18), 10..18);
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn cmd_slash_toggles_line_comments() {
         let src = "select 1;\n  select 2\n\n  from t;";
         // Cursor on line 1: comments only it, cursor moves along.
@@ -844,7 +853,7 @@ mod tests {
         assert_eq!(toggle_comment("-- a\nb", 0..6).1, "-- -- a\n-- b");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn sql_head_joins_lines_and_caps_length() {
         assert_eq!(sql_head("\n  select *\n from t"), "select * from t", "formatted SQL: joins the lines");
         assert_eq!(sql_head("SELECT\n  1 AS a,\n  'x' AS b"), "SELECT 1 AS a, 'x' AS b");

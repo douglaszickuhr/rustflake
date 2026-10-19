@@ -19,7 +19,7 @@ const MAX_DETAIL_CHARS: usize = 6_000;
 /// A query faster than this doesn't show the skeleton: the old result stays until the new one arrives.
 const BUSY_DELAY: Duration = Duration::from_millis(150);
 
-type OnSort = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
+pub type OnSort = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
 
 pub struct ResultGrid {
     pub rs: Option<ResultSet>,
@@ -176,14 +176,15 @@ impl TableDelegate for ResultGrid {
         // ponytail: width estimated at ~7px per character; measure the text if the guess is way off.
         let width = self.widths.get(col).copied().unwrap_or(120.);
         let clipped = text.chars().count() as f32 * 7. > width - 12.;
-        let detail = (!null && clipped).then(|| self.full_text(row, col)).flatten().map(|full| detail_text(&full, MAX_DETAIL_CHARS));
+        // The full value (and its pretty JSON) is built on hover, not for every clipped cell every frame.
+        let table = (!null && clipped).then(|| cx.entity().downgrade());
         let cols = self.columns_count(cx);
         div()
             .id(("cell", row * cols + col))
-            .when_some(detail, |d, detail| {
-                let detail = SharedString::from(detail);
+            .when_some(table, |d, table| {
                 d.tooltip(move |window, cx| {
-                    let detail = detail.clone();
+                    let full = table.upgrade().and_then(|t| t.read(cx).delegate().full_text(row, col)).unwrap_or_default();
+                    let detail = SharedString::from(detail_text(&full, MAX_DETAIL_CHARS));
                     Tooltip::element(move |_, cx| {
                         div()
                             .max_w(px(720.))
@@ -265,6 +266,9 @@ impl TableDelegate for ResultGrid {
 
 #[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
     use rb_core::Type;
     use rb_core::batch::{Batch, ColumnInfo};
@@ -272,14 +276,14 @@ mod tests {
     fn grid_with_more() -> ResultGrid {
         let cols: Arc<[ColumnInfo]> = Arc::from(vec![ColumnInfo { name: "id".into(), type_: Type::INT4 }]);
         let mut b = Batch::empty(1);
-        b.push_row(&[Some(&1i32.to_be_bytes())]);
+        b.push_row(&[Some(&1i32.to_be_bytes())]).unwrap();
         let mut g = ResultGrid::new(true);
         g.rs = Some(ResultSet::new(cols, b, true));
         g.edits = Some(PendingEdits::default());
         g
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn no_paging_while_rows_are_inserted() {
         let mut g = grid_with_more();
         assert!(g.can_page());
@@ -287,7 +291,7 @@ mod tests {
         assert!(!g.can_page());
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn closing_the_cursor_stops_paging_and_reports_it() {
         let mut g = grid_with_more();
         assert!(g.close_cursor(), "had more rows");
@@ -295,7 +299,7 @@ mod tests {
         assert!(!g.close_cursor(), "was already closed");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn save_is_single_flight() {
         let mut g = grid_with_more();
         assert!(!g.start_save(), "nothing pending");
@@ -337,17 +341,22 @@ pub struct TextView(Option<(Entity<EditorState>, (EntityId, u64, usize))>);
 
 /// Per-cell cut: a huge JSON doesn't push the other columns off screen.
 const TEXT_CELL_MAX: usize = 80;
+/// The whole text lives in one editor buffer: past this, the grid is the way to read.
+const TEXT_MAX_ROWS: usize = 10_000;
 
 impl TextView {
     pub fn render(&mut self, grid: &Entity<TableState<ResultGrid>>, window: &mut Window, cx: &mut App) -> AnyElement {
         let g = grid.read(cx).delegate();
         let Some(rs) = g.rs.as_ref() else { return div().into_any_element() };
-        // Grid, result (generation) and loaded rows: any change rebuilds the text.
-        let key = (grid.entity_id(), g.generation, rs.rows());
+        // Grid, result (generation) and loaded rows up to the cap: any change rebuilds the text.
+        let key = (grid.entity_id(), g.generation, rs.rows().min(TEXT_MAX_ROWS + 1));
         let editor = match &self.0 {
             Some((e, k)) if *k == key => e.clone(),
             _ => {
-                let text = rs.to_text_table(TEXT_CELL_MAX);
+                let mut text = rs.to_text_table(TEXT_CELL_MAX, TEXT_MAX_ROWS);
+                if rs.rows() > TEXT_MAX_ROWS {
+                    text += &format!("\n{}\n", rust_i18n::t!("grid.text_capped", n = TEXT_MAX_ROWS));
+                }
                 let e = cx.new(|cx| EditorState::new(window, cx).soft_wrap(false).line_number(false).searchable(true).default_value(text));
                 self.0 = Some((e.clone(), key));
                 e

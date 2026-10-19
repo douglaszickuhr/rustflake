@@ -248,10 +248,17 @@ fn push_objects(out: &mut Completion, cache: &MetaCache, schema: &str) {
 /// Keeps only those containing the prefix; those starting with it come first; then by type.
 fn filter_and_rank(c: &mut Vec<Candidate>, prefix: &str) {
     let mut seen = HashSet::new();
-    c.retain(|x| seen.insert((x.label.clone(), x.kind)));
-    c.retain(|x| x.label.to_lowercase().contains(prefix));
-    c.sort_by_key(|x| (!x.label.to_lowercase().starts_with(prefix), x.kind));
-    c.truncate(200);
+    let mut ranked: Vec<(bool, CandidateKind, Candidate)> = c
+        .drain(..)
+        .filter(|x| seen.insert((x.label.clone(), x.kind)))
+        .filter_map(|x| {
+            let lower = x.label.to_lowercase();
+            lower.contains(prefix).then(|| (!lower.starts_with(prefix), x.kind, x))
+        })
+        .collect();
+    // Stable: equal keys keep the order they were offered in.
+    ranked.sort_by_key(|(later, kind, _)| (*later, *kind));
+    c.extend(ranked.into_iter().take(200).map(|(_, _, x)| x));
 }
 
 /// Keywords are compared in lowercase (`word`); stored names follow the dialect (`name`).
@@ -268,8 +275,7 @@ fn table_refs(src: &str, toks: &[Token], d: Dialect) -> Vec<TableRef> {
         if !is_ctx {
             continue;
         }
-        loop {
-            let Some(first) = toks.get(i).and_then(word) else { break };
+        while let Some(first) = toks.get(i).and_then(word) {
             if NOT_ALIAS.contains(&first.as_str()) {
                 break;
             }
@@ -319,9 +325,7 @@ mod tests {
     }
 
     fn cache() -> MetaCache {
-        let mut c = MetaCache::default();
-        c.search_path = vec!["public".into()];
-        c.schemas = vec!["public".into(), "Sales".into()];
+        let mut c = MetaCache { search_path: vec!["public".into()], schemas: vec!["public".into(), "Sales".into()], ..Default::default() };
         c.objects.insert(
             "public".into(),
             SchemaObjects {

@@ -9,7 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::picker::rank;
 
-use crate::admin_tab::Load;
+use crate::ui::Load;
 
 pub type OnPick = Rc<dyn Fn(String, &mut Window, &mut App)>;
 

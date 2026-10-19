@@ -1,10 +1,9 @@
 //! Snowflake users and roles (read-only): SQL, `SHOW` parsers and role inheritance.
 
 use crate::DbError;
+use crate::lexer::{quote_always, sql_str};
 use crate::session::Session;
-use crate::snowflake::field;
-
-type Rows = [Vec<Option<String>>];
+use crate::snowflake::{Rows, named};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UserInfo {
@@ -52,16 +51,6 @@ pub struct Grantee {
     pub name: String,
 }
 
-/// Names come exactly as in `SHOW`: quoting preserves case, spaces and quotes.
-pub fn quote_ident(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
-}
-
-/// On Snowflake `\\` also escapes inside '...': double both.
-pub fn sql_str(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
-}
-
 /// SHOW may return a role name already quoted (`"lowercase"`): back to the raw name.
 pub(crate) fn unquote(s: String) -> String {
     match s.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
@@ -70,40 +59,28 @@ pub(crate) fn unquote(s: String) -> String {
     }
 }
 
-fn opt(names: &[String], r: &[Option<String>], col: &str) -> Option<String> {
-    field(names, r, col).filter(|v| !v.is_empty()).map(String::from)
-}
-
-fn flag(names: &[String], r: &[Option<String>], col: &str) -> bool {
-    field(names, r, col).is_some_and(|v| v.eq_ignore_ascii_case("true"))
-}
-
-fn num(names: &[String], r: &[Option<String>], col: &str) -> u64 {
-    field(names, r, col).and_then(|v| v.parse().ok()).unwrap_or(0)
-}
-
 /// `SHOW USERS`.
 pub fn parse_users(names: &[String], rows: &Rows) -> Vec<UserInfo> {
-    rows.iter()
+    named(names, rows)
         .filter_map(|r| {
             Some(UserInfo {
-                name: opt(names, r, "name")?,
-                login_name: opt(names, r, "login_name"),
-                display_name: opt(names, r, "display_name"),
-                email: opt(names, r, "email"),
-                disabled: flag(names, r, "disabled"),
-                locked: flag(names, r, "snowflake_lock"),
-                default_role: opt(names, r, "default_role"),
-                default_warehouse: opt(names, r, "default_warehouse"),
-                default_namespace: opt(names, r, "default_namespace"),
-                created_on: opt(names, r, "created_on"),
-                last_success_login: opt(names, r, "last_success_login"),
-                has_password: flag(names, r, "has_password"),
-                has_rsa_public_key: flag(names, r, "has_rsa_public_key"),
-                has_mfa: flag(names, r, "has_mfa"),
-                user_type: opt(names, r, "type"),
-                comment: opt(names, r, "comment"),
-                owner: opt(names, r, "owner"),
+                name: r.text("name")?,
+                login_name: r.text("login_name"),
+                display_name: r.text("display_name"),
+                email: r.text("email"),
+                disabled: r.flag("disabled"),
+                locked: r.flag("snowflake_lock"),
+                default_role: r.text("default_role"),
+                default_warehouse: r.text("default_warehouse"),
+                default_namespace: r.text("default_namespace"),
+                created_on: r.text("created_on"),
+                last_success_login: r.text("last_success_login"),
+                has_password: r.flag("has_password"),
+                has_rsa_public_key: r.flag("has_rsa_public_key"),
+                has_mfa: r.flag("has_mfa"),
+                user_type: r.text("type"),
+                comment: r.text("comment"),
+                owner: r.text("owner"),
             })
         })
         .collect()
@@ -111,14 +88,14 @@ pub fn parse_users(names: &[String], rows: &Rows) -> Vec<UserInfo> {
 
 /// `SHOW ROLES`.
 pub fn parse_roles(names: &[String], rows: &Rows) -> Vec<RoleInfo> {
-    rows.iter()
+    named(names, rows)
         .filter_map(|r| {
             Some(RoleInfo {
-                name: opt(names, r, "name")?,
-                owner: opt(names, r, "owner"),
-                comment: opt(names, r, "comment"),
-                assigned_to_users: num(names, r, "assigned_to_users"),
-                granted_to_roles: num(names, r, "granted_to_roles"),
+                name: r.text("name")?,
+                owner: r.text("owner"),
+                comment: r.text("comment"),
+                assigned_to_users: r.num("assigned_to_users"),
+                granted_to_roles: r.num("granted_to_roles"),
             })
         })
         .collect()
@@ -142,27 +119,23 @@ impl DirectGrant {
 
 /// `SHOW GRANTS TO USER` with the origin of each role.
 pub fn parse_user_grants(names: &[String], rows: &Rows) -> Vec<DirectGrant> {
-    rows.iter()
-        .filter_map(|r| Some(DirectGrant { role: unquote(opt(names, r, "role")?), granted_by: opt(names, r, "granted_by"), created_on: opt(names, r, "created_on") }))
+    named(names, rows)
+        .filter_map(|r| Some(DirectGrant { role: unquote(r.text("role")?), granted_by: r.text("granted_by"), created_on: r.text("created_on") }))
         .collect()
-}
-
-pub fn parse_user_roles(names: &[String], rows: &Rows) -> Vec<String> {
-    rows.iter().filter_map(|r| opt(names, r, "role").map(unquote)).collect()
 }
 
 /// `SHOW GRANTS TO ROLE`.
 pub fn parse_role_grants(names: &[String], rows: &Rows) -> Vec<Grant> {
-    rows.iter()
+    named(names, rows)
         .filter_map(|r| {
-            let granted_on = opt(names, r, "granted_on").unwrap_or_default();
-            let name = opt(names, r, "name").unwrap_or_default();
+            let granted_on = r.text("granted_on").unwrap_or_default();
+            let name = r.text("name").unwrap_or_default();
             Some(Grant {
-                privilege: opt(names, r, "privilege")?,
+                privilege: r.text("privilege")?,
                 // Role only: in a table the quotes are part of the qualified name.
                 name: if granted_on == "ROLE" { unquote(name) } else { name },
                 granted_on,
-                grant_option: flag(names, r, "grant_option"),
+                grant_option: r.flag("grant_option"),
             })
         })
         .collect()
@@ -170,7 +143,7 @@ pub fn parse_role_grants(names: &[String], rows: &Rows) -> Vec<Grant> {
 
 /// `SHOW GRANTS OF ROLE`.
 pub fn parse_grantees(names: &[String], rows: &Rows) -> Vec<Grantee> {
-    rows.iter().filter_map(|r| Some(Grantee { kind: opt(names, r, "granted_to")?, name: unquote(opt(names, r, "grantee_name")?) })).collect()
+    named(names, rows).filter_map(|r| Some(Grantee { kind: r.text("granted_to")?, name: unquote(r.text("grantee_name")?) })).collect()
 }
 
 /// Inheriting a role = having USAGE on it.
@@ -235,8 +208,8 @@ pub type RoleGraph = std::collections::HashMap<String, Vec<String>>;
 
 pub fn parse_role_graph(names: &[String], rows: &Rows) -> RoleGraph {
     let mut g = RoleGraph::new();
-    for r in rows {
-        if let (Some(from), Some(to)) = (opt(names, r, "grantee_name"), opt(names, r, "name")) {
+    for r in named(names, rows) {
+        if let (Some(from), Some(to)) = (r.text("grantee_name"), r.text("name")) {
             g.entry(from).or_default().push(to);
         }
     }
@@ -248,66 +221,24 @@ pub async fn role_graph(s: &Session) -> Result<RoleGraph, DbError> {
     Ok(parse_role_graph(&n, &r))
 }
 
-/// Same search as `effective_roles`, over the in-memory graph: the future never waits, one poll is enough.
+/// Same search as `effective_roles`, over the in-memory graph.
 pub fn effective_from_graph(direct: &[String], graph: &RoleGraph) -> Vec<EffectiveRole> {
-    use std::task::{Context, Poll, Waker};
-    let fut = effective_roles(direct, async |r: &str| Ok::<_, std::convert::Infallible>(graph.get(r).cloned().unwrap_or_default()));
-    match std::pin::pin!(fut).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(Ok(v)) => v,
-        Poll::Ready(Err(e)) => match e {},
-        Poll::Pending => unreachable!("no real await"),
-    }
-}
-
-/// Role tree row: direct at the root (depth 0), inherited under whoever brought it in.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TreeRow {
-    pub name: String,
-    pub depth: usize,
-    /// How many roles are below (for the "(n)" of a closed node).
-    pub descendants: usize,
-}
-
-/// Each role appears once, under the parent of its shortest path; siblings in alphabetical order.
-pub fn role_tree(direct: &[String], eff: &[EffectiveRole]) -> Vec<TreeRow> {
-    let mut children: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
-    for e in eff {
-        if let [.., parent, _] = e.path.as_slice() {
-            children.entry(parent.as_str()).or_default().push(e.name.as_str());
-        }
-    }
-    for v in children.values_mut() {
-        v.sort_unstable();
-    }
-    fn walk<'a>(name: &'a str, depth: usize, children: &std::collections::HashMap<&str, Vec<&'a str>>, out: &mut Vec<TreeRow>) -> usize {
-        let at = out.len();
-        out.push(TreeRow { name: name.to_string(), depth, descendants: 0 });
-        let mut n = 0;
-        for c in children.get(name).into_iter().flatten() {
-            n += 1 + walk(c, depth + 1, children, out);
-        }
-        out[at].descendants = n;
-        n
-    }
-    let mut roots: Vec<&str> = direct.iter().map(String::as_str).collect();
-    roots.sort_unstable();
+    let mut seen: std::collections::HashSet<&str> = direct.iter().map(String::as_str).collect();
+    let mut frontier: Vec<Vec<String>> = direct.iter().map(|r| vec![r.clone()]).collect();
     let mut out = Vec::new();
-    for r in roots {
-        walk(r, 0, &children, &mut out);
-    }
-    out
-}
-
-/// Visible rows: a closed node hides its whole subtree.
-pub fn visible_rows(rows: &[TreeRow], open: impl Fn(&str) -> bool) -> Vec<&TreeRow> {
-    let mut hide_below: Option<usize> = None;
-    let mut out = Vec::new();
-    for r in rows {
-        if hide_below.is_some_and(|d| r.depth > d) {
-            continue;
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for path in frontier {
+            for child in graph.get(path.last().expect("path is never empty")).into_iter().flatten() {
+                if seen.insert(child) {
+                    let mut p = path.clone();
+                    p.push(child.clone());
+                    out.push(EffectiveRole { name: child.clone(), path: p.clone() });
+                    next.push(p);
+                }
+            }
         }
-        hide_below = (r.descendants > 0 && !open(&r.name)).then_some(r.depth);
-        out.push(r);
+        frontier = next;
     }
     out
 }
@@ -339,22 +270,17 @@ pub async fn roles(s: &Session) -> Result<Vec<RoleInfo>, DbError> {
 }
 
 pub async fn user_grants(s: &Session, user: &str) -> Result<Vec<DirectGrant>, DbError> {
-    let (n, r) = s.query_named(&format!("SHOW GRANTS TO USER {}", quote_ident(user))).await?;
+    let (n, r) = s.query_named(&format!("SHOW GRANTS TO USER {}", quote_always(user))).await?;
     Ok(parse_user_grants(&n, &r))
 }
 
-pub async fn user_roles(s: &Session, user: &str) -> Result<Vec<String>, DbError> {
-    let (n, r) = s.query_named(&format!("SHOW GRANTS TO USER {}", quote_ident(user))).await?;
-    Ok(parse_user_roles(&n, &r))
-}
-
 pub async fn role_grants(s: &Session, role: &str) -> Result<Vec<Grant>, DbError> {
-    let (n, r) = s.query_named(&format!("SHOW GRANTS TO ROLE {}", quote_ident(role))).await?;
+    let (n, r) = s.query_named(&format!("SHOW GRANTS TO ROLE {}", quote_always(role))).await?;
     Ok(parse_role_grants(&n, &r))
 }
 
 pub async fn grantees(s: &Session, role: &str) -> Result<Vec<Grantee>, DbError> {
-    let (n, r) = s.query_named(&format!("SHOW GRANTS OF ROLE {}", quote_ident(role))).await?;
+    let (n, r) = s.query_named(&format!("SHOW GRANTS OF ROLE {}", quote_always(role))).await?;
     Ok(parse_grantees(&n, &r))
 }
 
@@ -418,9 +344,9 @@ union all select 'role', role_name, max(start_time)::string from q where role_na
 
 pub fn parse_usage(names: &[String], rows: &Rows) -> Usage {
     let mut u = Usage::default();
-    for r in rows {
-        let (Some(k), Some(last)) = (opt(names, r, "k"), opt(names, r, "last")) else { continue };
-        match field(names, r, "kind") {
+    for r in named(names, rows) {
+        let (Some(k), Some(last)) = (r.text("k"), r.text("last")) else { continue };
+        match r.get("kind") {
             Some("wh") => u.warehouses.insert(k, last),
             Some("role") => u.roles.insert(k, last),
             _ => None,
@@ -481,11 +407,11 @@ fn top(mut v: Vec<(String, u64)>) -> Vec<(String, u64)> {
 pub fn parse_query_activity(names: &[String], rows: &Rows) -> QueryActivity {
     let mut a = QueryActivity::default();
     let (mut wh, mut rl) = (Vec::new(), Vec::new());
-    for r in rows {
-        let k = opt(names, r, "k");
-        let n = num(names, r, "n");
-        match field(names, r, "kind") {
-            Some("total") => (a.total, a.last) = (n, opt(names, r, "extra")),
+    for r in named(names, rows) {
+        let k = r.text("k");
+        let n = r.num("n");
+        match r.get("kind") {
+            Some("total") => (a.total, a.last) = (n, r.text("extra")),
             Some("ms") => a.elapsed_ms = n,
             Some("day") => a.per_day.extend(k.map(|k| (k, n))),
             Some("wh") => wh.extend(k.map(|k| (k, n))),
@@ -502,17 +428,17 @@ pub fn parse_query_activity(names: &[String], rows: &Rows) -> QueryActivity {
 
 pub fn parse_login_activity(names: &[String], rows: &Rows) -> LoginActivity {
     let mut l = LoginActivity::default();
-    for r in rows {
-        match field(names, r, "kind") {
-            Some("ok") => l.ok = num(names, r, "a"),
-            Some("failed") => l.failed = num(names, r, "a"),
+    for r in named(names, rows) {
+        match r.get("kind") {
+            Some("ok") => l.ok = r.num("a"),
+            Some("failed") => l.failed = r.num("a"),
             Some("event") => l.recent.push(LoginEvent {
-                at: opt(names, r, "a").unwrap_or_default(),
-                success: field(names, r, "b") == Some("YES"),
-                factor: opt(names, r, "c"),
-                client: opt(names, r, "d"),
-                ip: opt(names, r, "e"),
-                error: opt(names, r, "f"),
+                at: r.text("a").unwrap_or_default(),
+                success: r.get("b") == Some("YES"),
+                factor: r.text("c"),
+                client: r.text("d"),
+                ip: r.text("e"),
+                error: r.text("f"),
             }),
             _ => {}
         }
@@ -545,9 +471,7 @@ mod tests {
 
     #[test]
     fn quoting() {
-        assert_eq!(quote_ident("ANALYST"), "\"ANALYST\"");
-        assert_eq!(quote_ident("my role"), "\"my role\"");
-        assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
+        assert_eq!(quote_always("my role"), "\"my role\"");
         assert_eq!(sql_str("o'brien"), "'o''brien'");
     }
 
@@ -577,7 +501,7 @@ mod tests {
         let roles = parse_roles(&n, &r);
         assert_eq!(roles[0], RoleInfo { name: "ANALYST".into(), owner: Some("SECURITYADMIN".into()), comment: None, assigned_to_users: 12, granted_to_roles: 1 });
         let (n, r) = t(&["created_on", "role", "granted_to", "grantee_name"], &[&[None, Some("ANALYST"), Some("USER"), Some("JDOE")], &[None, Some("PUBLIC"), Some("USER"), Some("JDOE")]]);
-        assert_eq!(parse_user_roles(&n, &r), vec!["ANALYST", "PUBLIC"]);
+        assert_eq!(parse_user_grants(&n, &r).into_iter().map(|g| g.role).collect::<Vec<_>>(), vec!["ANALYST", "PUBLIC"]);
     }
 
     #[test]
@@ -708,7 +632,7 @@ mod tests {
         assert_eq!(g[1].name, "DB.S.\"t\"", "non-role object stays as it came");
         let (n, r) = t(&["role", "granted_to", "grantee_name"], &[&[Some("\"low\""), Some("ROLE"), Some("\"a b\"")]]);
         assert_eq!(parse_grantees(&n, &r)[0].name, "a b");
-        assert_eq!(parse_user_roles(&n, &r), vec!["low"]);
+        assert_eq!(parse_user_grants(&n, &r)[0].role, "low");
     }
 
     #[test]
@@ -719,37 +643,6 @@ mod tests {
         assert!(ROLE_GRAPH_SQL.contains("deleted_on is null"));
         let eff: Vec<String> = effective_from_graph(&["ACCOUNTADMIN".to_string()], &g).into_iter().map(|e| e.path.join(" → ")).collect();
         assert_eq!(eff, vec!["ACCOUNTADMIN → SYSADMIN", "ACCOUNTADMIN → SECURITYADMIN", "ACCOUNTADMIN → SYSADMIN → DATA_ENG"]);
-    }
-
-    fn er(path: &[&str]) -> EffectiveRole {
-        EffectiveRole { name: path.last().unwrap().to_string(), path: path.iter().map(|s| s.to_string()).collect() }
-    }
-
-    #[test]
-    fn tree_lists_each_role_once_under_its_parent() {
-        let direct = vec!["IDP".to_string(), "ANALYST".to_string()];
-        let eff = vec![er(&["IDP", "AREA"]), er(&["IDP", "AREA", "BASE"]), er(&["IDP", "AREA", "BASE", "RAW_B"]), er(&["IDP", "AREA", "BASE", "RAW_A"])];
-        let rows: Vec<(String, usize, usize)> = role_tree(&direct, &eff).into_iter().map(|r| (r.name, r.depth, r.descendants)).collect();
-        assert_eq!(rows, vec![
-            ("ANALYST".into(), 0, 0),
-            ("IDP".into(), 0, 4),
-            ("AREA".into(), 1, 3),
-            ("BASE".into(), 2, 2),
-            ("RAW_A".into(), 3, 0),
-            ("RAW_B".into(), 3, 0),
-        ]);
-    }
-
-    #[test]
-    fn collapsed_nodes_hide_their_subtree() {
-        let direct = vec!["A".to_string(), "Z".to_string()];
-        let eff = vec![er(&["A", "B"]), er(&["A", "B", "C"]), er(&["A", "D"])];
-        let rows = role_tree(&direct, &eff);
-        let names = |open: &[&str]| visible_rows(&rows, |n| open.contains(&n)).iter().map(|r| r.name.clone()).collect::<Vec<_>>();
-        assert_eq!(names(&[]), vec!["A", "Z"]);
-        assert_eq!(names(&["A"]), vec!["A", "B", "D", "Z"]);
-        assert_eq!(names(&["A", "B"]), vec!["A", "B", "C", "D", "Z"]);
-        assert_eq!(names(&["B"]), vec!["A", "Z"], "closed parent hides even with an open child");
     }
 
     #[test]

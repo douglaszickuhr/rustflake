@@ -2,9 +2,11 @@
 
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::*;
-use rb_core::config::{self, ThemeChoice};
+use rb_core::config::ThemeChoice;
 use rust_i18n::t;
 use gpui_kit::{Hsla, rgb};
+
+use crate::settings;
 
 /// Chosen theme; `Auto` is reapplied when macOS switches (`system_changed`).
 pub struct Appearance(pub ThemeChoice);
@@ -27,19 +29,13 @@ fn apply(choice: ThemeChoice, system: WindowAppearance, cx: &mut App) {
 
 /// At startup, before opening the window.
 pub fn init(cx: &mut App) {
-    apply(config::load_settings(&config::settings_path()).theme, cx.window_appearance(), cx);
+    apply(settings::get(cx).theme, cx.window_appearance(), cx);
 }
 
 /// Switches now (`Theme::change` redraws the windows) and saves in the background.
 pub fn set(choice: ThemeChoice, window: &Window, cx: &mut App) {
     apply(choice, window.appearance(), cx);
-    let path = config::settings_path();
-    cx.background_spawn(async move {
-        if let Err(e) = config::update_settings(&path, |s| s.theme = choice) {
-            tracing::warn!("settings.toml: {e}");
-        }
-    })
-    .detach();
+    settings::update(cx, |s| s.theme = choice);
 }
 
 /// macOS switched light/dark: only matters for `Auto`.
@@ -175,7 +171,10 @@ fn apply_palette(theme: &mut Theme) {
 
 #[cfg(test)]
 mod tests {
-    #[::core::prelude::v1::test]
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
+    #[test]
     fn palette_text_is_readable_in_both_modes() {
         for dark in [true, false] {
             let p = super::palette(dark);
@@ -199,7 +198,7 @@ mod tests {
     use gpui_kit::component::ThemeMode;
     use rb_core::config::ThemeChoice;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn auto_follows_the_system_and_explicit_choice_wins() {
         assert_eq!(resolve(ThemeChoice::Auto, WindowAppearance::Dark), ThemeMode::Dark);
         assert_eq!(resolve(ThemeChoice::Auto, WindowAppearance::VibrantLight), ThemeMode::Light);

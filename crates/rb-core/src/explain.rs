@@ -4,6 +4,7 @@ use rust_i18n::t;
 use serde_json::Value;
 
 use crate::DbError;
+use crate::lexer::sql_str;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlanNode {
@@ -48,7 +49,7 @@ pub struct Profile {
     pub bytes_scanned: f64,
     /// Fraction read from the warehouse cache, weighted by bytes.
     pub from_cache: Option<f64>,
-    /// O scan mais atrasado (1.0 = terminou).
+    /// Progress of the slowest scan (1.0 = finished).
     pub scan_progress: Option<f64>,
     pub partitions_scanned: f64,
     pub partitions_total: f64,
@@ -70,14 +71,14 @@ pub struct Timing {
 pub fn query_timing_sql(query_id: &str) -> String {
     format!(
         "select compilation_time, queued_provisioning_time + queued_repair_time + queued_overload_time as queued, execution_time, total_elapsed_time \
-from table(information_schema.query_history(result_limit => 1000)) where query_id = '{}'",
-        query_id.replace('\'', "")
+from table(information_schema.query_history(result_limit => 1000)) where query_id = {}",
+        sql_str(query_id)
     )
 }
 
 pub fn parse_timing(names: &[String], rows: &[Vec<Option<String>>]) -> Option<Timing> {
-    let r = rows.first()?;
-    let n = |c: &str| names.iter().position(|x| x.eq_ignore_ascii_case(c)).and_then(|i| r.get(i).cloned().flatten()).and_then(|v| v.parse::<f64>().ok());
+    let r = crate::snowflake::named(names, rows).next()?;
+    let n = |c: &str| r.get(c)?.parse::<f64>().ok();
     Some(Timing { compile_ms: n("COMPILATION_TIME")?, queued_ms: n("QUEUED").unwrap_or(0.0), exec_ms: n("EXECUTION_TIME")?, total_ms: n("TOTAL_ELAPSED_TIME")? })
 }
 
@@ -295,14 +296,14 @@ pub fn parse_sf_explain(json: &str) -> Result<Plan, DbError> {
     Ok(Plan { root, analyzed: false, total_ms: None, note, profile: None })
 }
 
-/// Actual per-operator stats of an already executed query (the id comes from Snowflake; unquoted for safety).
+/// Actual per-operator stats of an already executed query.
 /// VARIANT columns come as text: the connector rejects the `NaN` that Snowflake puts in the JSON.
 pub fn operator_stats_sql(query_id: &str) -> String {
     format!(
         "SELECT operator_id, parent_operators::string AS parent_operators, operator_type, operator_statistics::string AS operator_statistics, \
 execution_time_breakdown::string AS execution_time_breakdown, operator_attributes::string AS operator_attributes \
-FROM TABLE(GET_QUERY_OPERATOR_STATS('{}'))",
-        query_id.replace('\'', "")
+FROM TABLE(GET_QUERY_OPERATOR_STATS({}))",
+        sql_str(query_id)
     )
 }
 
@@ -496,10 +497,10 @@ mod tests {
         let p = plan.profile.expect("profile in the actual plan");
         let get = |k: &str| p.breakdown.iter().find(|(c, _)| c == k).map(|(_, v)| *v).unwrap_or(0.0);
         assert!((get("processing") - 0.8).abs() < 1e-9 && (get("synchronization") - 0.1).abs() < 1e-9 && (get("initialization") - 0.1).abs() < 1e-9);
-        assert_eq!(p.breakdown.first().map(|(c, _)| c.as_str()), Some("processing"), "maior primeiro");
+        assert_eq!(p.breakdown.first().map(|(c, _)| c.as_str()), Some("processing"), "largest first");
         assert_eq!(p.bytes_scanned, 400.0);
         assert!((p.from_cache.unwrap() - 0.75).abs() < 1e-9, "weighted average by bytes");
-        assert_eq!(p.scan_progress, Some(0.5), "o scan mais atrasado");
+        assert_eq!(p.scan_progress, Some(0.5), "the slowest scan");
         assert_eq!((p.partitions_scanned, p.partitions_total), (374.0, 393.0));
         assert_eq!(p.spilled_local, 7.0);
         let join = &plan.root.children[0];
@@ -511,7 +512,7 @@ mod tests {
 
     #[test]
     fn query_timing_from_history() {
-        assert!(query_timing_sql("a'b").contains("query_id = 'ab'"));
+        assert!(query_timing_sql("a'b").contains("query_id = 'a''b'"));
         let names: Vec<String> = ["COMPILATION_TIME", "QUEUED", "EXECUTION_TIME", "TOTAL_ELAPSED_TIME"].iter().map(|s| s.to_string()).collect();
         let t = parse_timing(&names, &[vec![Some("120".into()), Some("0".into()), Some("980".into()), Some("1110".into())]]).unwrap();
         assert_eq!(t, Timing { compile_ms: 120.0, queued_ms: 0.0, exec_ms: 980.0, total_ms: 1110.0 });
@@ -539,7 +540,7 @@ mod tests {
         let sql = operator_stats_sql("01b2-x");
         assert!(sql.contains("GET_QUERY_OPERATOR_STATS('01b2-x')"), "{sql}");
         assert!(sql.contains("execution_time_breakdown::string"), "variant arrives as text: the connector does not accept NaN");
-        assert!(operator_stats_sql("a'b").contains("STATS('ab')"));
+        assert!(operator_stats_sql("a'b").contains("STATS('a''b')"));
     }
 
     #[test]
@@ -634,7 +635,7 @@ mod tests {
         assert_eq!(orders.object.as_deref(), Some("DB.PUBLIC.ORDERS"));
         assert!((orders.pct - 65.0).abs() < 0.01);
         assert_eq!(orders.act_rows, Some(990000.0));
-        assert_eq!(orders.warn.len(), 2, "spill remoto e poda ruim: {:?}", orders.warn);
+        assert_eq!(orders.warn.len(), 2, "remote spill and bad pruning: {:?}", orders.warn);
         assert!(parse_sf_stats(&names[..2], &rows).is_err(), "missing column");
     }
 
@@ -655,9 +656,9 @@ mod tests {
         let at = |p: &[usize]| placed.iter().find(|x| x.path == p).unwrap();
         assert_eq!(at(&[0, 0]).x, 0.0);
         assert_eq!(at(&[0, 1]).x, 120.0);
-        assert_eq!(at(&[0]).x, 60.0, "centralizado sobre a e b");
+        assert_eq!(at(&[0]).x, 60.0, "centered over a and b");
         assert_eq!(at(&[1]).x, 240.0);
-        assert_eq!(at(&[]).x, 120.0, "centralizado entre mid e c");
+        assert_eq!(at(&[]).x, 120.0, "centered between mid and c");
         assert_eq!(at(&[0, 0]).y, 160.0);
         assert_eq!(at(&[0, 0]).parent, Some(placed.iter().position(|x| x.path == [0]).unwrap()));
         for (i, a) in placed.iter().enumerate() {

@@ -3,14 +3,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use rust_i18n::t;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::DbError;
-use crate::config::DbtConfig;
+use crate::config::{DbtConfig, expand_home};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Node {
@@ -248,7 +248,7 @@ pub fn parse_run_results(json: &str, target: &str) -> HashMap<String, (String, S
         .filter_map(|r| {
             let id = r.get("unique_id")?.as_str()?.to_string();
             let status = r.get("status").map(text).unwrap_or_default();
-            let done = r.get("timing").and_then(Value::as_array).and_then(|t| t.iter().filter_map(|x| x.get("completed_at").and_then(Value::as_str)).last()).unwrap_or("").to_string();
+            let done = r.get("timing").and_then(Value::as_array).and_then(|t| t.iter().rev().find_map(|x| x.get("completed_at").and_then(Value::as_str))).unwrap_or("").to_string();
             Some((id, (status, done)))
         })
         .collect()
@@ -345,14 +345,6 @@ pub fn blame(dir: &Path, file: &str) -> Result<Vec<BlameLine>, DbError> {
     Ok(parse_blame(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// `~/x` → absolute path.
-pub fn expand_dir(dir: &str) -> PathBuf {
-    match dir.strip_prefix("~/") {
-        Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
-        None => PathBuf::from(dir),
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct DbtProject {
     pub dir: PathBuf,
@@ -365,7 +357,7 @@ pub struct DbtProject {
 
 /// Reads `target/manifest.json` (+ run_results and git). Run off the UI thread: large file.
 pub fn load(cfg: &DbtConfig) -> Result<DbtProject, DbError> {
-    let dir = expand_dir(&cfg.project_dir);
+    let dir = expand_home(&cfg.project_dir);
     let path = dir.join("target").join("manifest.json");
     let json = std::fs::read_to_string(&path).map_err(|_| DbError::Config(t!("err.dbt_no_manifest", path = path.display()).to_string()))?;
     let manifest = parse_manifest(&json)?;
@@ -415,7 +407,7 @@ pub fn aws_profiles(config: &str) -> Vec<String> {
 }
 
 pub fn read_aws_profiles() -> Vec<String> {
-    std::fs::read_to_string(expand_dir("~/.aws/config")).map(|c| aws_profiles(&c)).unwrap_or_default()
+    std::fs::read_to_string(expand_home("~/.aws/config")).map(|c| aws_profiles(&c)).unwrap_or_default()
 }
 
 /// `dbt parse` failed because the AWS SSO session (dbt-loom → S3) expired.
@@ -492,7 +484,7 @@ pub fn compiled_path(dir: &Path, unique_id: &str, file: &str) -> Option<PathBuf>
 /// Compiles only this model and returns the compiled SQL.
 pub fn compile_model(cfg: &DbtConfig, node: &Node, log: &Path) -> Result<String, DbError> {
     run_dbt(cfg, &compile_args(&node.name, &cfg.target), log)?;
-    let path = compiled_path(&expand_dir(&cfg.project_dir), &node.unique_id, &node.file).ok_or_else(|| DbError::Config(node.unique_id.clone()))?;
+    let path = compiled_path(&expand_home(&cfg.project_dir), &node.unique_id, &node.file).ok_or_else(|| DbError::Config(node.unique_id.clone()))?;
     std::fs::read_to_string(&path).map_err(|e| DbError::Io(format!("{}: {e}", path.display())))
 }
 
@@ -505,7 +497,7 @@ pub fn compiled_on_disk(dir: &Path, node: &Node) -> Option<(String, SystemTime)>
 
 /// Runs dbt in the project folder with the login shell environment; 120 s cap; output in `log`.
 fn run_dbt(cfg: &DbtConfig, args: &[&str], log: &Path) -> Result<(), DbError> {
-    let dir = expand_dir(&cfg.project_dir);
+    let dir = expand_home(&cfg.project_dir);
     let log = log.to_path_buf();
     let file = std::fs::File::create(&log).map_err(|e| DbError::Io(e.to_string()))?;
     let err_file = file.try_clone().map_err(|e| DbError::Io(e.to_string()))?;
@@ -531,18 +523,19 @@ fn run_dbt(cfg: &DbtConfig, args: &[&str], log: &Path) -> Result<(), DbError> {
         }
     }
     let Some((mut child, program)) = spawned else { return Err(DbError::Config(t!("err.dbt_not_found").to_string())) };
-    let started = Instant::now();
-    let status = loop {
-        if let Some(s) = child.try_wait().map_err(|e| DbError::Io(e.to_string()))? {
-            break Some(s);
+    // A dedicated thread waits (and reaps) the child; here we only wait for its answer, with the cap.
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    let status = match rx.recv_timeout(Duration::from_secs(120)) {
+        Ok(s) => Some(s.map_err(|e| DbError::Io(e.to_string()))?),
+        Err(_) => {
+            let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+            let _ = rx.recv();
+            None
         }
-        if started.elapsed() > Duration::from_secs(120) {
-            let _ = child.kill();
-            // Without wait the dead process stays as a zombie.
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(200));
     };
     let output = strip_ansi(&std::fs::read_to_string(&log).unwrap_or_default());
     let _ = std::fs::remove_file(&log);
@@ -604,6 +597,7 @@ mod tests {
         assert_eq!(m.by_table("STAGING_PROD", "STG_AWS", "STG_AWS__ACCOUNTS").unwrap().unique_key, vec!["account_id"], "unique_key text");
         assert!(m.by_table("RAW_PROD", "AWS_ORG", "ACCOUNTS").is_some(), "source too");
     }
+
 
     #[test]
     fn layers_come_from_the_models_folder() {

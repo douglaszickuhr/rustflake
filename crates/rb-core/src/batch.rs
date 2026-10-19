@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio_postgres::Row;
 use tokio_postgres::types::{FromSql, Type};
 
+use crate::DbError;
 use crate::decode;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,37 +49,39 @@ impl Batch {
         Batch { data: Vec::new(), cells: Vec::new(), ncols }
     }
 
-    pub fn from_rows(rows: &[Row], ncols: usize) -> Batch {
+    pub fn from_rows(rows: &[Row], ncols: usize) -> Result<Batch, DbError> {
         let mut b = Batch { data: Vec::new(), cells: Vec::with_capacity(rows.len() * ncols), ncols };
         for row in rows {
             for i in 0..ncols {
                 // Raw accepts all types; an error here could only be a nonexistent column.
                 let v = row.try_get::<_, Option<Raw>>(i).ok().flatten();
-                b.push_cell(v.map(|r| r.0));
+                b.push_cell(v.map(|r| r.0))?;
             }
         }
-        b
+        Ok(b)
     }
 
-    pub fn push_row(&mut self, cells: &[Option<&[u8]>]) {
+    pub fn push_row(&mut self, cells: &[Option<&[u8]>]) -> Result<(), DbError> {
         debug_assert_eq!(cells.len(), self.ncols);
-        for c in cells {
-            self.push_cell(*c);
-        }
+        cells.iter().try_for_each(|c| self.push_cell(*c))
     }
 
-    fn push_cell(&mut self, v: Option<&[u8]>) {
+    /// Offsets are `u32` (half the memory of `usize`): a block past 4 GiB is refused, never wrapped.
+    fn push_cell(&mut self, v: Option<&[u8]>) -> Result<(), DbError> {
         match v {
             Some(bytes) => {
+                let end = self.data.len().checked_add(bytes.len()).and_then(|e| u32::try_from(e).ok()).filter(|e| *e < NULL);
+                let Some(_) = end else { return Err(DbError::Unsupported(rust_i18n::t!("err.batch_too_large").to_string())) };
                 self.cells.push((self.data.len() as u32, bytes.len() as u32));
                 self.data.extend_from_slice(bytes);
             }
             None => self.cells.push((0, NULL)),
         }
+        Ok(())
     }
 
     pub fn rows(&self) -> usize {
-        if self.ncols == 0 { 0 } else { self.cells.len() / self.ncols }
+        self.cells.len().checked_div(self.ncols).unwrap_or(0)
     }
 
     /// Raw cell bytes; `None` = NULL.
@@ -130,8 +133,9 @@ impl ResultSet {
 
     /// Fixed-width text table (Text mode, like DBeaver): header, `---+---`, `|` between
     /// columns, NULL empty, numeric-only columns right-aligned, cells cut at `max_chars`.
-    pub fn to_text_table(&self, max_chars: usize) -> String {
-        let n = self.rows();
+    /// Only the first `max_rows`: the whole text lives in one editor buffer.
+    pub fn to_text_table(&self, max_chars: usize, max_rows: usize) -> String {
+        let n = self.rows().min(max_rows);
         let cells: Vec<Vec<String>> = (0..n).map(|r| (0..self.columns.len()).map(|c| self.display(r, c, max_chars).unwrap_or_default()).collect()).collect();
         let len = |s: &str| s.chars().count();
         let cols: Vec<(usize, bool)> = self
@@ -201,7 +205,7 @@ mod tests {
         let mut b = Batch::empty(2);
         for (id, t) in rows {
             let id = id.to_be_bytes();
-            b.push_row(&[Some(&id), t.map(str::as_bytes)]);
+            b.push_row(&[Some(&id), t.map(str::as_bytes)]).unwrap();
         }
         b
     }
@@ -210,12 +214,18 @@ mod tests {
     fn text_table_aligns_and_cuts() {
         let rs = ResultSet::new(cols(), batch(&[(1, Some("ab")), (1234, None), (7, Some("a very long value here"))]), false);
         assert_eq!(
-            rs.to_text_table(10),
+            rs.to_text_table(10, 100),
             "id  |t\n----+-----------\n   1|ab\n1234|\n   7|a very lon…\n",
             "numbers right, text left, NULL empty, cut with …"
         );
         let empty = ResultSet::new(cols(), Batch::empty(2), false);
-        assert_eq!(empty.to_text_table(10), "id|t\n--+-\n");
+        assert_eq!(empty.to_text_table(10, 100), "id|t\n--+-\n");
+    }
+
+    #[test]
+    fn text_table_stops_at_max_rows() {
+        let rs = ResultSet::new(cols(), batch(&[(1, None), (2, None), (3, None)]), false);
+        assert_eq!(rs.to_text_table(10, 2).lines().count(), 4, "header, rule and 2 rows");
     }
 
     #[test]

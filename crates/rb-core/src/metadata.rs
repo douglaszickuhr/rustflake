@@ -151,35 +151,37 @@ fn first_column(rows: Vec<Vec<Option<String>>>) -> Vec<String> {
     rows.iter().map(|r| text(r, 0)).collect()
 }
 
-fn sf_schema(key: &str) -> String {
-    match key.split_once('.') {
-        Some((db, s)) => format!("{}.{}", quote_always(db), quote_always(s)),
-        None => quote_always(key),
-    }
-}
-
 pub struct Context {
     pub search_path: Vec<String>,
     pub warehouse: Option<String>,
     pub role: Option<String>,
 }
 
-/// `*` matches any sequence; the rest is literal, case-insensitive. `DEV_*` = starts with DEV_.
+/// `*` matches any sequence, `?` one character; the rest is literal, case-insensitive. `DEV_*` = starts with DEV_.
 pub fn glob_match(pattern: &str, name: &str) -> bool {
-    let (p, s) = (pattern.to_uppercase(), name.to_uppercase());
-    let parts: Vec<&str> = p.split('*').collect();
-    let [first, .., last] = parts.as_slice() else { return p == s };
-    if s.len() < first.len() + last.len() || !s.starts_with(first) || !s.ends_with(last) {
-        return false;
-    }
-    let mut rest = &s[first.len()..s.len() - last.len()];
-    for mid in &parts[1..parts.len() - 1] {
-        match rest.find(mid) {
-            Some(i) => rest = &rest[i + mid.len()..],
-            None => return false,
+    wildcard(pattern.to_uppercase().as_bytes(), name.to_uppercase().as_bytes())
+}
+
+/// Case-sensitive `*`/`?` matching on bytes (greedy with backtracking to the last `*`: linear-ish, no recursion).
+pub fn wildcard(p: &[u8], n: &[u8]) -> bool {
+    let (mut pi, mut ni, mut star, mut mark) = (0, 0, None, 0);
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == b'*' {
+            star = Some(pi);
+            mark = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ni = mark;
+        } else {
+            return false;
         }
     }
-    true
+    p[pi..].iter().all(|&c| c == b'*')
 }
 
 /// `"DEV_*, !*_TMP"` → `["DEV_*", "!*_TMP"]`; commas and spaces separate, empty ones vanish.
@@ -227,9 +229,9 @@ pub async fn search_path(s: &Session) -> Result<Vec<String>, DbError> {
 
 pub async fn objects(s: &Session, schema: &str) -> Result<SchemaObjects, DbError> {
     if s.dialect() == Dialect::Snowflake {
-        let (n, rows) = s.query_named(&format!("show objects in schema {}", sf_schema(schema))).await?;
+        let (n, rows) = s.query_named(&format!("show objects in schema {}", Dialect::Snowflake.qualified_schema(schema))).await?;
         let mut o = parse_objects(&n, &rows);
-        let (n, rows) = s.query_named(&format!("show user functions in schema {}", sf_schema(schema))).await?;
+        let (n, rows) = s.query_named(&format!("show user functions in schema {}", Dialect::Snowflake.qualified_schema(schema))).await?;
         o.functions = parse_functions(&n, &rows);
         return Ok(o);
     }
@@ -248,7 +250,7 @@ pub async fn objects(s: &Session, schema: &str) -> Result<SchemaObjects, DbError
 
 pub async fn columns(s: &Session, schema: &str, table: &str) -> Result<Vec<ColumnMeta>, DbError> {
     if s.dialect() == Dialect::Snowflake {
-        let name = format!("{}.{}", sf_schema(schema), quote_always(table));
+        let name = Dialect::Snowflake.qualified(schema, table);
         let (n, rows) = match s.query_named(&format!("describe table {name}")).await {
             Ok(r) => r,
             // DESCRIBE TABLE rejects views; the view has its own DESCRIBE.
@@ -294,7 +296,8 @@ mod tests {
         assert!(glob_match("*DBT*", "AI_DBT_TEMP") && glob_match("A*B*C", "AXXBYYC") && !glob_match("A*B*C", "ACB"));
         assert!(glob_match("AB*BA", "ABBA") && !glob_match("AB*BA", "ABA"));
         assert!(glob_match("AI_MARTS", "ai_marts") && !glob_match("AI_MARTS", "AI_MARTS2"));
-        assert!(glob_match("*", "QUALQUER"));
+        assert!(glob_match("*", "ANYTHING") && glob_match("DB?", "db1") && !glob_match("DB?", "DB12"));
+        assert!(wildcard(b"*.conf", b"x.conf") && !wildcard(b"*.conf", b"X.CONF.bak") && wildcard(b"a*b*", b"ab"));
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! Snowflake "Users & Roles" tab (read-only).
 
 use rust_i18n::t;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -18,19 +20,14 @@ use gpui_kit::component::spinner::Spinner;
 use rb_core::org_config::OrgConfig;
 use rb_core::masking::{self, Scope, TagCount};
 use rb_core::unlocks::{self, Detail, ItemKind, UnlockItem};
-use rb_core::user_view::{self, Span, UserMeta};
+use rb_core::user_view::{self, UserMeta};
 use rb_core::admin::{self, Activity, RoleKind, DirectGrant, RoleGraph, EffectiveRole, Grant, Grantee, RoleInfo, UserInfo};
 use rb_core::session::Session;
 
 use crate::Db;
 use crate::lang::Lang;
 use crate::meta::ConnTarget;
-
-pub enum Load<T> {
-    Loading,
-    Ready(T),
-    Failed(String),
-}
+use crate::ui::{Load, ago, section, since, span_label};
 
 #[derive(Clone, PartialEq)]
 pub enum Target {
@@ -42,6 +39,36 @@ pub enum Target {
 
 /// SHOW returns at most 10,000 rows.
 const SHOW_LIMIT: usize = 10_000;
+
+/// One row of the users/roles list.
+#[derive(Clone)]
+struct ListRow {
+    name: String,
+    /// Bottom line (last login, counts).
+    meta: String,
+    /// Highlight (idle for a long time).
+    warn: bool,
+    dimmed: bool,
+}
+
+/// Direct roles and, once known, the inherited ones.
+type UserRoles = (Vec<String>, Load<Vec<EffectiveRole>>);
+
+/// (filter, roles?, disabled?, generation, users ready?, roles ready?).
+type ListKey = (String, bool, bool, u64, bool, bool);
+/// Role → inherited roles, role → databases.
+type Graphs = (Arc<RoleGraph>, Arc<RoleGraph>);
+/// (roles, databases graph pointer).
+type UnlockKey = (Vec<String>, usize);
+
+/// Work that render would otherwise redo every frame (thousands of users or roles).
+#[derive(Default)]
+struct Caches {
+    list: Option<(ListKey, Rc<Vec<ListRow>>)>,
+    /// Inheritance/databases rebuilt from SHOW GRANTS, by (generation, grants cached).
+    graphs: Option<((u64, usize), Graphs)>,
+    unlocks: Option<(UnlockKey, Rc<Vec<UnlockItem>>)>,
+}
 
 pub struct AdminTab {
     conn: ConnTarget,
@@ -57,8 +84,9 @@ pub struct AdminTab {
     roles: Load<Vec<RoleInfo>>,
     stack: Vec<Target>,
     /// Direct + effective roles per user.
-    user_roles: HashMap<String, Load<(Vec<String>, Load<Vec<EffectiveRole>>)>>,
-    role_details: HashMap<String, Load<(Vec<Grant>, Vec<Grantee>)>>,
+    user_roles: HashMap<String, Load<UserRoles>>,
+    /// Role grants and who holds the role.
+    role_details: HashMap<String, Load<RoleDetails>>,
     /// `SHOW GRANTS TO ROLE` per role: inheritance and the role screen use the same one.
     grants_cache: HashMap<String, Vec<Grant>>,
     /// `SHOW GRANTS TO USER`: who granted each direct role (SCIM or by hand).
@@ -85,8 +113,11 @@ pub struct AdminTab {
     pending: Option<Target>,
     /// Bumps on every ↻: results of tasks from before the reload are discarded.
     generation: u64,
+    cache: RefCell<Caches>,
     _subs: Vec<Subscription>,
 }
+
+type RoleDetails = (Vec<Grant>, Vec<Grantee>);
 
 /// Error message + hint when it's a permission issue.
 pub fn explain(e: &rb_core::DbError, hint_key: &str) -> String {
@@ -141,6 +172,7 @@ impl AdminTab {
             graph: Load::Loading,
             pending: None,
             generation: 0,
+            cache: RefCell::default(),
             _subs: subs,
         };
         this.reload(cx);
@@ -447,31 +479,59 @@ impl AdminTab {
         cx.notify();
     }
 
-    /// Names in the current list that match the filter (contains, case-insensitive).
-    /// (name, bottom line, highlight, dimmed) of the items matching the filter, and the list total.
-    fn visible(&self, cx: &App) -> Result<(Vec<(String, String, bool, bool)>, usize), String> {
+    /// Rows of the current list that match the filter (contains, case-insensitive), and the list total.
+    /// Cached until the filter, the toggles or the lists change. ponytail: "active 3 min ago" doesn't tick meanwhile.
+    fn visible(&self, cx: &App) -> Result<(Rc<Vec<ListRow>>, usize), String> {
         let q = self.filter.read(cx).value().trim().to_lowercase();
-        let keep = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
-        let now = user_view::now();
-        match (self.show_roles, &self.users, &self.roles) {
-            (false, Load::Ready(u), _) => Ok((
-                u.iter()
-                    .filter(|u| self.show_disabled || !u.disabled)
-                    .filter(|u| keep(&u.name) || u.display_name.as_deref().is_some_and(keep) || u.email.as_deref().is_some_and(keep))
-                    .map(|u| {
-                        let (meta, warn) = meta_text(user_view::user_meta(u, now));
-                        (u.name.clone(), meta, warn, u.disabled)
-                    })
-                    .collect(),
-                u.len(),
-            )),
-            (true, _, Load::Ready(r)) => Ok((
-                r.iter().filter(|r| keep(&r.name)).map(|r| (r.name.clone(), t!("admin.role_meta", users = r.assigned_to_users, roles = r.granted_to_roles).to_string(), false, false)).collect(),
-                r.len(),
-            )),
-            (false, Load::Failed(e), _) | (true, _, Load::Failed(e)) => Err(e.clone()),
-            _ => Err(t!("tree.loading").to_string()),
+        let total = match (self.show_roles, &self.users, &self.roles) {
+            (false, Load::Ready(u), _) => u.len(),
+            (true, _, Load::Ready(r)) => r.len(),
+            (false, Load::Failed(e), _) | (true, _, Load::Failed(e)) => return Err(e.clone()),
+            _ => return Err(t!("tree.loading").to_string()),
+        };
+        let ready = (matches!(self.users, Load::Ready(_)), matches!(self.roles, Load::Ready(_)));
+        let key = (q, self.show_roles, self.show_disabled, self.generation, ready.0, ready.1);
+        if let Some((k, rows)) = &self.cache.borrow().list
+            && *k == key
+        {
+            return Ok((rows.clone(), total));
         }
+        let q = &key.0;
+        let keep = |s: &str| q.is_empty() || s.to_lowercase().contains(q.as_str());
+        let now = user_view::now();
+        let rows: Vec<ListRow> = match (self.show_roles, &self.users, &self.roles) {
+            (false, Load::Ready(u), _) => u
+                .iter()
+                .filter(|u| self.show_disabled || !u.disabled)
+                .filter(|u| keep(&u.name) || u.display_name.as_deref().is_some_and(keep) || u.email.as_deref().is_some_and(keep))
+                .map(|u| {
+                    let (meta, warn) = meta_text(user_view::user_meta(u, now));
+                    ListRow { name: u.name.clone(), meta, warn, dimmed: u.disabled }
+                })
+                .collect(),
+            (true, _, Load::Ready(r)) => r
+                .iter()
+                .filter(|r| keep(&r.name))
+                .map(|r| ListRow { name: r.name.clone(), meta: t!("admin.role_meta", users = r.assigned_to_users, roles = r.granted_to_roles).to_string(), warn: false, dimmed: false })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let rows = Rc::new(rows);
+        self.cache.borrow_mut().list = Some((key, rows.clone()));
+        Ok((rows, total))
+    }
+
+    /// What `roles` unlock; cached for the last set (the user page redraws often).
+    fn unlocks_of(&self, roles: Vec<String>, dbs: &Arc<RoleGraph>) -> Rc<Vec<UnlockItem>> {
+        let key = (roles, Arc::as_ptr(dbs) as usize);
+        if let Some((k, items)) = &self.cache.borrow().unlocks
+            && *k == key
+        {
+            return items.clone();
+        }
+        let items = Rc::new(unlocks::unlock_items(&self.conn.org, &key.0, dbs));
+        self.cache.borrow_mut().unlocks = Some((key, items.clone()));
+        items
     }
 
     fn render_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -532,7 +592,7 @@ impl AdminTab {
                         let theme = cx.theme();
                         range
                             .map(|i| {
-                                let (name, meta, warn, disabled) = items[i].clone();
+                                let ListRow { name, meta, warn, dimmed: disabled } = items[i].clone();
                                 let target = if show_roles { Target::Role(name.clone()) } else { Target::User(name.clone()) };
                                 let active = selected.as_ref() == Some(&target);
                                 h_flex()
@@ -597,7 +657,6 @@ impl AdminTab {
         }) else {
             return div().child(t!("tree.loading").to_string()).into_any_element();
         };
-        let now = user_view::now();
         let act = match self.activity.get(name) {
             Some(Load::Ready(a)) => Some(a.clone()),
             _ => None,
@@ -640,16 +699,16 @@ impl AdminTab {
 
         // Left: defaults, activity, logins.
         let created = u.created_on.as_deref().map(|c| match user_view::parse_ts(c) {
-            Some(t) => format!("{} · {}", &c[..10.min(c.len())], t!("admin.ago", ago = span_label(user_view::span(now - t)))),
+            Some(t) => format!("{} · {}", &c[..10.min(c.len())], ago(t)),
             None => c.to_string(),
         });
         let defaults = v_flex()
-            .child(section(t!("admin.defaults").to_string(), cx))
+            .child(section(t!("admin.defaults").to_string(), &theme))
             .child(kv(t!("admin.role").to_string(), u.default_role.clone(), &theme))
             .child(kv(t!("admin.warehouse").to_string(), u.default_warehouse.clone(), &theme))
             .child(kv(t!("admin.namespace").to_string(), u.default_namespace.clone(), &theme))
             .child(kv(t!("admin.created").to_string(), created, &theme));
-        let left = v_flex().flex_grow(1.).flex_basis(px(460.)).min_w_0().gap_6().child(defaults).child(self.render_activity(name, now, cx));
+        let left = v_flex().flex_grow(1.).flex_basis(px(460.)).min_w_0().gap_6().child(defaults).child(self.render_activity(name, cx));
 
         // Right: unified access and what else it uses.
         let right = v_flex().flex_grow(1.).flex_basis(px(320.)).min_w_0().gap_6().child(self.render_access_summary(name, cx));
@@ -658,11 +717,11 @@ impl AdminTab {
     }
 
     /// 30-day activity: 4 numbers, day strip (more readable than mostly empty bars) and logins.
-    fn render_activity(&mut self, name: &str, now: i64, cx: &mut Context<Self>) -> AnyElement {
+    fn render_activity(&mut self, name: &str, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let head = h_flex()
             .items_baseline()
-            .child(section(t!("admin.activity_30").to_string(), cx))
+            .child(section(t!("admin.activity_30").to_string(), &theme))
             .child(div().flex_1())
             .child(div().text_xs().text_color(theme.muted_foreground).child(t!("admin.activity_lag").to_string()));
         let out = v_flex().gap_3().child(head);
@@ -672,7 +731,7 @@ impl AdminTab {
             Some(Load::Ready(a)) => a.clone(),
         };
         let q = &a.queries;
-        let since = q.last.as_deref().and_then(user_view::parse_ts).map_or("—".to_string(), |t| span_label(user_view::span(now - t)));
+        let since = q.last.as_deref().and_then(user_view::parse_ts).map_or("—".to_string(), since);
         let tile = |big: String, small: Option<String>, label: String| {
             v_flex()
                 .flex_grow(1.)
@@ -707,7 +766,7 @@ impl AdminTab {
         let peak = q.per_day.iter().max_by_key(|(_, n)| *n).filter(|(_, n)| *n > 0).map(|(d, n)| t!("admin.peak", day = short_day(d), n = n).to_string()).unwrap_or_default();
         let labels = h_flex().justify_between().text_xs().text_color(theme.muted_foreground).child(first).child(peak).child(t!("admin.today").to_string());
 
-        let mut signins = v_flex().child(section(t!("admin.sign_ins").to_string(), cx));
+        let mut signins = v_flex().child(section(t!("admin.sign_ins").to_string(), &theme));
         for (e, n) in user_view::group_sign_ins(&a.logins.recent) {
             let how = [e.factor.clone(), e.client.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
             signins = signins.child(
@@ -838,25 +897,31 @@ impl AdminTab {
 
     /// Inheritance and databases per role: from ACCOUNT_USAGE when it came, otherwise from the SHOW GRANTS already done.
     /// `Arc`: redrawing must not clone the whole account hierarchy every frame.
-    fn inherits_and_databases(&self) -> (Arc<RoleGraph>, Arc<RoleGraph>) {
-        match &self.graph {
-            Load::Ready(g) => (g.clone(), self.databases.clone()),
-            _ => {
-                let inh = self.grants_cache.iter().map(|(k, g)| (k.clone(), admin::inherited_roles(g))).collect();
-                let dbs = self
-                    .grants_cache
-                    .iter()
-                    .map(|(k, g)| (k.clone(), g.iter().filter(|x| x.privilege == "USAGE" && x.granted_on == "DATABASE").map(|x| x.name.clone()).collect()))
-                    .collect();
-                (Arc::new(inh), Arc::new(dbs))
-            }
+    fn inherits_and_databases(&self) -> Graphs {
+        if let Load::Ready(g) = &self.graph {
+            return (g.clone(), self.databases.clone());
         }
+        let key = (self.generation, self.grants_cache.len());
+        if let Some((k, graphs)) = &self.cache.borrow().graphs
+            && *k == key
+        {
+            return graphs.clone();
+        }
+        let inh = self.grants_cache.iter().map(|(k, g)| (k.clone(), admin::inherited_roles(g))).collect();
+        let dbs = self
+            .grants_cache
+            .iter()
+            .map(|(k, g)| (k.clone(), g.iter().filter(|x| x.privilege == "USAGE" && x.granted_on == "DATABASE").map(|x| x.name.clone()).collect()))
+            .collect();
+        let graphs = (Arc::new(inh), Arc::new(dbs));
+        self.cache.borrow_mut().graphs = Some((key, graphs.clone()));
+        graphs
     }
 
     /// Access summary on the user's page; the full list opens at "All roles →".
     fn render_access_summary(&mut self, name: &str, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let out = v_flex().gap_3().child(section(t!("admin.access").to_string(), cx));
+        let out = v_flex().gap_3().child(section(t!("admin.access").to_string(), &theme));
         let Some((direct, eff, loading)) = self.access_data(name) else {
             return match self.user_roles.get(name) {
                 Some(Load::Failed(m)) => out.child(div().text_color(theme.danger).child(m.clone())),
@@ -876,7 +941,7 @@ impl AdminTab {
         let theme = cx.theme().clone();
         let (_, dbs) = self.inherits_and_databases();
         let all: Vec<String> = direct.iter().cloned().chain(eff.iter().map(|e| e.name.clone())).collect();
-        let items = unlocks::unlock_items(&self.conn.org, &all, &dbs);
+        let items = self.unlocks_of(all, &dbs);
         let count = |k: ItemKind| items.iter().filter(|i| i.kind == k).count();
         let top = items.iter().find_map(|i| if let Detail::Level(l) = i.detail { Some(l) } else { None });
         let (data_roles, data_dbs) = unlocks::data_spread(&items);
@@ -929,7 +994,7 @@ impl AdminTab {
         };
         let (inherits, dbs) = self.inherits_and_databases();
         let all: Vec<String> = direct.iter().cloned().chain(eff.iter().map(|e| e.name.clone())).collect();
-        let items = unlocks::unlock_items(&self.conn.org, &all, &dbs);
+        let items = self.unlocks_of(all.clone(), &dbs);
         let usage = match self.activity.get(name) {
             Some(Load::Ready(a)) => Some(a.usage.clone()),
             _ => None,
@@ -988,11 +1053,11 @@ impl AdminTab {
                 None => ("—".into(), false),
                 Some(None) => (t!("admin.unused").to_string(), true),
                 Some(Some(t)) if now - t < 86_400 => (t!("admin.today").to_string().to_lowercase(), false),
-                Some(Some(t)) => (t!("admin.ago", ago = span_label(user_view::span(now - t))).to_string(), false),
+                Some(Some(t)) => (ago(t).to_string(), false),
             }
         };
         if self.unlock_filter.is_none() && !self.unused_only {
-            let mut sec = v_flex().gap_1().child(section(t!("admin.direct").to_string(), cx));
+            let mut sec = v_flex().gap_1().child(section(t!("admin.direct").to_string(), &theme));
             for (i, g) in grants.iter().filter(|g| !searching || unlocks::matches_all(&g.role, &toks)).enumerate() {
                 let reach = eff.iter().filter(|e| e.path.first() == Some(&g.role)).count();
                 let source = if g.from_scim() {
@@ -1052,7 +1117,7 @@ impl AdminTab {
                     .gap_2()
                     .items_center()
                     .child(div().size(px(7.)).rounded_full().bg(kind_color(k, &theme)))
-                    .child(section(item_kind_label(k), cx))
+                    .child(section(item_kind_label(k), &theme))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(total.to_string())),
             );
             for (ii, (it, members)) in hits.into_iter().take(if collapsed { 5 } else { total }).enumerate() {
@@ -1229,11 +1294,11 @@ impl AdminTab {
                 let privs: Vec<Grant> = grants.iter().filter(|g| !(g.privilege == "USAGE" && g.granted_on == "ROLE")).cloned().collect();
                 let n = privs.len();
                 out = out
-                    .child(section(t!("admin.granted_to").to_string(), cx))
+                    .child(section(t!("admin.granted_to").to_string(), &theme))
                     .child(granted)
-                    .child(section(t!("admin.inherits").to_string(), cx))
+                    .child(section(t!("admin.inherits").to_string(), &theme))
                     .child(tags("inh", &admin::inherited_roles(&grants), cx))
-                    .child(section(t!("admin.privileges", n = n).to_string(), cx))
+                    .child(section(t!("admin.privileges", n = n).to_string(), &theme))
                     // Virtualized: SYSADMIN may have thousands of grants.
                     .child(
                         uniform_list("adm-privs", n, move |range, _, cx| {
@@ -1290,17 +1355,6 @@ fn title_case(s: &str) -> String {
 /// `2026-09-29` → `09-29`.
 fn short_day(d: &str) -> String {
     d.get(5..10).unwrap_or(d).to_string()
-}
-
-fn span_label(s: Span) -> String {
-    match s {
-        Span::Minutes(n) => t!("span.minutes", n = n),
-        Span::Hours(n) => t!("span.hours", n = n),
-        Span::Days(n) => t!("span.days", n = n),
-        Span::Months(n) => t!("span.months", n = n),
-        Span::Years(n) => t!("span.years", n = n),
-    }
-    .to_string()
 }
 
 /// User's bottom line in the list; `true` = highlight (idle for a long time).
@@ -1393,9 +1447,6 @@ fn one_line(el: impl IntoElement) -> Div {
     div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(el)
 }
 
-fn section(title: String, cx: &App) -> Div {
-    div().pt_3().pb_1().text_xs().text_color(cx.theme().muted_foreground).child(title.to_uppercase())
-}
 
 /// Clickable tag that navigates to the role.
 fn role_tag(id: impl Into<ElementId>, name: &str, cx: &mut Context<AdminTab>) -> Stateful<Div> {
@@ -1438,7 +1489,10 @@ pub(crate) fn human_ms(ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[::core::prelude::v1::test]
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
+    #[test]
     fn human_ms_units() {
         assert_eq!(super::human_ms(12_500), "12.5 s");
         assert_eq!(super::human_ms(90_000), "1.5 min");

@@ -2,6 +2,15 @@
 resolver = "3"
 members = ["crates/*"]
 
+# Shared by both crates (`[lints] workspace = true`); clippy's default set already runs on top.
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

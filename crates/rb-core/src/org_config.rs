@@ -8,7 +8,8 @@ use regex::{Regex, RegexBuilder};
 use rust_i18n::t;
 use serde::Deserialize;
 
-use crate::admin::{RoleKind, sql_str};
+use crate::admin::RoleKind;
+use crate::lexer::sql_str;
 use crate::masking::{Scope, TagCount};
 use crate::metadata::glob_match;
 
@@ -381,8 +382,8 @@ mod tests {
     #[test]
     fn custom_tab_needs_exactly_one_of_sql_or_url() {
         let base = "name = \"X\"\n[[tabs]]\nname = \"T\"\n";
-        assert!(OrgConfig::parse(base).is_err(), "nem sql nem url");
-        assert!(OrgConfig::parse(&format!("{base}sql = \"select 1\"\nurl = \"http://x\"")).is_err(), "os dois");
+        assert!(OrgConfig::parse(base).is_err(), "neither sql nor url");
+        assert!(OrgConfig::parse(&format!("{base}sql = \"select 1\"\nurl = \"http://x\"")).is_err(), "both");
         assert!(OrgConfig::parse(&format!("{base}sql = \"select 1\"")).is_ok());
         assert!(OrgConfig::parse("name = \"X\"\n[[tabs]]\nname = \" \"\nurl = \"http://x\"").is_err(), "empty name");
         assert!(OrgConfig::none().tabs_for("A", "B", "C").is_empty());

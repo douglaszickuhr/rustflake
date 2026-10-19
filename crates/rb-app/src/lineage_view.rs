@@ -17,11 +17,11 @@ use rb_core::lineage::{self, ColumnPath, Dir, Graph, Layout, MAX_DISTANCE, Obj, 
 use rb_core::table_info;
 use rust_i18n::t;
 
-use crate::admin_tab::Load;
+use crate::ui::Load;
 use crate::dbt_store::DbtStore;
 use crate::meta::ConnTarget;
 use crate::schema_tree::OpenTable;
-use crate::table_tab::sections::kind_dot;
+use crate::table_sections::kind_dot;
 use crate::table_tab::{OpenQuery, spawn_query};
 use crate::zoom::{PAD, fit_zoom, step_zoom, wheel_zoom, zoom_anchor};
 use crate::{ClearLineage, PlanFit, PlanZoomIn, PlanZoomOut};

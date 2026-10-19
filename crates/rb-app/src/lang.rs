@@ -1,7 +1,9 @@
 //! Interface language: resolves the choice (or macOS's), applies it to `rust-i18n` and notifies the UI.
 
 use gpui_kit::*;
-use rb_core::config::{self, Language};
+use rb_core::config::Language;
+
+use crate::settings;
 
 /// Chosen language; changing the global notifies observers (`cx.observe_global::<Lang>`).
 pub struct Lang(pub Language);
@@ -28,19 +30,13 @@ fn apply(choice: Language, cx: &mut App) {
 
 /// At startup, before opening the window.
 pub fn init(cx: &mut App) {
-    apply(config::load_settings(&config::settings_path()).language, cx);
+    apply(settings::get(cx).language, cx);
 }
 
 /// Switches now, saves in the background and redraws everything.
 pub fn set(choice: Language, cx: &mut App) {
     apply(choice, cx);
-    let path = config::settings_path();
-    cx.background_spawn(async move {
-        if let Err(e) = config::update_settings(&path, |s| s.language = choice) {
-            tracing::warn!("settings.toml: {e}");
-        }
-    })
-    .detach();
+    settings::update(cx, |s| s.language = choice);
     cx.refresh_windows();
 }
 
@@ -58,14 +54,13 @@ pub fn label(choice: Language) -> String {
 }
 
 #[cfg(test)]
-#[path = "../../rb-core/src/i18n_check.rs"]
-mod i18n_check;
-
-#[cfg(test)]
 mod tests {
+    // `gpui_kit::*` brings GPUI\'s own `test` attribute; this one wins over the glob.
+    use core::prelude::v1::test;
+
     use super::*;
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn os_locale_maps_to_supported_language() {
         use rb_core::config::Language::*;
         assert_eq!(resolve(Auto, Some("pt-BR")), "pt");
@@ -79,7 +74,7 @@ mod tests {
         assert_eq!(resolve(Pt, None), "pt");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn nested_toml_keys_resolve_per_locale() {
         // Explicit locale: the global is shared between parallel tests.
         assert_eq!(rust_i18n::t!("tree.loading", locale = "pt"), "carregando…");
@@ -87,9 +82,9 @@ mod tests {
         assert_eq!(rust_i18n::t!("tree.loading", locale = "de"), "loading…");
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn every_key_is_translated_and_used_keys_exist() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        i18n_check::check(&root.join("src"), &root.join("locales/app.toml"));
+        rb_core::i18n_check::check(&root.join("src"), &root.join("locales/app.toml"));
     }
 }

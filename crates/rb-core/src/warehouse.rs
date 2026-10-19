@@ -3,11 +3,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::DbError;
-use crate::admin::{RoleGraph, quote_ident, sql_str, unquote};
+use crate::admin::{RoleGraph, unquote};
+use crate::lexer::{quote_always, sql_str};
 use crate::session::Session;
-use crate::snowflake::field;
-
-type Rows = [Vec<Option<String>>];
+use crate::snowflake::{Named, Rows, named};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WarehouseInfo {
@@ -31,36 +30,31 @@ pub struct WarehouseInfo {
 }
 
 /// SHOW returns "null" as text in some columns.
-fn opt(names: &[String], r: &[Option<String>], col: &str) -> Option<String> {
-    field(names, r, col).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("null")).map(String::from)
-}
-
-fn num<T: std::str::FromStr + Default>(names: &[String], r: &[Option<String>], col: &str) -> T {
-    field(names, r, col).and_then(|v| v.parse().ok()).unwrap_or_default()
+fn opt(r: Named, col: &str) -> Option<String> {
+    r.text(col).filter(|v| !v.eq_ignore_ascii_case("null"))
 }
 
 /// `SHOW WAREHOUSES`, ordered by name.
 pub fn parse_warehouses(names: &[String], rows: &Rows) -> Vec<WarehouseInfo> {
-    let mut out: Vec<WarehouseInfo> = rows
-        .iter()
+    let mut out: Vec<WarehouseInfo> = named(names, rows)
         .filter_map(|r| {
             Some(WarehouseInfo {
-                name: opt(names, r, "name")?,
-                state: opt(names, r, "state").unwrap_or_default(),
-                kind: opt(names, r, "type"),
-                size: opt(names, r, "size").unwrap_or_default(),
-                min_clusters: num(names, r, "min_cluster_count"),
-                max_clusters: num(names, r, "max_cluster_count"),
-                running: num(names, r, "running"),
-                queued: num(names, r, "queued"),
-                auto_suspend: opt(names, r, "auto_suspend").and_then(|v| v.parse().ok()),
-                auto_resume: field(names, r, "auto_resume").is_some_and(|v| v.eq_ignore_ascii_case("true")),
-                scaling_policy: opt(names, r, "scaling_policy"),
-                owner: opt(names, r, "owner"),
-                comment: opt(names, r, "comment"),
-                created_on: opt(names, r, "created_on"),
-                resumed_on: opt(names, r, "resumed_on"),
-                resource_monitor: opt(names, r, "resource_monitor"),
+                name: opt(r, "name")?,
+                state: opt(r, "state").unwrap_or_default(),
+                kind: opt(r, "type"),
+                size: opt(r, "size").unwrap_or_default(),
+                min_clusters: r.num("min_cluster_count"),
+                max_clusters: r.num("max_cluster_count"),
+                running: r.num("running"),
+                queued: r.num("queued"),
+                auto_suspend: opt(r, "auto_suspend").and_then(|v| v.parse().ok()),
+                auto_resume: r.get("auto_resume").is_some_and(|v| v.eq_ignore_ascii_case("true")),
+                scaling_policy: opt(r, "scaling_policy"),
+                owner: opt(r, "owner"),
+                comment: opt(r, "comment"),
+                created_on: opt(r, "created_on"),
+                resumed_on: opt(r, "resumed_on"),
+                resource_monitor: opt(r, "resource_monitor"),
             })
         })
         .collect();
@@ -97,9 +91,9 @@ pub struct WhGrant {
 
 /// `SHOW GRANTS ON WAREHOUSE`: only those granted to roles.
 pub fn parse_wh_grants(names: &[String], rows: &Rows) -> Vec<WhGrant> {
-    rows.iter()
-        .filter(|r| field(names, r, "granted_to").is_some_and(|g| g.eq_ignore_ascii_case("ROLE")))
-        .filter_map(|r| Some(WhGrant { privilege: opt(names, r, "privilege")?, role: unquote(opt(names, r, "grantee_name")?) }))
+    named(names, rows)
+        .filter(|r| r.get("granted_to").is_some_and(|g| g.eq_ignore_ascii_case("ROLE")))
+        .filter_map(|r| Some(WhGrant { privilege: opt(r, "privilege")?, role: unquote(opt(r, "grantee_name")?) }))
         .collect()
 }
 
@@ -128,7 +122,7 @@ pub async fn warehouses(s: &Session) -> Result<Vec<WarehouseInfo>, DbError> {
 }
 
 pub async fn wh_grants(s: &Session, name: &str) -> Result<Vec<WhGrant>, DbError> {
-    let (n, r) = s.query_named(&format!("SHOW GRANTS ON WAREHOUSE {}", quote_ident(name))).await?;
+    let (n, r) = s.query_named(&format!("SHOW GRANTS ON WAREHOUSE {}", quote_always(name))).await?;
     Ok(parse_wh_grants(&n, &r))
 }
 
@@ -160,8 +154,8 @@ pub const USER_GRANTS_SQL: &str = "select grantee_name, role from snowflake.acco
 
 pub fn parse_user_grants_all(names: &[String], rows: &Rows) -> HashMap<String, Vec<String>> {
     let mut m: HashMap<String, Vec<String>> = HashMap::new();
-    for r in rows {
-        if let (Some(u), Some(role)) = (opt(names, r, "grantee_name"), opt(names, r, "role")) {
+    for r in named(names, rows) {
+        if let (Some(u), Some(role)) = (opt(r, "grantee_name"), opt(r, "role")) {
             m.entry(u).or_default().push(role);
         }
     }
@@ -190,7 +184,7 @@ select to_char(d.day, 'YYYY-MM-DD') as day, coalesce(m.credits, 0)::string as cr
 }
 
 pub fn parse_credits(names: &[String], rows: &Rows) -> Vec<(String, f64)> {
-    let mut v: Vec<(String, f64)> = rows.iter().filter_map(|r| Some((opt(names, r, "day")?, num(names, r, "credits")))).collect();
+    let mut v: Vec<(String, f64)> = named(names, rows).filter_map(|r| Some((opt(r, "day")?, r.num("credits")))).collect();
     v.sort_by(|a, b| a.0.cmp(&b.0));
     v
 }
@@ -224,7 +218,7 @@ pub struct WhUsage {
     pub slow: Vec<SlowQuery>,
 }
 
-/// Linhas `kind, a..e` (text): several aggregations in a single round trip to the server. ACCOUNT_USAGE: up to ~2 h lag.
+/// Rows `kind, a..e` (text): several aggregations in a single round trip to the server. ACCOUNT_USAGE: up to ~2 h lag.
 pub fn usage_sql(wh: &str) -> String {
     format!(
         "with q as (
@@ -243,10 +237,10 @@ union all select * from (select 'slow', query_id, user_name, total_elapsed_time:
 
 pub fn parse_usage(names: &[String], rows: &Rows) -> WhUsage {
     let mut u = WhUsage::default();
-    let f = |r: &[Option<String>], c: &str| num::<f64>(names, r, c);
-    for r in rows {
-        let s = |c: &str| opt(names, r, c).unwrap_or_default();
-        match field(names, r, "kind") {
+    let f = |r: Named, c: &str| r.num::<f64>(c);
+    for r in named(names, rows) {
+        let s = |c: &str| opt(r, c).unwrap_or_default();
+        match r.get("kind") {
             Some("total") => {
                 (u.total, u.queued) = (f(r, "a") as u64, f(r, "b") as u64);
                 (u.avg_queue_ms, u.max_queue_ms) = (f(r, "c"), f(r, "d"));
@@ -259,7 +253,7 @@ pub fn parse_usage(names: &[String], rows: &Rows) -> WhUsage {
     }
     // UNION ALL does not guarantee order.
     u.top_users.sort_by(|a, b| b.queries.cmp(&a.queries).then_with(|| a.name.cmp(&b.name)));
-    u.slow.sort_by(|a, b| b.elapsed_ms.cmp(&a.elapsed_ms));
+    u.slow.sort_by_key(|q| std::cmp::Reverse(q.elapsed_ms));
     u
 }
 

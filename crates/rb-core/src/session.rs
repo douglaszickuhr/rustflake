@@ -24,6 +24,10 @@ use crate::ssh::{SshEnv, Tunnel};
 
 pub const FETCH_ROWS: i32 = 1000;
 
+/// A paged read keeps its transaction (and snapshot) open: past this idle time it is committed and closed,
+/// so the server doesn't hold back VACUUM or kill the session (`idle_in_transaction_session_timeout`).
+const PORTAL_IDLE: Duration = Duration::from_secs(60);
+
 /// Dedicated tokio runtime for database I/O. Cheap to clone.
 #[derive(Clone)]
 pub struct Engine {
@@ -64,13 +68,28 @@ pub struct SqlWithParams {
 
 pub(crate) type Reply<T> = oneshot::Sender<Result<T, DbError>>;
 
-/// Secrets of a connection, read from the Keychain by the app.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Column names and rows as text.
+pub type Table = (Vec<String>, Vec<Vec<Option<String>>>);
+
+/// Secrets of a connection, read from the Keychain by the app. Shared as `Arc` (one copy per connection);
+/// `Debug` never prints them.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Credentials {
     pub password: Option<String>,
     pub ssh_passphrase: Option<String>,
     /// Passphrase of the Snowflake private key (key-pair).
     pub key_passphrase: Option<String>,
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let set = |v: &Option<String>| if v.is_some() { "<set>" } else { "<none>" };
+        f.debug_struct("Credentials")
+            .field("password", &set(&self.password))
+            .field("ssh_passphrase", &set(&self.ssh_passphrase))
+            .field("key_passphrase", &set(&self.key_passphrase))
+            .finish()
+    }
 }
 
 /// One tunnel per app connection (id + SSH block), shared by its sessions.
@@ -83,7 +102,7 @@ pub(crate) enum Cmd {
     Execute { sql: String, reply: Reply<ExecOutcome> },
     FetchMore { exec_id: u64, reply: Reply<FetchOutcome> },
     QueryText { sql: String, params: Vec<String>, reply: Reply<Vec<Vec<Option<String>>>> },
-    QueryNamed { sql: String, reply: Reply<(Vec<String>, Vec<Vec<Option<String>>>)> },
+    QueryNamed { sql: String, reply: Reply<Table> },
     Transaction { stmts: Vec<SqlWithParams>, reply: Reply<u64> },
     Explain { sql: String, analyze: bool, reply: Reply<Plan> },
 }
@@ -107,7 +126,14 @@ fn tls() -> MakeRustlsConnect {
     TLS.get_or_init(|| {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let mut roots = rustls::RootCertStore::empty();
-        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+        let native = rustls_native_certs::load_native_certs();
+        for e in &native.errors {
+            tracing::warn!("system root certificates: {e}");
+        }
+        let (added, ignored) = roots.add_parsable_certificates(native.certs);
+        if added == 0 {
+            tracing::warn!(ignored, "no usable system root certificate: TLS with ssl = require will fail");
+        }
         let cfg = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
         MakeRustlsConnect::new(cfg)
     })
@@ -141,7 +167,8 @@ impl Engine {
         self
     }
 
-    pub async fn connect(&self, cfg: &ConnectionConfig, creds: Credentials) -> Result<Session, DbError> {
+    pub async fn connect(&self, cfg: &ConnectionConfig, creds: impl Into<Arc<Credentials>>) -> Result<Session, DbError> {
+        let creds: Arc<Credentials> = creds.into();
         if cfg.snowflake.is_some() {
             let (cfg, cache) = (cfg.clone(), self.sf_sessions.clone());
             let handle = self.rt.handle().clone();
@@ -155,7 +182,7 @@ impl Engine {
                 .map_err(|e| DbError::Connection(e.to_string()))?;
         }
         let pg = cfg.pg_config(creds.password.as_deref());
-        let route = cfg.ssh.clone().map(|ssh| (cfg.id.clone(), ssh, creds.ssh_passphrase, cfg.host.clone(), cfg.port));
+        let route = cfg.ssh.clone().map(|ssh| (cfg.id.clone(), ssh, creds.ssh_passphrase.clone(), cfg.host.clone(), cfg.port));
         let (env, tunnels) = (self.ssh_env.clone(), self.tunnels.clone());
         let handle = self.rt.handle().clone();
         self.rt
@@ -241,12 +268,13 @@ impl Connector {
     }
 }
 
-/// A Postgres connection. Commands are processed in order by an actor on the Engine runtime.
+/// How to cancel the running command of a session.
 enum Canceller {
-    Postgres { token: Arc<Mutex<CancelToken>>, connector: Connector },
+    Postgres { token: Arc<Mutex<CancelToken>>, connector: Box<Connector> },
     Snowflake(SfCanceller),
 }
 
+/// A database connection. Commands are processed in order by an actor on the Engine runtime.
 pub struct Session {
     tx: mpsc::UnboundedSender<Cmd>,
     rt: Handle,
@@ -267,8 +295,8 @@ impl Session {
         tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64, "connected");
         let cancel = Arc::new(Mutex::new(client.cancel_token()));
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(Actor { client, connector: connector.clone(), cancel: cancel.clone(), last_exec: 0 }.run(rx));
-        Ok(Session { tx, rt, canceller: Canceller::Postgres { token: cancel, connector }, dialect: Dialect::Postgres, _snowflake: None })
+        tokio::spawn(Actor { client, connector: connector.clone(), cancel: cancel.clone(), last_exec: 0, idle_closed: None }.run(rx));
+        Ok(Session { tx, rt, canceller: Canceller::Postgres { token: cancel, connector: Box::new(connector) }, dialect: Dialect::Postgres, _snowflake: None })
     }
 
     fn open_snowflake(shared: Arc<SfShared>, rt: Handle) -> Session {
@@ -289,7 +317,7 @@ impl Session {
     }
 
     /// Rows and column names (used in Snowflake `SHOW`/`DESCRIBE`).
-    pub async fn query_named(&self, sql: &str) -> Result<(Vec<String>, Vec<Vec<Option<String>>>), DbError> {
+    pub async fn query_named(&self, sql: &str) -> Result<Table, DbError> {
         let sql = sql.to_string();
         self.call(|reply| Cmd::QueryNamed { sql, reply }).await
     }
@@ -346,7 +374,7 @@ impl Session {
     pub fn cancel(&self) {
         match &self.canceller {
             Canceller::Postgres { token, connector } => {
-                let (token, connector) = (token.lock().expect("cancel token mutex").clone(), connector.clone());
+                let (token, connector) = (token.lock().expect("cancel token mutex").clone(), connector.as_ref().clone());
                 self.rt.spawn(async move {
                     if let Err(e) = connector.cancel(token).await {
                         tracing::warn!("cancel failed: {e}");
@@ -371,6 +399,8 @@ struct Actor {
     connector: Connector,
     cancel: Arc<Mutex<CancelToken>>,
     last_exec: u64,
+    /// Result whose cursor was closed for being idle: its late `FetchMore` gets an error, not a silent end.
+    idle_closed: Option<u64>,
 }
 
 impl Actor {
@@ -384,9 +414,13 @@ impl Actor {
             }
             next = match cmd {
                 Cmd::Execute { sql, reply } => self.execute(sql, reply, &mut rx).await,
-                Cmd::FetchMore { reply, .. } => {
+                Cmd::FetchMore { exec_id, reply } => {
                     // No open portal: nothing more to fetch.
-                    let _ = reply.send(Ok(FetchOutcome { batch: Batch::empty(0), more: false }));
+                    let res = match self.idle_closed {
+                        Some(id) if id == exec_id => Err(DbError::Unsupported(t!("err.cursor_idle", secs = PORTAL_IDLE.as_secs()).to_string())),
+                        _ => Ok(FetchOutcome { batch: Batch::empty(0), more: false }),
+                    };
+                    let _ = reply.send(res);
                     rx.recv().await
                 }
                 Cmd::QueryText { sql, params, reply } => {
@@ -497,26 +531,41 @@ impl Actor {
                     }
                 }
             }
-            let batch = Batch::from_rows(&first, ncols);
-            let res = tx.commit().await.map_err(DbError::from).map(|_| ExecOutcome {
-                query_id: None,
-                exec_id,
-                columns,
-                batch,
-                more: false,
-                affected: None,
-                elapsed: started.elapsed(),
-            });
+            // A block too large to keep is an error before the commit: the write is rolled back.
+            let res = match Batch::from_rows(&first, ncols) {
+                Ok(batch) => tx.commit().await.map_err(DbError::from).map(|_| ExecOutcome {
+                    query_id: None,
+                    exec_id,
+                    columns,
+                    batch,
+                    more: false,
+                    affected: None,
+                    elapsed: started.elapsed(),
+                }),
+                Err(e) => Err(e),
+            };
             let _ = reply.send(res);
             return rx.recv().await;
         }
         let elapsed = started.elapsed();
         tracing::info!(elapsed_ms = elapsed.as_millis() as u64, rows = first.len(), "first batch");
-        let _ = reply.send(Ok(ExecOutcome { exec_id, columns, batch: Batch::from_rows(&first, ncols), more, affected: None, elapsed, query_id: None }));
+        let batch = match Batch::from_rows(&first, ncols) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = reply.send(Err(e));
+                return rx.recv().await;
+            }
+        };
+        let _ = reply.send(Ok(ExecOutcome { exec_id, columns, batch, more, affected: None, elapsed, query_id: None }));
 
         let mut pending: Option<Option<Cmd>> = None;
         while more {
-            match rx.recv().await {
+            let Ok(next) = tokio::time::timeout(PORTAL_IDLE, rx.recv()).await else {
+                tracing::info!(exec_id, "closing an idle result cursor");
+                self.idle_closed = Some(exec_id);
+                break;
+            };
+            match next {
                 Some(Cmd::FetchMore { exec_id: id, reply }) if id != exec_id => {
                     // Late request from a previous result: must not consume this portal.
                     let _ = reply.send(Ok(FetchOutcome { batch: Batch::empty(0), more: false }));
@@ -524,7 +573,12 @@ impl Actor {
                 Some(Cmd::FetchMore { reply, .. }) => match tx.query_portal(&portal, FETCH_ROWS).await {
                     Ok(rows) => {
                         more = rows.len() == FETCH_ROWS as usize;
-                        let _ = reply.send(Ok(FetchOutcome { batch: Batch::from_rows(&rows, ncols), more }));
+                        let res = Batch::from_rows(&rows, ncols).map(|batch| FetchOutcome { batch, more });
+                        let failed = res.is_err();
+                        let _ = reply.send(res);
+                        if failed {
+                            break;
+                        }
                     }
                     Err(e) => {
                         let _ = reply.send(Err(e.into()));
@@ -556,7 +610,7 @@ impl Actor {
             .map_err(Into::into)
     }
 
-    async fn query_named(&self, sql: &str) -> Result<(Vec<String>, Vec<Vec<Option<String>>>), DbError> {
+    async fn query_named(&self, sql: &str) -> Result<Table, DbError> {
         let stmt = self.client.prepare(sql).await?;
         let names = stmt.columns().iter().map(|c| c.name().to_string()).collect();
         Ok((names, self.query_text(sql, &[]).await?))

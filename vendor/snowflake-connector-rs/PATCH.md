@@ -12,3 +12,6 @@ SSO ID token cache (like the official connectors' `client_store_temporary_creden
 The token is requested with the `CLIENT_STORE_TEMPORARY_CREDENTIAL=true` session parameter (existing API).
 Tests: `cargo test --manifest-path vendor/snowflake-connector-rs/Cargo.toml --lib --features external-browser-sso,key-pair-auth id_token`.
 When upgrading the connector, reapply these changes (or drop them if upstream gains support).
+
+Trimmed (not built by rustflake): `.github/`, `examples/`, `benches/`, `Cargo.toml.orig` and `Cargo.lock` are removed,
+with their `[[example]]`/`[[bench]]` entries. The library and its tests are untouched.

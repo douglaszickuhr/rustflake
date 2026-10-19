@@ -18,7 +18,8 @@ use rb_core::session::Session;
 use rb_core::warehouse::{self, Suspend, WarehouseInfo, WhGrant, WhUsage};
 
 use crate::Db;
-use crate::admin_tab::{Load, Target, explain, human_ms, kv};
+use crate::admin_tab::{Target, explain, human_ms, kv};
+use crate::ui::{Load, section};
 use crate::lang::Lang;
 use crate::meta::ConnTarget;
 use crate::plan_view::PlanView;
@@ -483,10 +484,6 @@ fn list_meta(w: &WarehouseInfo) -> String {
         "STARTED" => t!("wh.meta_running", size = w.size, n = w.running).to_string(),
         s => format!("{} · {}", w.size, s.to_lowercase()),
     }
-}
-
-fn section(title: String, theme: &gpui_kit::component::Theme) -> Div {
-    div().pt_1().pb_1().text_xs().text_color(theme.muted_foreground).child(title.to_uppercase())
 }
 
 /// Without an active warehouse ACCOUNT_USAGE doesn't run; without IMPORTED PRIVILEGES it doesn't even exist.

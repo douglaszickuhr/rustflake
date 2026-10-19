@@ -8,8 +8,9 @@ use crate::DbError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SslMode {
-    #[default]
     Disable,
+    /// TLS when the server offers it (libpq's default).
+    #[default]
     Prefer,
     /// TLS required, with the certificate verified against the system roots.
     Require,
@@ -142,12 +143,17 @@ impl ConnectionConfig {
     }
 }
 
-pub fn app_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Application Support/rustflake")
+pub fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// The app was called rustbeaver: moves its folder over once, before anything reads it.
-pub fn migrate_legacy_dir() {
+pub fn app_dir() -> PathBuf {
+    home_dir().join("Library/Application Support/rustflake")
+}
+
+/// Before anything reads it: moves the folder from when the app was called rustbeaver (once)
+/// and makes it owner-only, since scripts and history may hold passwords.
+pub fn prepare_app_dir() {
     let new = app_dir();
     let old = new.with_file_name("rustbeaver");
     if old.is_dir() && !new.exists() {
@@ -156,6 +162,32 @@ pub fn migrate_legacy_dir() {
             Err(e) => tracing::warn!("could not move {}: {e}", old.display()),
         }
     }
+    let res = std::fs::create_dir_all(&new).and_then(|()| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o700))
+    });
+    if let Err(e) = res {
+        tracing::warn!("{}: {e}", new.display());
+    }
+}
+
+/// Created owner-only (0600); an existing file keeps its mode.
+pub fn open_private(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut o = std::fs::OpenOptions::new();
+    o.create(true).write(true).mode(0o600);
+    if append {
+        o.append(true);
+    } else {
+        o.truncate(true);
+    }
+    o.open(path)
+}
+
+/// `std::fs::write`, but a new file is created owner-only.
+pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    open_private(path, false)?.write_all(text.as_bytes())
 }
 
 pub fn connections_path() -> PathBuf {
@@ -164,8 +196,13 @@ pub fn connections_path() -> PathBuf {
 
 /// `~/x` → `$HOME/x`; anything else is unchanged.
 pub fn expand_home(path: &str) -> PathBuf {
+    expand_home_in(path, &home_dir())
+}
+
+/// `~/x` → `home/x` (tests inject `home`).
+pub fn expand_home_in(path: &str, home: &Path) -> PathBuf {
     match path.strip_prefix("~/") {
-        Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+        Some(rest) => home.join(rest),
         None => PathBuf::from(path),
     }
 }
@@ -174,17 +211,10 @@ pub fn scripts_dir() -> PathBuf {
     app_dir().join("scripts")
 }
 
-/// Scripts of connection `id` (in `root/<id>/`, sorted). Loose scripts in `root`, from before
-/// per-connection scripts, go to the first connection that asks.
+/// Scripts of connection `id` (in `root/<id>/`, sorted).
 pub fn conn_scripts(root: &Path, id: &str) -> Result<Vec<PathBuf>, DbError> {
     let dir = root.join(id);
     std::fs::create_dir_all(&dir).map_err(io)?;
-    for p in sql_files(root)? {
-        let target = dir.join(p.file_name().unwrap_or_default());
-        if !target.exists() {
-            std::fs::rename(&p, target).map_err(io)?;
-        }
-    }
     sql_files(&dir)
 }
 
@@ -202,9 +232,10 @@ fn sql_files(dir: &Path) -> Result<Vec<PathBuf>, DbError> {
 /// never share the same file.
 pub fn new_script(dir: &Path) -> Result<PathBuf, DbError> {
     std::fs::create_dir_all(dir).map_err(io)?;
+    use std::os::unix::fs::OpenOptionsExt;
     for n in 1.. {
         let path = dir.join(format!("script-{n}.sql"));
-        match std::fs::File::create_new(&path) {
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
             Ok(_) => return Ok(path),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(io(e)),
@@ -231,7 +262,7 @@ pub fn archive_script(path: &Path) -> Result<PathBuf, DbError> {
 
 /// Renames the script in the same folder (`name` → `name.sql`). Does not overwrite another script.
 pub fn rename_script(path: &Path, name: &str) -> Result<PathBuf, DbError> {
-    // Barra viraria subpasta; o resto o macOS aceita.
+    // A slash would become a subfolder; macOS accepts the rest.
     let name = name.trim().trim_end_matches(".sql").replace(['/', ':'], "-");
     if name.is_empty() || name.starts_with('.') {
         return Err(DbError::Config(rust_i18n::t!("err.script_name").to_string()));
@@ -278,7 +309,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), DbError> {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
     let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text).map_err(io)?;
+    write_private(&tmp, text).map_err(io)?;
     std::fs::rename(&tmp, path).map_err(io)
 }
 
@@ -345,13 +376,6 @@ pub fn load_settings(path: &Path) -> Settings {
 
 pub fn save_settings(path: &Path, s: &Settings) -> Result<(), DbError> {
     write_atomic(path, &toml::to_string_pretty(s).map_err(|e| DbError::Config(e.to_string()))?)
-}
-
-/// Changes one preference without erasing the others.
-pub fn update_settings(path: &Path, f: impl FnOnce(&mut Settings)) -> Result<(), DbError> {
-    let mut s = load_settings(path);
-    f(&mut s);
-    save_settings(path, &s)
 }
 
 #[cfg(test)]
@@ -480,17 +504,6 @@ mod tests {
         assert_eq!(load_settings(&path.with_file_name("missing.toml")).language, Language::Auto);
     }
 
-    #[test]
-    fn updating_one_setting_keeps_the_others() {
-        let path = tmp("settings-update").with_file_name("settings.toml");
-        update_settings(&path, |s| s.language = Language::Es).unwrap();
-        update_settings(&path, |s| s.theme = ThemeChoice::Dark).unwrap();
-        assert_eq!(load_settings(&path), Settings { language: Language::Es, theme: ThemeChoice::Dark, ..Default::default() });
-        assert!(std::fs::read_to_string(&path).unwrap().contains("theme = \"dark\""));
-        // Old file, language only: theme goes back to Auto.
-        std::fs::write(&path, "language = \"pt\"").unwrap();
-        assert_eq!(load_settings(&path).theme, ThemeChoice::Auto);
-    }
 
     #[test]
     fn missing_file_is_empty_config() {
@@ -526,30 +539,31 @@ mod tests {
     }
 
     #[test]
-    fn new_scripts_never_reuse_a_path() {
+    fn new_scripts_never_reuse_a_path_and_are_private() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tmp("scripts").parent().unwrap().join("scripts");
         let _ = std::fs::remove_dir_all(&dir);
         let a = new_script(&dir).unwrap();
         let b = new_script(&dir).unwrap();
         assert_ne!(a, b);
         assert!(a.exists() && b.exists());
+        assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o600);
+        let cfg = dir.join("connections.toml");
+        save(&cfg, &ConfigFile::default()).unwrap();
+        assert_eq!(std::fs::metadata(&cfg).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]
-    fn conn_scripts_adopt_loose_ones_once() {
-        let root = tmp("adopt").parent().unwrap().join("adopt-scripts");
+    fn conn_scripts_are_sorted_sql_files_of_the_connection() {
+        let root = tmp("conn").parent().unwrap().join("conn-scripts");
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("closed")).unwrap();
-        std::fs::write(root.join("script-2.sql"), "b").unwrap();
-        std::fs::write(root.join("script-1.sql"), "a").unwrap();
-        std::fs::write(root.join("notas.txt"), "x").unwrap();
-        let first = conn_scripts(&root, "c1").unwrap();
-        assert_eq!(first, vec![root.join("c1/script-1.sql"), root.join("c1/script-2.sql")]);
-        assert_eq!(std::fs::read_to_string(&first[0]).unwrap(), "a");
-        assert!(root.join("notas.txt").exists() && root.join("closed").is_dir());
-        // The loose ones already went to c1; the next connection starts empty.
+        std::fs::create_dir_all(root.join("c1")).unwrap();
+        std::fs::write(root.join("c1/script-2.sql"), "b").unwrap();
+        std::fs::write(root.join("c1/script-1.sql"), "a").unwrap();
+        std::fs::write(root.join("c1/notes.txt"), "x").unwrap();
+        std::fs::write(root.join("loose.sql"), "x").unwrap();
+        assert_eq!(conn_scripts(&root, "c1").unwrap(), vec![root.join("c1/script-1.sql"), root.join("c1/script-2.sql")]);
         assert!(conn_scripts(&root, "c2").unwrap().is_empty());
-        assert_eq!(conn_scripts(&root, "c1").unwrap().len(), 2);
     }
 
     #[test]
@@ -558,13 +572,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("script-1.sql");
-        std::fs::write(&p, "primeiro").unwrap();
+        std::fs::write(&p, "first").unwrap();
         let first = archive_script(&p).unwrap();
-        std::fs::write(&p, "segundo").unwrap();
+        std::fs::write(&p, "second").unwrap();
         let second = archive_script(&p).unwrap();
         assert_ne!(first, second);
-        assert_eq!(std::fs::read_to_string(first).unwrap(), "primeiro");
-        assert_eq!(std::fs::read_to_string(second).unwrap(), "segundo");
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(second).unwrap(), "second");
         assert!(!p.exists());
     }
 

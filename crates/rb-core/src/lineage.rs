@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use serde_json::Value;
 
-use crate::admin::{quote_ident, sql_str};
-use crate::snowflake::field;
+use crate::lexer::{qualify, quote_always, sql_str};
+use crate::snowflake::Named;
 
 /// Rows fetched per query; one more comes back when the result was cut.
 pub const LIMIT: usize = 5000;
@@ -59,7 +59,7 @@ impl ObjKey {
     }
 
     pub fn fq(&self) -> String {
-        if self.is_qualified() { format!("{}.{}.{}", quote_ident(&self.db), quote_ident(&self.schema), quote_ident(&self.name)) } else { quote_ident(&self.name) }
+        if self.is_qualified() { qualify(&[&self.db, &self.schema, &self.name]) } else { quote_always(&self.name) }
     }
 
     pub fn label(&self) -> String {
@@ -113,13 +113,13 @@ pub fn lineage_sql(key: &ObjKey, dir: Dir, distance: u32) -> String {
 
 /// Both directions in one statement (one session per column click).
 pub fn column_lineage_sql(key: &ObjKey, column: &str) -> String {
-    let arg = sql_str(&format!("{}.{}", key.fq(), quote_ident(column)));
+    let arg = sql_str(&format!("{}.{}", key.fq(), quote_always(column)));
     let one = |d: Dir, tag: &str| format!("select '{tag}' as dir, {COLS} from table(snowflake.core.get_lineage({arg}, 'COLUMN', '{}', {MAX_DISTANCE}))", d.sql());
     format!("{} union all {} order by distance limit {}", one(Dir::Up, "UP"), one(Dir::Down, "DOWN"), LIMIT + 1)
 }
 
 fn opt(names: &[String], r: &[Option<String>], col: &str) -> Option<String> {
-    field(names, r, col).filter(|v| !v.is_empty()).map(String::from)
+    Named::new(names, r).text(col)
 }
 
 /// Domains of table-like objects become TABLE (the kind keeps the specific one); any other domain stays as
