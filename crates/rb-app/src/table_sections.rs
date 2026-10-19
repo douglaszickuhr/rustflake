@@ -13,6 +13,7 @@ use gpui_kit::*;
 use rb_core::dbt::{DbtProject, Node, commit_url, file_url};
 use rb_core::explain::short_count;
 use rb_core::table_info::{self, DescSource, LinNode};
+use rb_core::org_config::TabKind;
 use rb_core::user_view;
 use rust_i18n::t;
 
@@ -182,6 +183,17 @@ impl TableTab {
         if s == Section::Definition {
             self.ensure_definition(cx);
         }
+        // Custom tab: runs/opens only the first time; after that, ↻ or the button.
+        if let Section::Custom(i) = s
+            && let Some(c) = self.custom.get_mut(i)
+            && !c.opened
+        {
+            c.opened = true;
+            match c.kind.clone() {
+                TabKind::Sql(_) => self.load_custom(i, cx),
+                TabKind::Url(u) => cx.open_url(&u),
+            }
+        }
         cx.notify();
     }
 
@@ -282,7 +294,11 @@ impl TableTab {
                     .pb_1()
                     .child(tab("tv-data", t!("tv.data").to_string(), Section::Data, cur, cx))
                     .child(tab("tv-def", t!("tv.definition").to_string(), Section::Definition, cur, cx))
-                    .child(tab("tv-dbt", "dbt".into(), Section::Dbt, cur, cx)),
+                    .child(tab("tv-dbt", "dbt".into(), Section::Dbt, cur, cx))
+                    .children(self.custom.iter().enumerate().map(|(i, c)| {
+                        let s = Section::Custom(i);
+                        Button::new(("tv-custom", i)).label(c.name.clone()).ghost().small().selected(s == cur).on_click(cx.listener(move |t, _, _, cx| t.go(s, cx)))
+                    })),
             )
     }
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::popover::{Popover, PopoverState};
@@ -37,7 +38,7 @@ use crate::meta::{ConnTarget, MetaStore};
 use crate::schema_tree::SchemaTree;
 use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
-use crate::{CloseTab, Db, NewSqlTab, Quit, QuickOpen, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
+use crate::{CloseTab, Db, EditConnection, NewSqlTab, Quit, QuickOpen, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
 
 /// Open connection: its own metadata session and tree; each tab keeps its own session.
 pub struct Open {
@@ -101,6 +102,10 @@ pub struct Workspace {
     objects_open: bool,
     /// In the Users & Roles tab the database tree doesn't help: closed unless asked.
     objects_on_admin: bool,
+    /// Tab bar: width measured in the last frame, scroll, and the tab already scrolled into view.
+    tab_bar_w: Rc<std::cell::Cell<f32>>,
+    tab_scroll: ScrollHandle,
+    revealed_tab: Option<usize>,
     /// Left button pressed on the title row: the next movement drags the window.
     drag_armed: bool,
     pub tabs: Vec<TabView>,
@@ -131,7 +136,7 @@ impl Workspace {
         let reconnect_queue = config::reconnect_order(&config::load_settings(&config::settings_path()).last_open, &ids);
         cx.defer_in(window, |ws, window, cx| ws.reconnect_next(window, cx));
         Workspace {
-            reconnect_queue, focus: cx.focus_handle(), connections, open: Vec::new(), current: None, objects_open: true, objects_on_admin: false, drag_armed: false, tabs: Vec::new(), active_tab: 0, connecting: None, connect_task: None, recent: config::load_settings(&config::settings_path()).recent, pick_cache: HashMap::new() }
+            reconnect_queue, focus: cx.focus_handle(), connections, open: Vec::new(), current: None, objects_open: true, objects_on_admin: false, tab_bar_w: Rc::default(), tab_scroll: ScrollHandle::new(), revealed_tab: None, drag_armed: false, tabs: Vec::new(), active_tab: 0, connecting: None, connect_task: None, recent: config::load_settings(&config::settings_path()).recent, pick_cache: HashMap::new() }
     }
 
     fn open_conn(&self, id: &str) -> Option<&Open> {
@@ -840,11 +845,50 @@ impl Workspace {
         if self.tabs.is_empty() {
             return drag_space("drag-empty", cx).size_full().into_any_element();
         }
-        self.tabs
+        let labels: Vec<String> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let id = t.conn_id(cx);
+                let name = self.connections.iter().find(|c| c.id == id).map_or(String::new(), |c| c.name.clone());
+                format!("{name} · {}", t.title(cx))
+            })
+            .collect();
+        // The "+" sits at the end of the bar and takes space too.
+        let (width, overflow) = tab_width(self.tab_bar_w.get() - 40., self.tabs.len());
+        // New active tab (click, ⌘K, just opened): scroll to it once.
+        if self.revealed_tab != Some(self.active_tab) {
+            self.revealed_tab = Some(self.active_tab);
+            self.tab_scroll.scroll_to_item(self.active_tab);
+        }
+        let menu = overflow.then(|| {
+            let (labels, active) = (labels.clone(), self.active_tab);
+            let ws = cx.entity().downgrade();
+            div().on_mouse_down(MouseButton::Left, no_drag).child(
+                Button::new("tabs-more")
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronDown)
+                    .label(labels.len().to_string())
+                    .tooltip(t!("ws.all_tabs").to_string())
+                    .dropdown_menu(move |menu, _, _| {
+                        labels.iter().enumerate().fold(menu.scrollable(true), |m, (i, l)| {
+                            let ws = ws.clone();
+                            m.item(PopupMenuItem::new(l.clone()).checked(i == active).on_click(move |_, _, cx| {
+                                ws.update(cx, |ws, cx| ws.select_tab(i, cx)).ok();
+                            }))
+                        })
+                    }),
+            )
+        });
+        let bar = self
+            .tabs
             .iter()
             .enumerate()
             .fold(
                 TabBar::new("tabs")
+                    .max_width(px(width))
+                    .track_scroll(&self.tab_scroll)
                     .selected_index(self.active_tab)
                     .on_click(cx.listener(|ws, ix: &usize, _, cx| ws.select_tab(*ix, cx)))
                     // + right after the last tab; the TabBar only draws that space if there is a suffix.
@@ -858,21 +902,35 @@ impl Workspace {
                 |bar, (i, t)| {
                     let id = t.conn_id(cx);
                     let cfg = self.connections.iter().find(|c| c.id == id);
-                    let name = cfg.map_or(String::new(), |c| c.name.clone());
-                    let label = format!("{name} · {}", t.title(cx));
+                    let label = labels[i].clone();
                     // Script: double-click on the name renames the file.
                     let label = match t {
                         TabView::Sql(s) => {
                             let s = s.clone();
                             div()
                                 .id(("tab-label", i))
+                                .min_w_0()
                                 .whitespace_nowrap()
-                                .tooltip(|w, cx| Tooltip::new(t!("ws.rename_hint").to_string()).build(w, cx))
+                                .text_ellipsis()
+                                .tooltip({
+                                    let tip = format!("{label}\n{}", t!("ws.rename_hint"));
+                                    move |w, cx| Tooltip::new(tip.clone()).build(w, cx)
+                                })
                                 .on_double_click(cx.listener(move |_, _, window, cx| rename_script(s.clone(), window, cx)))
                                 .child(label)
                                 .into_any_element()
                         }
-                        _ => div().whitespace_nowrap().child(label).into_any_element(),
+                        _ => {
+                            let tip = label.clone();
+                            div()
+                                .id(("tab-label", i))
+                                .min_w_0()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+                                .child(label)
+                                .into_any_element()
+                        }
                     };
                     bar.child(
                         Tab::new()
@@ -886,8 +944,22 @@ impl Workspace {
                             }))),
                     )
                 },
-            )
-            .into_any_element()
+            );
+        // Measures the bar's real width; if it changed (window resized), redraw.
+        let w = self.tab_bar_w.clone();
+        let measure = canvas(
+            move |b, window, _| {
+                let now = f32::from(b.size.width);
+                if (w.get() - now).abs() > 0.5 {
+                    w.set(now);
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        h_flex().size_full().child(div().relative().flex_1().min_w_0().h_full().child(measure).child(bar)).children(menu).into_any_element()
     }
 
     /// Title row: tabs, context bar (opens the menu) and ⌘K.
@@ -1081,7 +1153,23 @@ impl Workspace {
             let c = &o.meta.read(cx).cache;
             let env = o.conn.cfg.environment;
             let parts = context_parts(None, c.dialect, &o.conn.cfg.user, c.role.as_deref(), c.warehouse.as_deref(), &c.search_path);
-            (o.conn.cfg.id.clone(), c.dialect, parts, env, env_color(env, theme.mode.is_dark()))
+            (o.conn.cfg.id.clone(), o.conn.cfg.name.clone(), c.dialect, parts, env, env_color(env, theme.mode.is_dark()))
+        });
+        // Environment and connection name inside the button: clicking them opens the menu.
+        let badge = ctx.as_ref().map(|(_, name, _, _, env, color)| {
+            h_flex()
+                .gap_1p5()
+                .when_some(*env, |d, e| {
+                    d.child(
+                        h_flex()
+                            .gap_1p5()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(color.unwrap_or(theme.muted_foreground))
+                            .when_some(*color, |d, c| d.child(div().size(px(7.)).rounded_full().bg(c)))
+                            .child(e.label()),
+                    )
+                })
+                .child(div().max_w(px(200.)).overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(theme.foreground).child(name.clone()))
         });
         let ws = cx.entity().downgrade();
         let menu = Popover::new("ctx-menu")
@@ -1092,38 +1180,30 @@ impl Workspace {
                     .ghost()
                     .xsmall()
                     .tooltip(t!("frame.context_menu").to_string())
-                    .child(h_flex().gap_1().when(ctx.is_none(), |d| d.child(t!("frame.connect").to_string())).child(Icon::new(IconName::ChevronUp).xsmall())),
+                    .child(h_flex().gap_1().when(ctx.is_none(), |d| d.child(t!("frame.connect").to_string())).children(badge)),
             )
             .content(move |_, window, cx| {
                 // Built on every open: reflects current connections and context.
                 let pop = cx.entity();
                 ws.upgrade().map(|ws| ws.update(cx, |ws, cx| ws.context_menu(pop, window, cx))).unwrap_or_else(|| div().into_any_element())
             });
-        let Some((conn_id, dialect, parts, env, color)) = ctx else {
+        let Some((conn_id, _, dialect, parts, _, _)) = ctx else {
             return h_flex().child(menu);
         };
-        let mut row = h_flex().gap_1().min_w_0().max_w(px(640.)).text_xs();
-        if let Some(e) = env {
-            row = row.child(
-                h_flex()
-                    .flex_shrink_0()
-                    .gap_1p5()
-                    .pr_1()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(color.unwrap_or(theme.muted_foreground))
-                    .when_some(color, |d, c| d.child(div().size(px(7.)).rounded_full().bg(c)))
-                    .child(e.label()),
-            );
-        }
+        let mut row = h_flex().gap_1().min_w_0().max_w(px(840.)).text_xs().child(div().flex_shrink_0().child(menu));
         // Snowflake: each part opens its own picker (role, warehouse, database). Postgres: text only.
         let kinds: &[&'static str] = if dialect == Dialect::Snowflake { &["role", "warehouse", "database"] } else { &[] };
         for (i, part) in parts.into_iter().enumerate() {
+            let kind = kinds.get(i).copied();
+            let empty = part == "—";
+            // No database chosen: nothing (the menu has "Choose database").
+            if empty && kind == Some("database") {
+                continue;
+            }
             if i > 0 {
                 row = row.child(div().text_color(p.border_strong).child("/"));
             }
-            let kind = kinds.get(i).copied();
-            let empty = part == "—";
-            let label = if empty && kind == Some("database") { t!("frame.no_database").to_string() } else { part };
+            let label = part;
             let seg = div()
                 .id(ElementId::Name(format!("ctx-seg-{i}").into()))
                 .px_1()
@@ -1147,7 +1227,7 @@ impl Workspace {
                 None => seg.into_any_element(),
             });
         }
-        row.child(menu)
+        row
     }
 
     /// Status bar: "connecting…" and the shortcuts. Execution status lives in the SQL tab's footer.
@@ -1215,6 +1295,19 @@ fn rename_script(tab: Entity<SqlTab>, window: &mut Window, cx: &mut App) {
 
 fn no_drag(_: &MouseDownEvent, _: &mut Window, cx: &mut App) {
     cx.stop_propagation();
+}
+
+const TAB_MIN: f32 = 120.;
+const TAB_MAX: f32 = 240.;
+
+/// Width of each tab so `n` fit in `avail`, clamped to min/max;
+/// true = they don't fit even at the minimum (the bar scrolls and the all-tabs menu shows).
+fn tab_width(avail: f32, n: usize) -> (f32, bool) {
+    if n == 0 || avail <= 0. {
+        return (TAB_MAX, false);
+    }
+    let w = avail / n as f32;
+    (w.clamp(TAB_MIN, TAB_MAX), w < TAB_MIN)
 }
 
 /// Empty area inside the tab strip that drags the window like the title bar: arms the
@@ -1290,6 +1383,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|ws, _: &NewSqlTab, window, cx| ws.new_sql_tab(window, cx)))
             .on_action(cx.listener(|ws, _: &QuickOpen, window, cx| ws.quick_open(window, cx)))
             .on_action(cx.listener(|ws, _: &ShowHistory, window, cx| ws.show_history(window, cx)))
+            // ⌘, (Ctrl+, elsewhere): edits the active connection; none open = new connection.
+            .on_action(cx.listener(|ws, _: &EditConnection, window, cx| {
+                let c = ws.current_open().and_then(|o| ws.connections.iter().find(|c| c.id == o.conn.cfg.id).cloned());
+                conn_dialog::open(c, window, cx)
+            }))
             .on_action(cx.listener(|ws, _: &CloseTab, window, cx| ws.close_tab(ws.active_tab, window, cx)))
             .on_action(cx.listener(|ws, _: &Quit, _, cx| {
                 ws.save_all(cx);
@@ -1298,5 +1396,18 @@ impl Render for Workspace {
             .child(self.render_title(window, cx))
             .child(h_flex().flex_1().min_h_0().child(self.render_rail(cx)).child(div().flex_1().min_w_0().h_full().child(split)))
             .child(self.render_status(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn tabs_shrink_to_fit_then_overflow() {
+        assert_eq!(tab_width(1000., 2), (TAB_MAX, false), "few tabs: max width");
+        assert_eq!(tab_width(1000., 5), (200., false), "they share the space");
+        assert_eq!(tab_width(1000., 9), (TAB_MIN, true), "below the minimum: scroll and show the menu");
+        assert_eq!(tab_width(0., 3), (TAB_MAX, false), "antes da primeira medida");
     }
 }

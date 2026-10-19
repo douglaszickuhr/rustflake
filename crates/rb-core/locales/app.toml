@@ -269,3 +269,8 @@ es = "El nombre del script no puede estar vacío ni empezar con punto"
 en = "A script called %{name} already exists"
 pt = "Já existe um script chamado %{name}"
 es = "Ya existe un script llamado %{name}"
+
+[err.config_tab]
+en = "configuration: tab \"%{name}\" needs a name and exactly one of `sql` or `url`"
+pt = "configuração: a aba \"%{name}\" precisa de nome e de exatamente um entre `sql` e `url`"
+es = "configuración: la pestaña \"%{name}\" necesita nombre y exactamente uno entre `sql` y `url`"

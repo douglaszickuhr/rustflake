@@ -1673,11 +1673,6 @@ en = "Nothing matches."
 pt = "Nada encontrado."
 es = "Nada coincide."
 
-[frame.no_database]
-en = "no database"
-pt = "sem database"
-es = "sin base de datos"
-
 [frame.context_menu]
 en = "Connections, role, warehouse, database, schema"
 pt = "Conexões, role, warehouse, database, schema"
@@ -2112,3 +2107,13 @@ es = "Ejecuta dbt compile --select <modelo> en el proyecto. A diferencia de pars
 en = "compiled %{ago}"
 pt = "compilado %{ago}"
 es = "compilado %{ago}"
+
+[tv.open_browser]
+en = "Open in browser"
+pt = "Abrir no navegador"
+es = "Abrir en el navegador"
+
+[ws.all_tabs]
+en = "All open tabs"
+pt = "Todas as abas abertas"
+es = "Todas las pestañas abiertas"

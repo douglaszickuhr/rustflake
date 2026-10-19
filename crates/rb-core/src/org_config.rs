@@ -56,6 +56,53 @@ struct RawOrgConfig {
     roles: Vec<RawRule>,
     classification: Option<RawClass>,
     masking: Option<Masking>,
+    #[serde(default)]
+    tabs: Vec<RawTab>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTab {
+    name: String,
+    sql: Option<String>,
+    url: Option<String>,
+    #[serde(rename = "match")]
+    pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TabKind {
+    Sql(String),
+    Url(String),
+}
+
+/// Custom tab in the table view; `{database}`, `{schema}`, `{table}` filled from the object.
+#[derive(Debug, Clone)]
+pub struct CustomTab {
+    pub name: String,
+    pub kind: TabKind,
+    /// Glob over `DB.SCHEMA.TABLE`; none = all.
+    pattern: Option<String>,
+}
+
+impl CustomTab {
+    /// SQL with quoted identifiers; URL with the names encoded.
+    pub fn resolve(&self, db: &str, schema: &str, table: &str) -> TabKind {
+        let fill = |tpl: &str, f: &dyn Fn(&str) -> String| tpl.replace("{database}", &f(db)).replace("{schema}", &f(schema)).replace("{table}", &f(table));
+        match &self.kind {
+            TabKind::Sql(q) => TabKind::Sql(fill(q, &crate::lexer::quote_always)),
+            TabKind::Url(u) => TabKind::Url(fill(u, &url_encode)),
+        }
+    }
+}
+
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -80,6 +127,7 @@ pub struct OrgConfig {
     rules: Vec<Rule>,
     class: Option<Classification>,
     masking: Masking,
+    tabs: Vec<CustomTab>,
 }
 
 impl OrgConfig {
@@ -119,7 +167,19 @@ impl OrgConfig {
                 Some(Classification { tag: [db.to_string(), schema.to_string(), name.to_string()], labels: c.labels, values: c.values })
             }
         };
-        Ok(OrgConfig { name: raw.name, rules, class, masking: raw.masking.unwrap_or_default() })
+        let mut tabs = Vec::new();
+        for r in raw.tabs {
+            let kind = match (r.sql, r.url) {
+                (Some(q), None) => TabKind::Sql(q),
+                (None, Some(u)) => TabKind::Url(u),
+                _ => return Err(t!("err.config_tab", name = r.name).to_string()),
+            };
+            if r.name.trim().is_empty() {
+                return Err(t!("err.config_tab", name = r.name).to_string());
+            }
+            tabs.push(CustomTab { name: r.name, kind, pattern: r.pattern.filter(|p| !p.trim().is_empty()) });
+        }
+        Ok(OrgConfig { name: raw.name, rules, class, masking: raw.masking.unwrap_or_default(), tabs })
     }
 
     pub fn name(&self) -> &str {
@@ -259,6 +319,14 @@ group by 1, 2, 3",
     }
 }
 
+impl OrgConfig {
+    /// The custom tabs that apply to this object, in file order.
+    pub fn tabs_for(&self, db: &str, schema: &str, table: &str) -> Vec<CustomTab> {
+        let full = format!("{db}.{schema}.{table}");
+        self.tabs.iter().filter(|t| t.pattern.as_deref().is_none_or(|p| glob_match(p, &full))).cloned().collect()
+    }
+}
+
 pub fn org_configs_dir() -> PathBuf {
     crate::config::app_dir().join("configurations")
 }
@@ -298,6 +366,27 @@ pub(crate) fn acme() -> OrgConfig {
 mod tests {
     use super::*;
     use crate::admin::RoleKind::*;
+
+    #[test]
+    fn custom_tabs_match_and_fill_placeholders() {
+        let a = acme();
+        let names = |db, s, t| a.tabs_for(db, s, t).into_iter().map(|t| t.name).collect::<Vec<_>>();
+        assert_eq!(names("ANALYTICS", "MARTS", "ORDERS"), vec!["Freshness", "Catalog"]);
+        assert_eq!(names("raw", "crm", "x"), vec!["Catalog"], "match ignores case and only applies to ANALYTICS");
+        let tabs = a.tabs_for("ANALYTICS", "my schema", "a\"b");
+        assert_eq!(tabs[0].resolve("ANALYTICS", "my schema", "a\"b"), TabKind::Sql(r#"select max(_loaded_at) as last_load from "ANALYTICS"."my schema"."a""b""#.into()));
+        assert_eq!(tabs[1].resolve("ANALYTICS", "my schema", "a/b"), TabKind::Url("https://catalog.example.com/assets/ANALYTICS.my%20schema.a%2Fb".into()));
+    }
+
+    #[test]
+    fn custom_tab_needs_exactly_one_of_sql_or_url() {
+        let base = "name = \"X\"\n[[tabs]]\nname = \"T\"\n";
+        assert!(OrgConfig::parse(base).is_err(), "nem sql nem url");
+        assert!(OrgConfig::parse(&format!("{base}sql = \"select 1\"\nurl = \"http://x\"")).is_err(), "os dois");
+        assert!(OrgConfig::parse(&format!("{base}sql = \"select 1\"")).is_ok());
+        assert!(OrgConfig::parse("name = \"X\"\n[[tabs]]\nname = \" \"\nurl = \"http://x\"").is_err(), "empty name");
+        assert!(OrgConfig::none().tabs_for("A", "B", "C").is_empty());
+    }
 
     #[test]
     fn roles_by_rule_first_match_wins() {

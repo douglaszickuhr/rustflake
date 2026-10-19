@@ -29,3 +29,13 @@ global = "CLASSIFICATION_C{level}_MASKING_AR"
 group = { role = "SHARED_C{level}_MASKING_AR", databases = "*_SHARED" }
 scoped_suffix = "_C{level}_MASKING_AR"
 forced_by = ["AI_AGENT_FR"]
+
+# Custom tabs in the table view: `sql` (runs and shows a grid) or `url` (opens in the browser).
+[[tabs]]
+name = "Freshness"
+sql = "select max(_loaded_at) as last_load from {database}.{schema}.{table}"
+match = "ANALYTICS.*.*"
+
+[[tabs]]
+name = "Catalog"
+url = "https://catalog.example.com/assets/{database}.{schema}.{table}"

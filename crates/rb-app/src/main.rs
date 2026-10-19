@@ -26,7 +26,7 @@ use gpui_kit::*;
 rust_i18n::i18n!("locales", fallback = "en");
 use rb_core::session::Engine;
 
-gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment]);
+gpui_kit::actions!(rustbeaver, [RunStatement, RunScript, CancelQuery, SaveEdits, NewSqlTab, CloseTab, RefreshNode, CopyCells, Quit, QuickOpen, QuickPrev, QuickNext, TabKey, FormatSql, ShowHistory, ExplainEstimate, ExplainAnalyze, PlanZoomIn, PlanZoomOut, PlanFit, ToggleComment, EditConnection]);
 
 /// Database runtime shared by the application.
 pub struct Db(pub Engine);
@@ -98,39 +98,40 @@ fn main() {
         set_dock_icon();
         cx.set_global(Db(engine));
         cx.bind_keys([
-            KeyBinding::new("cmd-enter", RunStatement, Some("SqlTab > Input")),
-            KeyBinding::new("cmd-shift-enter", RunScript, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-enter", RunStatement, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-shift-enter", RunScript, Some("SqlTab > Input")),
             // The editor binds nothing to ShowCompletions by default.
             KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
             // Tab accepts the autocomplete suggestion like Enter; with no menu open, it indents.
             KeyBinding::new("tab", TabKey, Some("SqlTab > Input")),
             // ⌘⇧F formats (like DBeaver); the editor's find and replace, which used ⌘⇧F, moves to ⌘⌥F.
-            KeyBinding::new("cmd-shift-f", FormatSql, Some("SqlTab > Input")),
-            KeyBinding::new("cmd-/", ToggleComment, Some("SqlTab > Input")),
-            KeyBinding::new("cmd-alt-f", gpui_kit::component::input::Replace, Some("SqlTab > Input")),
-            KeyBinding::new("cmd-e", ExplainEstimate, Some("SqlTab > Input")),
-            KeyBinding::new("cmd-shift-e", ExplainAnalyze, Some("SqlTab > Input")),
-            KeyBinding::new("cmd-=", PlanZoomIn, Some("PlanView")),
-            KeyBinding::new("cmd-+", PlanZoomIn, Some("PlanView")),
-            KeyBinding::new("cmd--", PlanZoomOut, Some("PlanView")),
-            KeyBinding::new("cmd-0", PlanFit, Some("PlanView")),
-            KeyBinding::new("cmd-=", PlanZoomIn, Some("SqlTab")),
-            KeyBinding::new("cmd-+", PlanZoomIn, Some("SqlTab")),
-            KeyBinding::new("cmd--", PlanZoomOut, Some("SqlTab")),
-            KeyBinding::new("cmd-0", PlanFit, Some("SqlTab")),
-            KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab")),
+            KeyBinding::new("secondary-shift-f", FormatSql, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-/", ToggleComment, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-alt-f", gpui_kit::component::input::Replace, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-e", ExplainEstimate, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-shift-e", ExplainAnalyze, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-=", PlanZoomIn, Some("PlanView")),
+            KeyBinding::new("secondary-+", PlanZoomIn, Some("PlanView")),
+            KeyBinding::new("secondary--", PlanZoomOut, Some("PlanView")),
+            KeyBinding::new("secondary-0", PlanFit, Some("PlanView")),
+            KeyBinding::new("secondary-=", PlanZoomIn, Some("SqlTab")),
+            KeyBinding::new("secondary-+", PlanZoomIn, Some("SqlTab")),
+            KeyBinding::new("secondary--", PlanZoomOut, Some("SqlTab")),
+            KeyBinding::new("secondary-0", PlanFit, Some("SqlTab")),
+            KeyBinding::new("secondary-.", CancelQuery, Some("SqlTab")),
             // The editor binds cmd-. to ToggleCodeActions; the deeper binding wins.
-            KeyBinding::new("cmd-.", CancelQuery, Some("SqlTab > Input")),
-            KeyBinding::new("cmd-.", CancelQuery, Some("TableTab")),
-            KeyBinding::new("cmd-s", SaveEdits, Some("TableTab")),
-            KeyBinding::new("cmd-t", NewSqlTab, Some("Workspace")),
-            KeyBinding::new("cmd-w", CloseTab, Some("Workspace")),
+            KeyBinding::new("secondary-.", CancelQuery, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-.", CancelQuery, Some("TableTab")),
+            KeyBinding::new("secondary-s", SaveEdits, Some("TableTab")),
+            KeyBinding::new("secondary-t", NewSqlTab, Some("Workspace")),
+            KeyBinding::new("secondary-w", CloseTab, Some("Workspace")),
             KeyBinding::new("f5", RefreshNode, Some("SchemaTree")),
-            KeyBinding::new("cmd-r", RefreshNode, Some("SchemaTree")),
-            KeyBinding::new("cmd-c", CopyCells, Some("ResultGrid")),
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-k", QuickOpen, Some("Workspace")),
-            KeyBinding::new("cmd-y", ShowHistory, Some("Workspace")),
+            KeyBinding::new("secondary-r", RefreshNode, Some("SchemaTree")),
+            KeyBinding::new("secondary-c", CopyCells, Some("ResultGrid")),
+            KeyBinding::new("secondary-q", Quit, None),
+            KeyBinding::new("secondary-k", QuickOpen, Some("Workspace")),
+            KeyBinding::new("secondary-y", ShowHistory, Some("Workspace")),
+            KeyBinding::new("secondary-,", EditConnection, Some("Workspace")),
             // The field uses ↑↓ to move the cursor; the deeper binding wins.
             KeyBinding::new("up", QuickPrev, Some("QuickOpen > Input")),
             KeyBinding::new("down", QuickNext, Some("QuickOpen > Input")),

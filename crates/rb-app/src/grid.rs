@@ -8,6 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::batch::ResultSet;
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::input::{Editor, EditorState};
 use rb_core::decode::{detail_text, one_line};
 use rb_core::session::Session;
 use rb_core::table::PendingEdits;
@@ -327,4 +328,45 @@ pub fn set_idle(grid: &Entity<TableState<ResultGrid>>, cx: &mut App) {
         t.delegate_mut().busy = false;
         cx.notify();
     });
+}
+
+/// Text mode: the result as a text table in a read-only editor (select, copy, ⌘F).
+/// Rebuilt when another result or more rows arrive.
+#[derive(Default)]
+pub struct TextView(Option<(Entity<EditorState>, (EntityId, u64, usize))>);
+
+/// Per-cell cut: a huge JSON doesn't push the other columns off screen.
+const TEXT_CELL_MAX: usize = 80;
+
+impl TextView {
+    pub fn render(&mut self, grid: &Entity<TableState<ResultGrid>>, window: &mut Window, cx: &mut App) -> AnyElement {
+        let g = grid.read(cx).delegate();
+        let Some(rs) = g.rs.as_ref() else { return div().into_any_element() };
+        // Grid, result (generation) and loaded rows: any change rebuilds the text.
+        let key = (grid.entity_id(), g.generation, rs.rows());
+        let editor = match &self.0 {
+            Some((e, k)) if *k == key => e.clone(),
+            _ => {
+                let text = rs.to_text_table(TEXT_CELL_MAX);
+                let e = cx.new(|cx| EditorState::new(window, cx).soft_wrap(false).line_number(false).searchable(true).default_value(text));
+                self.0 = Some((e.clone(), key));
+                e
+            }
+        };
+        let font = cx.theme().mono_font_family.clone();
+        div().size_full().font_family(font).child(Editor::new(&editor).readonly(true).h_full()).into_any_element()
+    }
+}
+
+/// Grid | Text footer buttons; `set` stores the mode on the tab.
+pub fn mode_toggle<T: 'static>(text: bool, set: fn(&mut T, bool), cx: &mut Context<T>) -> impl IntoElement {
+    use gpui_kit::component::button::{Button, ButtonVariants as _};
+    use gpui_kit::component::{Selectable as _, Sizable as _};
+    let b = |id: &'static str, label: &str, value: bool, cx: &mut Context<T>| {
+        Button::new(id).label(label.to_string()).ghost().xsmall().selected(text == value).on_click(cx.listener(move |t, _, _, cx| {
+            set(t, value);
+            cx.notify();
+        }))
+    };
+    gpui_kit::component::h_flex().child(b("mode-grid", "Grid", false, cx)).child(b("mode-text", "Text", true, cx))
 }

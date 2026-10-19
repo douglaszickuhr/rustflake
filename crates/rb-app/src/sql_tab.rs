@@ -7,12 +7,11 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline, InputEvent};
-use gpui_kit::component::notification::Notification;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableState};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{ActiveTheme as _, Icon, RopeExt as _, Sizable as _, WindowExt as _, h_flex, resizable_panel, v_flex, v_resizable};
+use gpui_kit::component::{ActiveTheme as _, Icon, RopeExt as _, Sizable as _, h_flex, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::DbError;
@@ -142,6 +141,11 @@ pub struct SqlTab {
     results: Vec<ResultPane>,
     messages: Vec<Message>,
     show_messages: bool,
+    /// Error of the last run, shown in the result area (with the query id, if any).
+    error: Option<String>,
+    /// Result as selectable text instead of the grid.
+    text_mode: bool,
+    text_view: grid::TextView,
     plan: Option<Entity<PlanView>>,
     active: Pane,
     conn: ConnTarget,
@@ -186,6 +190,9 @@ impl SqlTab {
             results: Vec::new(),
             messages: Vec::new(),
             show_messages: false,
+            error: None,
+            text_mode: false,
+            text_view: grid::TextView::default(),
             plan: None,
             active: Pane::Result(0),
             conn,
@@ -286,6 +293,7 @@ impl SqlTab {
         }
         self.ran_use = ranges.iter().any(|r| src[r.clone()].trim_start().get(..4).is_some_and(|w| w.eq_ignore_ascii_case("use ")));
         self.running = true;
+        self.error = None;
         self.status = t!("sql.running").to_string().into();
         // The previous result stays on screen (with skeleton if slow) until the new one arrives.
         self._busy = self.active_grid().map(|g| grid::busy_later(g, cx));
@@ -421,6 +429,7 @@ impl SqlTab {
             }
         }
         self.running = true;
+        self.error = None;
         self.status = t!("sql.running").to_string().into();
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -456,6 +465,7 @@ impl SqlTab {
             }
         }
         self.running = true;
+        self.error = None;
         self.status = t!("sql.running").to_string().into();
         cx.notify();
         let conn = self.conn.clone();
@@ -517,7 +527,7 @@ impl SqlTab {
         self.show_error(src, range, e, window, cx);
     }
 
-    fn show_error(&mut self, src: &str, range: Option<Range<usize>>, e: DbError, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_error(&mut self, src: &str, range: Option<Range<usize>>, e: DbError, _window: &mut Window, cx: &mut Context<Self>) {
         self.status = t!("sql.error").to_string().into();
         if let (Some(r), DbError::Postgres { position: Some(p), .. }) = (&range, &e) {
             let at = r.start + error_byte_offset(&src[r.clone()], *p);
@@ -537,7 +547,7 @@ impl SqlTab {
             Some(id) => format!("{e}\n{}", t!("sql.query_id", id = id)),
             None => e.to_string(),
         };
-        window.push_notification(Notification::error(msg), cx);
+        self.error = Some(msg);
         cx.notify();
     }
 
@@ -620,7 +630,7 @@ impl SqlTab {
 }
 
 impl Render for SqlTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let grid = self.active_grid().map(|g| g.read(cx).delegate());
         let rows = grid.map_or(0, |g| g.loaded_rows());
         let more = grid.is_some_and(|g| g.rs.as_ref().is_some_and(|r| r.more));
@@ -683,7 +693,32 @@ impl Render for SqlTab {
                             grid::copy_to_clipboard(g, cx);
                         }
                     }))
-                    .when_some(g, |d, g| d.child(DataTable::new(&g).stripe(true).bordered(true)))
+                    .flex()
+                    .flex_col()
+                    .when_some(self.error.clone(), |d, e| {
+                        let theme = cx.theme();
+                        d.child(
+                            div()
+                                .id("sql-error")
+                                .m_2()
+                                .p_3()
+                                .max_h(px(240.))
+                                .overflow_y_scroll()
+                                .rounded(theme.radius)
+                                .border_1()
+                                .border_color(theme.danger)
+                                .bg(theme.danger.opacity(0.08))
+                                .text_color(theme.danger)
+                                .font_family(theme.mono_font_family.clone())
+                                .text_sm()
+                                .child(e),
+                        )
+                    })
+                    // Error without rows: just the message, no empty grid.
+                    .when_some(g.filter(|g| self.error.is_none() || g.read(cx).delegate().loaded_rows() > 0), |d, g| {
+                        let body = if self.text_mode { self.text_view.render(&g, window, cx) } else { DataTable::new(&g).stripe(true).bordered(true).into_any_element() };
+                        d.child(div().flex_1().min_h_0().child(body))
+                    })
                     .into_any_element()
             }
             Pane::Messages => div().flex_1().min_h_0().child(self.render_messages(cx)).into_any_element(),
@@ -728,7 +763,10 @@ impl Render for SqlTab {
                     .gap_3()
                     .text_sm()
                     .when(spinning, |d| d.child(Spinner::new().small()))
-                    .when(matches!(self.active, Pane::Result(_)), |d| d.child(t!("grid.rows", n = format!("{rows}{}", if more || truncated { "+" } else { "" })).to_string()))
+                    .when(matches!(self.active, Pane::Result(_)), |d| {
+                        d.child(grid::mode_toggle(self.text_mode, |t: &mut Self, v| t.text_mode = v, cx))
+                            .child(t!("grid.rows", n = format!("{rows}{}", if more || truncated { "+" } else { "" })).to_string())
+                    })
                     .when(truncated, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("results.first_rows_only").to_string())))
                     .child(self.status.clone())
                     .when_some(grid_error, |d, e| d.child(e))

@@ -12,6 +12,7 @@ use gpui_kit::*;
 use rb_core::batch::ResultSet;
 use rb_core::dialect::Dialect;
 use rb_core::metadata::MetaRequest;
+use rb_core::org_config::TabKind;
 use rb_core::session::Session;
 use rb_core::table::{EditTarget, PendingEdits, TABLE_LIMIT, build_sql, columns_match, select_sql};
 
@@ -34,6 +35,18 @@ pub enum Section {
     Data,
     Definition,
     Dbt,
+    /// Tab from the configuration (index into `custom`).
+    Custom(usize),
+}
+
+/// Custom tab from the configuration: SQL (own grid, runs on open) or URL.
+pub(crate) struct CustomSection {
+    pub(crate) name: SharedString,
+    pub(crate) kind: TabKind,
+    pub(crate) grid: Option<Entity<TableState<ResultGrid>>>,
+    pub(crate) status: SharedString,
+    pub(crate) busy: bool,
+    pub(crate) opened: bool,
 }
 
 /// Columns, classification and masking coming from Snowflake (dbt is merged at draw time).
@@ -78,6 +91,10 @@ pub struct TableTab {
     pub(crate) compile_live: Vec<String>,
     /// Model SQL (read-only): editor state and which text it holds.
     pub(crate) sql_view: Option<(Entity<EditorState>, String)>,
+    pub(crate) custom: Vec<CustomSection>,
+    /// Data as selectable text instead of the grid.
+    text_mode: bool,
+    text_view: grid::TextView,
     _subs: Vec<Subscription>,
 }
 
@@ -116,6 +133,19 @@ impl TableTab {
             cx.observe(&meta, |this, _, cx| this.on_meta(cx)),
         ];
         meta.update(cx, |m, cx| m.request(MetaRequest::Columns(schema.clone(), table.clone()), cx));
+        let (db, sch) = schema.split_once('.').unwrap_or(("", &schema));
+        let custom: Vec<CustomSection> = conn
+            .org
+            .tabs_for(db, sch, &table)
+            .into_iter()
+            .map(|t| {
+                let kind = t.resolve(db, sch, &table);
+                let grid = matches!(kind, TabKind::Sql(_)).then(|| cx.new(|cx| TableState::new(ResultGrid::new(false), window, cx).cell_selectable(true)));
+                CustomSection { name: t.name.into(), kind, grid, status: SharedString::default(), busy: false, opened: false }
+            })
+            .collect();
+        let mut subs = subs;
+        subs.extend(custom.iter().filter_map(|c| c.grid.as_ref()).map(|g| cx.observe(g, |_, _, cx| cx.notify())));
         let mut this = TableTab {
             focus: cx.focus_handle(),
             schema,
@@ -146,6 +176,9 @@ impl TableTab {
             compiling: false,
             compile_live: Vec::new(),
             sql_view: None,
+            custom,
+            text_mode: false,
+            text_view: grid::TextView::default(),
             _subs: subs,
         };
         if let Some(d) = &dbt {
@@ -243,6 +276,100 @@ impl TableTab {
             })
         })
         .detach();
+    }
+
+    /// Runs custom tab `i`'s SQL on the grid's session (connects if there is none yet).
+    pub(crate) fn load_custom(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(c) = self.custom.get_mut(i) else { return };
+        let (TabKind::Sql(sql), Some(grid)) = (c.kind.clone(), c.grid.clone()) else { return };
+        c.busy = true;
+        c.status = t!("tree.loading").to_string().into();
+        let conn = self.conn.clone();
+        let existing = self.session.clone();
+        let engine = cx.global::<Db>().0.clone();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                let session = match existing {
+                    Some(s) => s,
+                    None => Arc::new(engine.connect(&conn.cfg, conn.creds.clone()).await?),
+                };
+                let out = session.execute(sql).await?;
+                Ok::<_, rb_core::DbError>((session, out))
+            }
+            .await;
+            this.update(cx, |tab, cx| {
+                let c = &mut tab.custom[i];
+                c.busy = false;
+                match result {
+                    Ok((session, out)) => {
+                        c.status = format!("{} ms", out.elapsed.as_millis()).into();
+                        tab.session.get_or_insert(session.clone());
+                        let exec_id = out.exec_id;
+                        let rs = ResultSet::new(out.columns, out.batch, out.more);
+                        grid.update(cx, |t, cx| {
+                            t.delegate_mut().set_result(rs, session, exec_id);
+                            t.refresh(cx);
+                            cx.notify();
+                        });
+                    }
+                    Err(e) => c.status = e.to_string().into(),
+                }
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+
+    fn render_custom(&mut self, i: usize, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let Some(c) = self.custom.get(i) else { return div().into_any_element() };
+        let bar = h_flex().p_2().gap_2().items_center();
+        match (&c.kind, &c.grid) {
+            (TabKind::Url(u), _) => {
+                let u = u.clone();
+                v_flex()
+                    .p_4()
+                    .gap_2()
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(u.clone()))
+                    .child(div().child(Button::new("tv-custom-open").label(t!("tv.open_browser").to_string()).outline().small().on_click(move |_, _, cx| cx.open_url(&u))))
+                    .into_any_element()
+            }
+            (TabKind::Sql(sql), Some(grid)) => {
+                let sql = sql.clone();
+                let open_query = self.open_query.clone();
+                let rows = grid.read(cx).delegate().loaded_rows();
+                v_flex()
+                    .size_full()
+                    .child(
+                        bar.child(Button::new("tv-custom-reload").label(t!("table.reload").to_string()).ghost().on_click(cx.listener(move |t, _, _, cx| t.load_custom(i, cx))))
+                            .child(Button::new("tv-custom-query").label(t!("tv.query").to_string()).ghost().on_click(move |_, window, cx| open_query(sql.clone(), window, cx))),
+                    )
+                    .child(
+                        div()
+                            .key_context("ResultGrid")
+                            .flex_1()
+                            .min_h_0()
+                            .on_action({
+                                let grid = grid.clone();
+                                move |_: &CopyCells, _, cx| grid::copy_to_clipboard(&grid, cx)
+                            })
+                            .child(DataTable::new(grid).stripe(true).bordered(true)),
+                    )
+                    .child(
+                        h_flex()
+                            .px_2()
+                            .py_1()
+                            .gap_3()
+                            .text_sm()
+                            .when(c.busy, |d| d.child(Spinner::new().small()))
+                            .child(t!("grid.rows", n = rows).to_string())
+                            .child(c.status.clone()),
+                    )
+                    .into_any_element()
+            }
+            _ => div().into_any_element(),
+        }
     }
 
     fn set_sort(&mut self, col: usize, sort: ColumnSort, cx: &mut Context<Self>) {
@@ -364,19 +491,20 @@ impl Render for TableTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sf = self.meta.read(cx).cache.dialect == Dialect::Snowflake;
         if !sf {
-            return self.render_data(cx);
+            return self.render_data(window, cx);
         }
         let content = match self.section {
-            Section::Data => self.render_data(cx),
+            Section::Data => self.render_data(window, cx),
             Section::Definition => self.render_definition(cx),
             Section::Dbt => self.render_dbt(window, cx),
+            Section::Custom(i) => self.render_custom(i, cx),
         };
         v_flex().size_full().child(self.render_header(cx)).child(div().flex_1().min_h_0().child(content)).into_any_element()
     }
 }
 
 impl TableTab {
-    fn render_data(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_data(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let g = self.grid.read(cx).delegate();
         let editable = g.edits.is_some();
         let pending = g.edits.as_ref().is_some_and(|e| !e.is_empty());
@@ -415,7 +543,7 @@ impl TableTab {
                     .key_context("ResultGrid")
                     .flex_1()
                     .on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx)))
-                    .child(DataTable::new(&self.grid).stripe(true).bordered(true)),
+                    .child(if self.text_mode { self.text_view.render(&self.grid, window, cx) } else { DataTable::new(&self.grid).stripe(true).bordered(true).into_any_element() }),
             )
             .child(
                 h_flex()
@@ -424,6 +552,7 @@ impl TableTab {
                     .gap_3()
                     .text_sm()
                     .when(spinning, |d| d.child(Spinner::new().small()))
+                    .child(grid::mode_toggle(self.text_mode, |t: &mut Self, v| t.text_mode = v, cx))
                     .child(t!("grid.rows", n = format!("{rows}{}", if more { "+" } else { "" })).to_string())
                     // Hit the tab's LIMIT: the table may have more; to see everything, use SQL in the editor.
                     .when(sf && rows >= TABLE_LIMIT, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("table.limited", n = TABLE_LIMIT).to_string())))
