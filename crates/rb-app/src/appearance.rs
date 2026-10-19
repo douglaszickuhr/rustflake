@@ -2,9 +2,9 @@
 
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::*;
+use gpui_kit::{Hsla, rgb};
 use rb_core::config::ThemeChoice;
 use rust_i18n::t;
-use gpui_kit::{Hsla, rgb};
 
 use crate::settings;
 
@@ -54,7 +54,6 @@ pub fn label(choice: ThemeChoice, cx: &App) -> String {
         ThemeChoice::Dark => name(ThemeMode::Dark),
     }
 }
-
 
 /// Colors of the "Rustflake UX Concepts" canvas; the light one is derived from the dark.
 #[derive(Clone, Copy)]

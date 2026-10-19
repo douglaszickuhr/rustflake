@@ -222,7 +222,9 @@ impl Render for QuickOpen {
                 .hover(|d| d.bg(theme.secondary_hover))
                 .child(Icon::new(IconName::File).small().text_color(theme.muted_foreground))
                 .child(div().flex_shrink_0().child(title.clone()))
-                .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(detail.clone()))
+                .child(
+                    div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(detail.clone()),
+                )
                 .child(div().flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(t!("quick.kind_tab").to_string()))
                 .on_click(cx.listener(move |q, _, window, cx| q.pick(i, window, cx)))
                 .into_any_element()
@@ -265,22 +267,13 @@ impl Render for QuickOpen {
             .child(Input::new(&self.input))
             // The rows are direct children of the scrollable container: `scroll_to_item` counts by them.
             .child(div().id("qo-list").flex().flex_col().max_h(px(420.)).overflow_y_scroll().track_scroll(&self.scroll).children(rows))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .child(div().flex_1().child(self.status.clone()))
-                    .when_some(index_info, |d, (info, running)| {
-                        d.child(info).child(Button::new("qo-refresh").label("↻").ghost().disabled(running).tooltip(t!("quick.refresh_index").to_string()).on_click(cx.listener(
-                            |q, _, _, cx| {
-                                if let Some(ix) = &q.indexer {
-                                    ix.update(cx, |ix, cx| ix.refresh(cx));
-                                }
-                            },
-                        )))
-                    }),
-            )
+            .child(h_flex().gap_2().text_sm().text_color(theme.muted_foreground).child(div().flex_1().child(self.status.clone())).when_some(index_info, |d, (info, running)| {
+                d.child(info).child(Button::new("qo-refresh").label("↻").ghost().disabled(running).tooltip(t!("quick.refresh_index").to_string()).on_click(cx.listener(|q, _, _, cx| {
+                    if let Some(ix) = &q.indexer {
+                        ix.update(cx, |ix, cx| ix.refresh(cx));
+                    }
+                })))
+            }))
     }
 }
 

@@ -165,7 +165,6 @@ mod tests {
         assert_eq!([0, 1, 4, 5, 49, 50, 690].map(intensity), [0, 1, 1, 2, 2, 3, 3]);
     }
 
-
     #[test]
     fn scim_and_sso_detection() {
         assert!(scim_managed(Some("OKTA_PROVISIONER")) && scim_managed(Some("aad_provisioner")));

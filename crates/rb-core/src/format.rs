@@ -79,11 +79,7 @@ mod tests {
     #[test]
     fn backslashes_in_strings_never_change_literals() {
         // sqlformat reads `\'` as an escaped quote; on Postgres (standard_conforming_strings) `'\'` is a complete string.
-        for src in [
-            r"select 'a\' as x, 'b' as y from t",
-            r"select * from t where a like 'a\_%' escape '\' and c = 'k'",
-            r"select E'\\' as bs, 'x' as y",
-        ] {
+        for src in [r"select 'a\' as x, 'b' as y from t", r"select * from t where a like 'a\_%' escape '\' and c = 'k'", r"select E'\\' as bs, 'x' as y"] {
             let out = format_sql(src);
             for lit in ["'b'", "'k'", "'x'"] {
                 if src.contains(lit) {

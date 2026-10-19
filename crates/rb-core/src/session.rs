@@ -84,11 +84,7 @@ pub struct Credentials {
 impl std::fmt::Debug for Credentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let set = |v: &Option<String>| if v.is_some() { "<set>" } else { "<none>" };
-        f.debug_struct("Credentials")
-            .field("password", &set(&self.password))
-            .field("ssh_passphrase", &set(&self.ssh_passphrase))
-            .field("key_passphrase", &set(&self.key_passphrase))
-            .finish()
+        f.debug_struct("Credentials").field("password", &set(&self.password)).field("ssh_passphrase", &set(&self.ssh_passphrase)).field("key_passphrase", &set(&self.key_passphrase)).finish()
     }
 }
 
@@ -152,12 +148,7 @@ async fn connect_client(pg: &tokio_postgres::Config) -> Result<Client, DbError> 
 
 impl Engine {
     pub fn new() -> Result<Engine, DbError> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("rb-db")
-            .enable_all()
-            .build()
-            .map_err(|e| DbError::Io(e.to_string()))?;
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("rb-db").enable_all().build().map_err(|e| DbError::Io(e.to_string()))?;
         Ok(Engine { rt: Arc::new(rt), ssh_env: Arc::new(SshEnv::system()), tunnels: Arc::default(), sf_sessions: Arc::default() })
     }
 
@@ -189,9 +180,7 @@ impl Engine {
             .spawn(async move {
                 let tunnel = match route {
                     None => None,
-                    Some((id, ssh, passphrase, host, port)) => {
-                        Some((shared_tunnel(&tunnels, id, ssh, passphrase, &env).await?, host, port))
-                    }
+                    Some((id, ssh, passphrase, host, port)) => Some((shared_tunnel(&tunnels, id, ssh, passphrase, &env).await?, host, port)),
                 };
                 Session::open(Connector { pg, tunnel }, handle).await
             })
@@ -215,13 +204,7 @@ async fn shared_snowflake(cache: &SnowflakeCache, cfg: &ConnectionConfig, creds:
 /// The tunnel drops when the last session using it drops (the cache only holds `Weak`).
 /// ponytail: two sessions opening at the same time may create two tunnels; both work
 /// and the second stays in the cache.
-async fn shared_tunnel(
-    cache: &TunnelCache,
-    id: String,
-    ssh: SshConfig,
-    passphrase: Option<String>,
-    env: &SshEnv,
-) -> Result<Arc<Tunnel>, DbError> {
+async fn shared_tunnel(cache: &TunnelCache, id: String, ssh: SshConfig, passphrase: Option<String>, env: &SshEnv) -> Result<Arc<Tunnel>, DbError> {
     let key = (id, ssh);
     if let Some(t) = cache.lock().expect("tunnel cache").get(&key).and_then(Weak::upgrade) {
         return Ok(t);
@@ -472,11 +455,7 @@ impl Actor {
                 return rx.recv().await;
             }
         };
-        let columns: Arc<[ColumnInfo]> = stmt
-            .columns()
-            .iter()
-            .map(|c| ColumnInfo { name: c.name().to_string(), type_: c.type_().clone() })
-            .collect();
+        let columns: Arc<[ColumnInfo]> = stmt.columns().iter().map(|c| ColumnInfo { name: c.name().to_string(), type_: c.type_().clone() }).collect();
 
         if columns.is_empty() {
             let res = self.client.execute(&stmt, &[]).await.map_err(DbError::from).map(|n| ExecOutcome {
@@ -533,15 +512,7 @@ impl Actor {
             }
             // A block too large to keep is an error before the commit: the write is rolled back.
             let res = match Batch::from_rows(&first, ncols) {
-                Ok(batch) => tx.commit().await.map_err(DbError::from).map(|_| ExecOutcome {
-                    query_id: None,
-                    exec_id,
-                    columns,
-                    batch,
-                    more: false,
-                    affected: None,
-                    elapsed: started.elapsed(),
-                }),
+                Ok(batch) => tx.commit().await.map_err(DbError::from).map(|_| ExecOutcome { query_id: None, exec_id, columns, batch, more: false, affected: None, elapsed: started.elapsed() }),
                 Err(e) => Err(e),
             };
             let _ = reply.send(res);
@@ -604,10 +575,7 @@ impl Actor {
     async fn query_text(&self, sql: &str, params: &[String]) -> Result<Vec<Vec<Option<String>>>, DbError> {
         let p: Vec<&(dyn ToSql + Sync)> = params.iter().map(|s| s as &(dyn ToSql + Sync)).collect();
         let rows = self.client.query(sql, &p).await?;
-        rows.iter()
-            .map(|r| (0..r.len()).map(|i| r.try_get::<_, Option<String>>(i)).collect::<Result<Vec<_>, _>>())
-            .collect::<Result<_, _>>()
-            .map_err(Into::into)
+        rows.iter().map(|r| (0..r.len()).map(|i| r.try_get::<_, Option<String>>(i)).collect::<Result<Vec<_>, _>>()).collect::<Result<_, _>>().map_err(Into::into)
     }
 
     async fn query_named(&self, sql: &str) -> Result<Table, DbError> {

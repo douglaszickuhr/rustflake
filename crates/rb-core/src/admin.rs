@@ -90,13 +90,7 @@ pub fn parse_users(names: &[String], rows: &Rows) -> Vec<UserInfo> {
 pub fn parse_roles(names: &[String], rows: &Rows) -> Vec<RoleInfo> {
     named(names, rows)
         .filter_map(|r| {
-            Some(RoleInfo {
-                name: r.text("name")?,
-                owner: r.text("owner"),
-                comment: r.text("comment"),
-                assigned_to_users: r.num("assigned_to_users"),
-                granted_to_roles: r.num("granted_to_roles"),
-            })
+            Some(RoleInfo { name: r.text("name")?, owner: r.text("owner"), comment: r.text("comment"), assigned_to_users: r.num("assigned_to_users"), granted_to_roles: r.num("granted_to_roles") })
         })
         .collect()
 }
@@ -119,9 +113,7 @@ impl DirectGrant {
 
 /// `SHOW GRANTS TO USER` with the origin of each role.
 pub fn parse_user_grants(names: &[String], rows: &Rows) -> Vec<DirectGrant> {
-    named(names, rows)
-        .filter_map(|r| Some(DirectGrant { role: unquote(r.text("role")?), granted_by: r.text("granted_by"), created_on: r.text("created_on") }))
-        .collect()
+    named(names, rows).filter_map(|r| Some(DirectGrant { role: unquote(r.text("role")?), granted_by: r.text("granted_by"), created_on: r.text("created_on") })).collect()
 }
 
 /// `SHOW GRANTS TO ROLE`.
@@ -432,14 +424,9 @@ pub fn parse_login_activity(names: &[String], rows: &Rows) -> LoginActivity {
         match r.get("kind") {
             Some("ok") => l.ok = r.num("a"),
             Some("failed") => l.failed = r.num("a"),
-            Some("event") => l.recent.push(LoginEvent {
-                at: r.text("a").unwrap_or_default(),
-                success: r.get("b") == Some("YES"),
-                factor: r.text("c"),
-                client: r.text("d"),
-                ip: r.text("e"),
-                error: r.text("f"),
-            }),
+            Some("event") => {
+                l.recent.push(LoginEvent { at: r.text("a").unwrap_or_default(), success: r.get("b") == Some("YES"), factor: r.text("c"), client: r.text("d"), ip: r.text("e"), error: r.text("f") })
+            }
             _ => {}
         }
     }
@@ -545,10 +532,7 @@ mod tests {
 
     #[test]
     fn effective_chain() {
-        assert_eq!(eff(&["ANALYST"], &[("ANALYST", "READER"), ("READER", "PUBLIC")]), vec![
-            ("READER".into(), "ANALYST → READER".into()),
-            ("PUBLIC".into(), "ANALYST → READER → PUBLIC".into()),
-        ]);
+        assert_eq!(eff(&["ANALYST"], &[("ANALYST", "READER"), ("READER", "PUBLIC")]), vec![("READER".into(), "ANALYST → READER".into()), ("PUBLIC".into(), "ANALYST → READER → PUBLIC".into()),]);
     }
 
     #[test]
@@ -637,7 +621,8 @@ mod tests {
 
     #[test]
     fn role_graph_from_account_usage() {
-        let (n, r) = t(&["GRANTEE_NAME", "NAME"], &[&[Some("ACCOUNTADMIN"), Some("SYSADMIN")], &[Some("SYSADMIN"), Some("DATA_ENG")], &[Some("ACCOUNTADMIN"), Some("SECURITYADMIN")], &[None, Some("X")]]);
+        let (n, r) =
+            t(&["GRANTEE_NAME", "NAME"], &[&[Some("ACCOUNTADMIN"), Some("SYSADMIN")], &[Some("SYSADMIN"), Some("DATA_ENG")], &[Some("ACCOUNTADMIN"), Some("SECURITYADMIN")], &[None, Some("X")]]);
         let g = parse_role_graph(&n, &r);
         assert_eq!(g["ACCOUNTADMIN"], vec!["SYSADMIN", "SECURITYADMIN"]);
         assert!(ROLE_GRAPH_SQL.contains("deleted_on is null"));
@@ -656,7 +641,13 @@ mod tests {
 
     #[test]
     fn direct_grants_keep_who_granted_and_when() {
-        let (n, r) = t(&["created_on", "role", "granted_to", "grantee_name", "granted_by"], &[&[Some("2026-03-03 10:00:00"), Some("SANDBOX_ADMIN"), Some("USER"), Some("ANA"), Some("SECURITYADMIN")], &[None, Some("\"idp_fr\""), Some("USER"), Some("ANA"), Some("OKTA_PROVISIONER")]]);
+        let (n, r) = t(
+            &["created_on", "role", "granted_to", "grantee_name", "granted_by"],
+            &[
+                &[Some("2026-03-03 10:00:00"), Some("SANDBOX_ADMIN"), Some("USER"), Some("ANA"), Some("SECURITYADMIN")],
+                &[None, Some("\"idp_fr\""), Some("USER"), Some("ANA"), Some("OKTA_PROVISIONER")],
+            ],
+        );
         let g = parse_user_grants(&n, &r);
         assert_eq!(g[0], DirectGrant { role: "SANDBOX_ADMIN".into(), granted_by: Some("SECURITYADMIN".into()), created_on: Some("2026-03-03 10:00:00".into()) });
         assert_eq!(g[1].role, "idp_fr");

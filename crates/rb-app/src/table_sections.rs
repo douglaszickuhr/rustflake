@@ -12,14 +12,14 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::dbt::{DbtProject, Node, commit_url, file_url};
 use rb_core::explain::short_count;
-use rb_core::table_info::{self, DescSource, LinNode};
 use rb_core::org_config::TabKind;
+use rb_core::table_info::{self, DescSource, LinNode};
 use rb_core::user_view;
 use rust_i18n::t;
 
+use crate::dbt_store::parsed_ago;
 use crate::table_tab::{Section, TableTab, spawn_query};
 use crate::ui::Load;
-use crate::dbt_store::parsed_ago;
 
 /// Node type color (dbt model / source / seed / outside dbt), same as lineage.
 pub(crate) fn kind_dot(kind: &str, theme: &gpui_kit::component::Theme) -> Hsla {
@@ -205,7 +205,9 @@ impl TableTab {
                 .when_some(n.owner.clone(), |d, o| d.child(div().text_sm().text_color(theme.muted_foreground).child(format!("{} {o}", t!("tv.owner")))))
                 .children(n.tags.iter().map(|tg| Tag::secondary().small().child(tg.clone())));
         }
-        top = top.child(div().flex_1()).child(Button::new("tv-query").label(t!("tv.query").to_string()).outline().small().on_click(move |_, w, cx| open_query(format!("select * from {fq} limit 100;"), w, cx)));
+        top = top
+            .child(div().flex_1())
+            .child(Button::new("tv-query").label(t!("tv.query").to_string()).outline().small().on_click(move |_, w, cx| open_query(format!("select * from {fq} limit 100;"), w, cx)));
         let facts = match &self.facts {
             Some(Load::Ready(f)) => {
                 let kind = match f.kind.as_str() {
@@ -440,18 +442,19 @@ impl TableTab {
                     let t = p.manifest.tests_of(&n.unique_id).into_iter().find(|t| &t.kind == kind && t.column.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(&r.col.name)))?;
                     p.results.get(&t.unique_id).cloned()
                 });
-                out = out.child(
-                    h_flex()
-                        .gap_2()
-                        .text_sm()
-                        .child(Tag::info().small().child(kind.clone()))
-                        .when_some(status, |d, (s, when)| d.child(div().text_xs().text_color(match s.as_str() {
-                            "pass" => theme.success,
-                            "warn" => theme.warning,
-                            "skipped" => theme.muted_foreground,
-                            _ => theme.danger,
-                        }).child(format!("{s} · {}", ago(&when.replace('T', " ")).unwrap_or_default())))),
-                );
+                out = out.child(h_flex().gap_2().text_sm().child(Tag::info().small().child(kind.clone())).when_some(status, |d, (s, when)| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(match s.as_str() {
+                                "pass" => theme.success,
+                                "warn" => theme.warning,
+                                "skipped" => theme.muted_foreground,
+                                _ => theme.danger,
+                            })
+                            .child(format!("{s} · {}", ago(&when.replace('T', " ")).unwrap_or_default())),
+                    )
+                }));
             }
         }
         out
@@ -604,18 +607,30 @@ impl TableTab {
         let tests = project.manifest.tests_of(&node.unique_id);
         let mut by_kind: Vec<(String, Vec<String>)> = Vec::new();
         for t in &tests {
-            let what = t.detail.clone().map(|d| if t.kind == "accepted_values" { t!("tv.n_values", n = d).to_string() } else { d }).or_else(|| t.column.clone()).unwrap_or_else(|| t!("tv.model_level").to_string());
+            let what = t
+                .detail
+                .clone()
+                .map(|d| if t.kind == "accepted_values" { t!("tv.n_values", n = d).to_string() } else { d })
+                .or_else(|| t.column.clone())
+                .unwrap_or_else(|| t!("tv.model_level").to_string());
             match by_kind.iter_mut().find(|(k, _)| *k == t.kind) {
                 Some((_, v)) => v.push(what),
                 None => by_kind.push((t.kind.clone(), vec![what])),
             }
         }
         let head = |s: String| div().pt_2().text_xs().text_color(theme.muted_foreground).child(s.to_uppercase());
-        let row = |k: String, v: String| h_flex().gap_3().py_1().text_sm().border_b_1().border_color(theme.border).child(div().w(px(110.)).flex_shrink_0().text_color(theme.muted_foreground).child(k)).child(div().min_w_0().child(v));
-        let mut left = v_flex()
-            .gap_2()
-            .child(head(t!("tv.col_desc").to_string()))
-            .child(div().text_sm().child(if node.description.is_empty() { t!("tv.no_desc").to_string() } else { node.description.clone() }));
+        let row = |k: String, v: String| {
+            h_flex()
+                .gap_3()
+                .py_1()
+                .text_sm()
+                .border_b_1()
+                .border_color(theme.border)
+                .child(div().w(px(110.)).flex_shrink_0().text_color(theme.muted_foreground).child(k))
+                .child(div().min_w_0().child(v))
+        };
+        let mut left =
+            v_flex().gap_2().child(head(t!("tv.col_desc").to_string())).child(div().text_sm().child(if node.description.is_empty() { t!("tv.no_desc").to_string() } else { node.description.clone() }));
         let mat = [node.materialized.clone(), node.strategy.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         left = left
             .when(!mat.is_empty(), |d| d.child(row(t!("tv.materialized").to_string(), mat)))
@@ -625,14 +640,39 @@ impl TableTab {
                 // One line per key (already flattened: `atlan.attributes.ownerUsers`).
                 let mut list = v_flex().gap_0p5().min_w_0();
                 for (k, v) in node.meta.iter().filter(|(k, _)| k != "owner") {
-                    list = list.child(v_flex().child(div().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(k.clone())).child(div().text_sm().child(v.clone())));
+                    list = list
+                        .child(v_flex().child(div().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(k.clone())).child(div().text_sm().child(v.clone())));
                 }
-                d.child(h_flex().gap_3().py_1().items_start().border_b_1().border_color(theme.border).child(div().w(px(110.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(t!("tv.meta").to_string())).child(list))
+                d.child(
+                    h_flex()
+                        .gap_3()
+                        .py_1()
+                        .items_start()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(div().w(px(110.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(t!("tv.meta").to_string()))
+                        .child(list),
+                )
             })
-            .when(!node.tags.is_empty(), |d| d.child(h_flex().gap_1().py_1().child(div().w(px(110.)).text_sm().text_color(theme.muted_foreground).child(t!("tv.tags").to_string())).children(node.tags.iter().map(|t| Tag::secondary().small().child(t.clone())))));
+            .when(!node.tags.is_empty(), |d| {
+                d.child(
+                    h_flex()
+                        .gap_1()
+                        .py_1()
+                        .child(div().w(px(110.)).text_sm().text_color(theme.muted_foreground).child(t!("tv.tags").to_string()))
+                        .children(node.tags.iter().map(|t| Tag::secondary().small().child(t.clone()))),
+                )
+            });
         left = left.child(head(t!("tv.tests_n", n = tests.len()).to_string()));
         for (kind, cols) in by_kind {
-            left = left.child(h_flex().gap_2().items_start().text_sm().child(Tag::info().small().child(kind)).child(div().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(cols.join(", "))));
+            left = left.child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .text_sm()
+                    .child(Tag::info().small().child(kind))
+                    .child(div().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(cols.join(", "))),
+            );
         }
         let refresh_store = store.clone();
         left = left.child(div().flex_1()).child(
@@ -645,7 +685,14 @@ impl TableTab {
                 .text_color(theme.muted_foreground)
                 .child(t!("tv.manifest_footer", target = project.target, ago = parsed_ago(&project)).to_string())
                 .child(div().flex_1())
-                .child(Button::new("tv-refresh").label(t!("dbt.refresh").to_string()).outline().xsmall().loading(store.read(cx).refreshing).on_click(move |_, _, cx| refresh_store.update(cx, |s, cx| s.refresh(cx)))),
+                .child(
+                    Button::new("tv-refresh")
+                        .label(t!("dbt.refresh").to_string())
+                        .outline()
+                        .xsmall()
+                        .loading(store.read(cx).refreshing)
+                        .on_click(move |_, _, cx| refresh_store.update(cx, |s, cx| s.refresh(cx))),
+                ),
         );
 
         // Read-only SQL; the text switches between source and compiled.
@@ -695,7 +742,15 @@ impl TableTab {
                         let (dir, file) = (project.dir.clone(), node.file.clone());
                         cx.listener(move |t, _, _, cx| t.toggle_blame(dir.clone(), file.clone(), cx))
                     }))
-                    .child(Button::new("tv-compile").label(if self.compiling { t!("tv.compiling").to_string() } else { t!("tv.compile").to_string() }).xsmall().outline().loading(self.compiling).tooltip(t!("tv.compile_tip").to_string()).on_click(cx.listener(move |t, _, _, cx| t.compile(compile_node.clone(), cx))))
+                    .child(
+                        Button::new("tv-compile")
+                            .label(if self.compiling { t!("tv.compiling").to_string() } else { t!("tv.compile").to_string() })
+                            .xsmall()
+                            .outline()
+                            .loading(self.compiling)
+                            .tooltip(t!("tv.compile_tip").to_string())
+                            .on_click(cx.listener(move |t, _, _, cx| t.compile(compile_node.clone(), cx))),
+                    )
                     .child(toggle("tv-src", t!("tv.source").to_string(), !compiled, false, cx))
                     .child(toggle("tv-cmp", t!("tv.compiled").to_string(), compiled, true, cx).disabled(!has_compiled).when(!has_compiled, |b| b.tooltip(t!("tv.no_compiled").to_string())))
                     .when_some(url, |d, u| d.child(Button::new("tv-gh").label(t!("tv.open_github").to_string()).outline().xsmall().on_click(move |_, _, cx| cx.open_url(&u))))
@@ -710,12 +765,25 @@ impl TableTab {
             )
             .child(div().flex_1().min_h_0().child(if self.show_blame && !compiled { self.render_blame(&project, &node.file, cx) } else { Editor::new(&editor).h_full().into_any_element() }))
             .when(self.compiling && !self.compile_live.is_empty(), |d| {
-                d.child(v_flex().px_3().py_1().max_h(px(160.)).overflow_hidden().bg(theme.secondary).text_xs().font_family(theme.mono_font_family.clone()).children(self.compile_live.iter().map(|l| div().whitespace_nowrap().overflow_hidden().text_ellipsis().child(l.clone()))))
+                d.child(
+                    v_flex()
+                        .px_3()
+                        .py_1()
+                        .max_h(px(160.))
+                        .overflow_hidden()
+                        .bg(theme.secondary)
+                        .text_xs()
+                        .font_family(theme.mono_font_family.clone())
+                        .children(self.compile_live.iter().map(|l| div().whitespace_nowrap().overflow_hidden().text_ellipsis().child(l.clone()))),
+                )
             })
-            .when_some(match &self.compiled {
-                Some((u, Load::Failed(m))) if *u == node.unique_id => Some(m.clone()),
-                _ => None,
-            }, |d, m| d.child(div().id("tv-compile-err").px_3().py_1().max_h(px(160.)).overflow_y_scroll().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.danger).child(m)))
+            .when_some(
+                match &self.compiled {
+                    Some((u, Load::Failed(m))) if *u == node.unique_id => Some(m.clone()),
+                    _ => None,
+                },
+                |d, m| d.child(div().id("tv-compile-err").px_3().py_1().max_h(px(160.)).overflow_y_scroll().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.danger).child(m)),
+            )
             .child(div().px_3().py_1().text_xs().text_color(theme.muted_foreground).child(match (compiled, compiled_sql.as_ref().and_then(|c| c.1)) {
                 (true, Some(t)) => t!("tv.compiled_ago", ago = crate::ui::ago(t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0))).to_string(),
                 _ => format!("{} @ {}", project.git.branch, project.git.sha),
@@ -737,14 +805,10 @@ fn lineage_step(n: &LinNode, project: Option<&DbtProject>, theme: &gpui_kit::com
         Some(f) => format!("{}.{} · dbt {}", n.db, n.schema, f.resource_type),
         None => format!("{}.{} · {}", n.db, n.schema, t!("tv.outside_dbt")),
     };
-    h_flex()
-        .gap_2()
-        .items_start()
-        .child(div().mt(px(5.)).size(px(7.)).flex_shrink_0().rounded_full().bg(kind_dot(&kind, theme)))
-        .child(
-            v_flex()
-                .min_w_0()
-                .child(div().text_xs().font_family(theme.mono_font_family.clone()).child(format!("{}.{}", n.object, n.column)))
-                .child(div().text_xs().text_color(theme.muted_foreground).child(label)),
-        )
+    h_flex().gap_2().items_start().child(div().mt(px(5.)).size(px(7.)).flex_shrink_0().rounded_full().bg(kind_dot(&kind, theme))).child(
+        v_flex()
+            .min_w_0()
+            .child(div().text_xs().font_family(theme.mono_font_family.clone()).child(format!("{}.{}", n.object, n.column)))
+            .child(div().text_xs().text_color(theme.muted_foreground).child(label)),
+    )
 }

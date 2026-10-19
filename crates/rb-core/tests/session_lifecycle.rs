@@ -38,13 +38,7 @@ fn abandoning_a_partial_result_closes_its_transaction() {
         assert!(out.more);
         std::thread::sleep(Duration::from_millis(300));
         // If the portal's transaction were still open, xact_start would be ~300 ms ago.
-        let r = s
-            .query_text(
-                "select (clock_timestamp() - xact_start < interval '200 ms')::text from pg_stat_activity where pid = pg_backend_pid()",
-                &[],
-            )
-            .await
-            .unwrap();
+        let r = s.query_text("select (clock_timestamp() - xact_start < interval '200 ms')::text from pg_stat_activity where pid = pg_backend_pid()", &[]).await.unwrap();
         assert_eq!(r[0][0].as_deref(), Some("true"));
         let f = s.fetch_more(out.exec_id).await.unwrap();
         assert_eq!((f.batch.rows(), f.more), (0, false));

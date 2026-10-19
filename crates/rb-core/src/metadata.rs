@@ -72,9 +72,7 @@ impl MetaCache {
     /// pattern (with none, all match) and no `!pattern` exclusion.
     pub fn visible_databases(&self) -> impl Iterator<Item = &String> {
         let (exclude, include): (Vec<_>, Vec<_>) = self.db_filter.iter().partition(|p| p.starts_with('!'));
-        self.databases.iter().filter(move |d| {
-            (include.is_empty() || include.iter().any(|p| glob_match(p, d))) && !exclude.iter().any(|p| glob_match(&p[1..], d))
-        })
+        self.databases.iter().filter(move |d| (include.is_empty() || include.iter().any(|p| glob_match(p, d))) && !exclude.iter().any(|p| glob_match(&p[1..], d)))
     }
 
     pub fn has(&self, req: &MetaRequest) -> bool {
@@ -277,11 +275,7 @@ pub async fn indexes(s: &Session, schema: &str, table: &str) -> Result<Vec<Index
     if s.dialect() == Dialect::Snowflake {
         return Ok(Vec::new());
     }
-    Ok(s.query_text(INDEXES_SQL, &[schema, table])
-        .await?
-        .into_iter()
-        .map(|r| IndexMeta { name: text(&r, 0), definition: text(&r, 1) })
-        .collect())
+    Ok(s.query_text(INDEXES_SQL, &[schema, table]).await?.into_iter().map(|r| IndexMeta { name: text(&r, 0), definition: text(&r, 1) }).collect())
 }
 
 #[cfg(test)]

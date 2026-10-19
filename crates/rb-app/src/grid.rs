@@ -3,12 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelection, TableState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::batch::ResultSet;
-use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::input::{Editor, EditorState};
 use rb_core::decode::{detail_text, one_line};
 use rb_core::session::Session;
 use rb_core::table::PendingEdits;
@@ -41,20 +41,7 @@ pub struct ResultGrid {
 
 impl ResultGrid {
     pub fn new(sortable: bool) -> Self {
-        ResultGrid {
-            rs: None,
-            edits: None,
-            sortable,
-            on_sort: None,
-            error: None,
-            saving: false,
-            session: None,
-            exec_id: 0,
-            widths: Vec::new(),
-            loading_more: false,
-            busy: false,
-            generation: 0,
-        }
+        ResultGrid { rs: None, edits: None, sortable, on_sort: None, error: None, saving: false, session: None, exec_id: 0, widths: Vec::new(), loading_more: false, busy: false, generation: 0 }
     }
 
     pub fn set_result(&mut self, rs: ResultSet, session: Arc<Session>, exec_id: u64) {
@@ -185,17 +172,8 @@ impl TableDelegate for ResultGrid {
                 d.tooltip(move |window, cx| {
                     let full = table.upgrade().and_then(|t| t.read(cx).delegate().full_text(row, col)).unwrap_or_default();
                     let detail = SharedString::from(detail_text(&full, MAX_DETAIL_CHARS));
-                    Tooltip::element(move |_, cx| {
-                        div()
-                            .max_w(px(720.))
-                            .max_h(px(480.))
-                            .overflow_hidden()
-                            .py_1()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_xs()
-                            .child(detail.clone())
-                    })
-                    .build(window, cx)
+                    Tooltip::element(move |_, cx| div().max_w(px(720.)).max_h(px(480.)).overflow_hidden().py_1().font_family(cx.theme().mono_font_family.clone()).text_xs().child(detail.clone()))
+                        .build(window, cx)
                 })
             })
             .size_full()

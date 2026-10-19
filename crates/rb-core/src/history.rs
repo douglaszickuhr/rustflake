@@ -48,10 +48,7 @@ pub fn append(path: &Path, e: &Entry) -> Result<(), DbError> {
 pub fn load(path: &Path) -> Vec<Entry> {
     let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
     let lines = text.lines().count();
-    let mut all: Vec<Entry> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).map_err(|e| tracing::warn!("{}: invalid line: {e}", path.display())).ok())
-        .collect();
+    let mut all: Vec<Entry> = text.lines().filter_map(|l| serde_json::from_str(l).map_err(|e| tracing::warn!("{}: invalid line: {e}", path.display())).ok()).collect();
     if all.len() > MAX_ENTRIES || all.len() != lines {
         all.drain(..all.len().saturating_sub(MAX_ENTRIES));
         let tmp = path.with_extension("jsonl.tmp");

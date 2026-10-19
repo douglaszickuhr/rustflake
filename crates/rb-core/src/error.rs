@@ -22,10 +22,19 @@ pub enum DbError {
     /// SSH tunnel failure (connection, authentication, channel, known_hosts).
     Ssh(String),
     /// SSH host not in known_hosts. `key` is the public key in OpenSSH format, for `ssh::trust_host`.
-    HostKeyUnknown { host: String, port: u16, fingerprint: String, key: String },
+    HostKeyUnknown {
+        host: String,
+        port: u16,
+        fingerprint: String,
+        key: String,
+    },
     /// Error returned by Snowflake (Snowflake numeric code, e.g. 001003).
     /// `query_id` to find the query in Snowsight / QUERY_HISTORY.
-    Snowflake { code: String, message: String, query_id: Option<String> },
+    Snowflake {
+        code: String,
+        message: String,
+        query_id: Option<String>,
+    },
 }
 
 impl fmt::Display for DbError {

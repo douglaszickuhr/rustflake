@@ -125,17 +125,11 @@ impl ConnectionConfig {
     pub fn pg_config(&self, password: Option<&str>) -> tokio_postgres::Config {
         use tokio_postgres::config::SslMode as Pg;
         let mut c = tokio_postgres::Config::new();
-        c.host(&self.host)
-            .port(self.port)
-            .dbname(&self.database)
-            .user(&self.user)
-            .application_name("rustflake")
-            .connect_timeout(Duration::from_secs(10))
-            .ssl_mode(match self.ssl {
-                SslMode::Disable => Pg::Disable,
-                SslMode::Prefer => Pg::Prefer,
-                SslMode::Require => Pg::Require,
-            });
+        c.host(&self.host).port(self.port).dbname(&self.database).user(&self.user).application_name("rustflake").connect_timeout(Duration::from_secs(10)).ssl_mode(match self.ssl {
+            SslMode::Disable => Pg::Disable,
+            SslMode::Prefer => Pg::Prefer,
+            SslMode::Require => Pg::Require,
+        });
         if let Some(p) = password {
             c.password(p);
         }
@@ -219,11 +213,7 @@ pub fn conn_scripts(root: &Path, id: &str) -> Result<Vec<PathBuf>, DbError> {
 }
 
 fn sql_files(dir: &Path) -> Result<Vec<PathBuf>, DbError> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(io)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "sql"))
-        .collect();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir).map_err(io)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "sql")).collect();
     files.sort();
     Ok(files)
 }
@@ -477,12 +467,7 @@ mod tests {
     fn ssh_block_round_trips_and_old_files_still_load() {
         let path = tmp("ssh");
         let mut c = sample();
-        c.ssh = Some(SshConfig {
-            host: "prod-bastion".into(),
-            user: Some("deploy".into()),
-            port: None,
-            identity_file: Some("~/.ssh/id_ed25519".into()),
-        });
+        c.ssh = Some(SshConfig { host: "prod-bastion".into(), user: Some("deploy".into()), port: None, identity_file: Some("~/.ssh/id_ed25519".into()) });
         let cfg = ConfigFile { connections: vec![c] };
         save(&path, &cfg).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -503,7 +488,6 @@ mod tests {
         assert_eq!(load_settings(&path).language, Language::Auto);
         assert_eq!(load_settings(&path.with_file_name("missing.toml")).language, Language::Auto);
     }
-
 
     #[test]
     fn missing_file_is_empty_config() {

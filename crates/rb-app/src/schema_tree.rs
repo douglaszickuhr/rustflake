@@ -219,11 +219,7 @@ fn build_items(c: &MetaCache, expanded: &HashSet<SharedString>) -> Vec<TreeItem>
             .map(|db| {
                 let did = id(&["d", db]);
                 let prefix = format!("{db}.");
-                let children = if c.loaded_dbs.contains(db) {
-                    c.schemas.iter().filter_map(|k| k.strip_prefix(&prefix).map(|s| schema_item(c, k, s, expanded))).collect()
-                } else {
-                    vec![loading(&did)]
-                };
+                let children = if c.loaded_dbs.contains(db) { c.schemas.iter().filter_map(|k| k.strip_prefix(&prefix).map(|s| schema_item(c, k, s, expanded))).collect() } else { vec![loading(&did)] };
                 TreeItem::new(did.clone(), db.clone()).expanded(open(&did)).children(children)
             })
             .collect();
@@ -263,9 +259,11 @@ fn relation(c: &MetaCache, schema: &str, rel: &str, expanded: &HashSet<SharedStr
     let children = match (c.columns.get(&key), c.indexes.get(&key)) {
         (Some(cols), idx) => {
             let cg = id(&["cg", schema, rel]);
-            let mut groups = vec![TreeItem::new(cg.clone(), format!("{} ({})", t!("tree.columns"), cols.len())).expanded(expanded.contains(&cg)).children(
-                cols.iter().map(|col| TreeItem::new(id(&["c", schema, rel, &col.name]), col.name.clone())),
-            )];
+            let mut groups = vec![
+                TreeItem::new(cg.clone(), format!("{} ({})", t!("tree.columns"), cols.len()))
+                    .expanded(expanded.contains(&cg))
+                    .children(cols.iter().map(|col| TreeItem::new(id(&["c", schema, rel, &col.name]), col.name.clone()))),
+            ];
             if c.dialect == Dialect::Postgres
                 && let Some(idx) = idx
             {
@@ -293,9 +291,7 @@ impl Render for SchemaTree {
             .on_action(cx.listener(|t, _: &RefreshNode, _, cx| t.refresh(cx)))
             // The tree does not focus itself on click; without focus F5 never gets here.
             .on_mouse_down(MouseButton::Left, cx.listener(|t, _, window, cx| t.state.update(cx, |s, cx| s.focus(window, cx))))
-            .child(tree(
-            &self.state,
-            move |ix, entry, selected, _window, cx| {
+            .child(tree(&self.state, move |ix, entry, selected, _window, cx| {
                 let node = entry.item().id.clone();
                 let open = open.clone();
                 let (kind, detail) = describe(&node, &meta.read(cx).cache);
@@ -309,15 +305,8 @@ impl Render for SchemaTree {
                     .whitespace_nowrap()
                     .when_some(kind.icon(entry.is_expanded()), |r, icon| r.child(Icon::new(icon).small().text_color(icon_color)))
                     // With a detail (column type), the name stays whole and the detail is what gets truncated.
-                    .child(
-                        div()
-                            .when(detail.is_some(), |d| d.flex_shrink_0())
-                            .when(detail.is_none(), |d| d.min_w_0().overflow_hidden().text_ellipsis())
-                            .child(entry.item().label.clone()),
-                    )
-                    .when_some(detail, |r, d| {
-                        r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(d))
-                    });
+                    .child(div().when(detail.is_some(), |d| d.flex_shrink_0()).when(detail.is_none(), |d| d.min_w_0().overflow_hidden().text_ellipsis()).child(entry.item().label.clone()))
+                    .when_some(detail, |r, d| r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(d)));
                 let is_rel = node.starts_with(&format!("r{SEP}"));
                 ListItem::new(ix)
                     .selected(selected)
@@ -325,19 +314,22 @@ impl Render for SchemaTree {
                     .child(row)
                     // The tree expands/collapses on every mouse_down: on a double click the second one would collapse
                     // the table that was just expanded. It is left only for opening the tab.
-                    .when(is_rel, |li| li.on_mouse_down(MouseButton::Left, |ev, _, cx| if ev.click_count >= 2 { cx.stop_propagation() }))
-                    .on_click(
-                    move |ev, window, cx| {
+                    .when(is_rel, |li| {
+                        li.on_mouse_down(MouseButton::Left, |ev, _, cx| {
+                            if ev.click_count >= 2 {
+                                cx.stop_propagation()
+                            }
+                        })
+                    })
+                    .on_click(move |ev, window, cx| {
                         let parts: Vec<&str> = node.split(SEP).collect();
                         if ev.click_count() == 2
                             && let ["r", schema, rel] = parts.as_slice()
                         {
                             open(schema.to_string(), rel.to_string(), window, cx);
                         }
-                    },
-                )
-            },
-        ))
+                    })
+            }))
     }
 }
 
@@ -352,19 +344,8 @@ mod tests {
 
     fn cache() -> MetaCache {
         let mut c = MetaCache::default();
-        c.objects.insert(
-            "public".into(),
-            SchemaObjects { tables: vec!["t".into()], views: vec!["v".into()], matviews: vec!["m".into()], functions: vec!["f()".into()] },
-        );
-        let col = |name: &str, pk: bool| ColumnMeta {
-            name: name.into(),
-            type_name: "integer".into(),
-            cast_type: "integer".into(),
-            nullable: !pk,
-            default: None,
-            is_pk: pk,
-            generated: false,
-        };
+        c.objects.insert("public".into(), SchemaObjects { tables: vec!["t".into()], views: vec!["v".into()], matviews: vec!["m".into()], functions: vec!["f()".into()] });
+        let col = |name: &str, pk: bool| ColumnMeta { name: name.into(), type_name: "integer".into(), cast_type: "integer".into(), nullable: !pk, default: None, is_pk: pk, generated: false };
         c.columns.insert(("public".into(), "t".into()), vec![col("id", true), col("n", false)]);
         c
     }

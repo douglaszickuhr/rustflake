@@ -522,4 +522,3 @@ mod tests {
         assert!(load_all(Path::new("/nonexistent/rb")).0.is_empty());
     }
 }
-

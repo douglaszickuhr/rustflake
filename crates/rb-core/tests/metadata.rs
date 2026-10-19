@@ -12,9 +12,7 @@ fn catalog_queries_cover_tree_and_autocomplete() {
     block_on(async {
         for sql in [
             format!("create schema {q}"),
-            format!(
-                "create table {q}.\"Order Items\" (id int primary key, \"Name\" text not null, total numeric default 0, twice int generated always as (id * 2) stored)"
-            ),
+            format!("create table {q}.\"Order Items\" (id int primary key, \"Name\" text not null, total numeric default 0, twice int generated always as (id * 2) stored)"),
             format!("create index items_name on {q}.\"Order Items\" (\"Name\")"),
             format!("create view {q}.v_items as select id from {q}.\"Order Items\""),
             format!("create materialized view {q}.mv_items as select id from {q}.\"Order Items\""),

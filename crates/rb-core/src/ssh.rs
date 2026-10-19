@@ -59,8 +59,7 @@ fn keyword(line: &str) -> Option<(String, &str)> {
     let l = line.trim_start();
     let end = l.find(|c: char| c.is_whitespace() || c == '=').unwrap_or(l.len());
     let (k, rest) = l.split_at(end);
-    (!k.is_empty() && !k.starts_with('#'))
-        .then(|| (k.to_ascii_lowercase(), rest.trim_start_matches(|c: char| c.is_whitespace() || c == '=').trim_end()))
+    (!k.is_empty() && !k.starts_with('#')).then(|| (k.to_ascii_lowercase(), rest.trim_start_matches(|c: char| c.is_whitespace() || c == '=').trim_end()))
 }
 
 /// Files of an `Include`; a relative path is relative to `~/.ssh`, as in OpenSSH.
@@ -72,13 +71,8 @@ fn include_paths(pattern: &str, home: &Path) -> Vec<PathBuf> {
         return vec![path];
     }
     let Some(dir) = path.parent() else { return Vec::new() };
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.file_name().is_some_and(|n| wildcard(name.as_bytes(), n.as_encoded_bytes())))
-        .collect();
+    let mut found: Vec<PathBuf> =
+        std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| wildcard(name.as_bytes(), n.as_encoded_bytes()))).collect();
     found.sort();
     found
 }
@@ -191,11 +185,7 @@ impl SshConfig {
             None => p.identity_files,
         };
         let identities_explicit = !configured.is_empty();
-        let identity_files = if identities_explicit {
-            configured
-        } else {
-            DEFAULT_KEYS.iter().map(|k| env.home.join(".ssh").join(k)).filter(|p| p.exists()).collect()
-        };
+        let identity_files = if identities_explicit { configured } else { DEFAULT_KEYS.iter().map(|k| env.home.join(".ssh").join(k)).filter(|p| p.exists()).collect() };
         Ok(SshTarget {
             hostname: p.host_name.unwrap_or_else(|| self.host.clone()),
             port: self.port.or(p.port).unwrap_or(22),
@@ -238,9 +228,7 @@ impl client::Handler for Checker {
                 fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
                 key: key.to_openssh().map_err(|e| DbError::Ssh(e.to_string()))?,
             }),
-            Err(russh::keys::Error::KeyChanged { line }) => Err(DbError::Ssh(
-                t!("err.ssh.host_key_changed", host = self.host, file = self.known_hosts.display(), line = line).to_string(),
-            )),
+            Err(russh::keys::Error::KeyChanged { line }) => Err(DbError::Ssh(t!("err.ssh.host_key_changed", host = self.host, file = self.known_hosts.display(), line = line).to_string())),
             Err(e) => Err(DbError::Ssh(format!("{}: {e}", self.known_hosts.display()))),
         }
     }
@@ -286,16 +274,10 @@ async fn open_session(t: &SshTarget, passphrase: Option<&str>) -> Result<Handle<
         .map_err(|_| unreachable(t!("err.ssh.timeout").to_string()))?
         .map_err(|e| unreachable(e.to_string()))?;
     let _ = tcp.set_nodelay(true);
-    let mut config = client::Config {
-        keepalive_interval: Some(Duration::from_secs(30)),
-        keepalive_max: 3,
-        ..Default::default()
-    };
+    let mut config = client::Config { keepalive_interval: Some(Duration::from_secs(30)), keepalive_max: 3, ..Default::default() };
     prefer_known_key_types(&mut config, t);
     let checker = Checker { host: t.hostname.clone(), port: t.port, known_hosts: t.known_hosts.clone() };
-    let mut h = tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(Arc::new(config), tcp, checker))
-        .await
-        .map_err(|_| unreachable(t!("err.ssh.handshake_timeout").to_string()))??;
+    let mut h = tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(Arc::new(config), tcp, checker)).await.map_err(|_| unreachable(t!("err.ssh.handshake_timeout").to_string()))??;
     authenticate(&mut h, t, passphrase).await?;
     Ok(h)
 }
@@ -307,11 +289,7 @@ fn prefer_known_key_types(config: &mut client::Config, t: &SshTarget) {
         Algorithm::Rsa { .. } => Algorithm::Rsa { hash: None },
         other => other.clone(),
     };
-    let known: Vec<Algorithm> = russh::keys::known_hosts::known_host_keys_path(&t.hostname, t.port, &t.known_hosts)
-        .unwrap_or_default()
-        .iter()
-        .map(|(_, k)| family(&k.algorithm()))
-        .collect();
+    let known: Vec<Algorithm> = russh::keys::known_hosts::known_host_keys_path(&t.hostname, t.port, &t.known_hosts).unwrap_or_default().iter().map(|(_, k)| family(&k.algorithm())).collect();
     if known.is_empty() {
         return;
     }
@@ -324,9 +302,7 @@ fn prefer_known_key_types(config: &mut client::Config, t: &SshTarget) {
 fn public_key_of(path: &Path) -> Option<PublicKey> {
     let mut pub_path = path.as_os_str().to_owned();
     pub_path.push(".pub");
-    PublicKey::read_openssh_file(Path::new(&pub_path))
-        .ok()
-        .or_else(|| russh::keys::load_secret_key(path, None).ok().map(|k| k.public_key().clone()))
+    PublicKey::read_openssh_file(Path::new(&pub_path)).ok().or_else(|| russh::keys::load_secret_key(path, None).ok().map(|k| k.public_key().clone()))
 }
 
 fn load_key(path: &Path, passphrase: Option<&str>) -> Result<PrivateKey, DbError> {
@@ -355,11 +331,7 @@ async fn authenticate(h: &mut Handle<Checker>, t: &SshTarget, passphrase: Option
         None => Vec::new(),
     };
     let in_agent = |k: &PublicKey| agent_keys.iter().any(|a| a.key_data() == k.key_data());
-    let via_agent: Vec<PublicKey> = if t.identities_explicit {
-        t.identity_files.iter().filter_map(|f| public_key_of(f)).filter(|k| in_agent(k)).collect()
-    } else {
-        agent_keys.clone()
-    };
+    let via_agent: Vec<PublicKey> = if t.identities_explicit { t.identity_files.iter().filter_map(|f| public_key_of(f)).filter(|k| in_agent(k)).collect() } else { agent_keys.clone() };
     let rsa_hash = h.best_supported_rsa_hash().await?.flatten();
     let hash_for = |k: &PublicKey| if k.algorithm().is_rsa() { rsa_hash } else { None };
 
@@ -403,8 +375,7 @@ async fn authenticate(h: &mut Handle<Checker>, t: &SshTarget, passphrase: Option
 /// Writes the host key to known_hosts, after the user confirmed the fingerprint.
 pub fn trust_host(known_hosts: &Path, host: &str, port: u16, key: &str) -> Result<(), DbError> {
     let key = PublicKey::from_openssh(key).map_err(|e| DbError::Ssh(e.to_string()))?;
-    russh::keys::known_hosts::learn_known_hosts_path(host, port, &key, known_hosts)
-        .map_err(|e| DbError::Ssh(format!("{}: {e}", known_hosts.display())))
+    russh::keys::known_hosts::learn_known_hosts_path(host, port, &key, known_hosts).map_err(|e| DbError::Ssh(format!("{}: {e}", known_hosts.display())))
 }
 
 #[cfg(test)]
@@ -421,13 +392,7 @@ mod tests {
         if let Some(text) = config {
             std::fs::write(home.join(".ssh/config"), text).unwrap();
         }
-        SshEnv {
-            config_file: home.join(".ssh/config"),
-            known_hosts: home.join(".ssh/known_hosts"),
-            agent: None,
-            user: "eu".into(),
-            home,
-        }
+        SshEnv { config_file: home.join(".ssh/config"), known_hosts: home.join(".ssh/known_hosts"), agent: None, user: "eu".into(), home }
     }
 
     #[test]
@@ -463,12 +428,7 @@ mod tests {
     #[test]
     fn toml_fields_win_over_ssh_config() {
         let env = env_with(Some(CONFIG));
-        let cfg = SshConfig {
-            host: "prod-bastion".into(),
-            user: Some("other".into()),
-            port: Some(22),
-            identity_file: Some("~/.ssh/other".into()),
-        };
+        let cfg = SshConfig { host: "prod-bastion".into(), user: Some("other".into()), port: Some(22), identity_file: Some("~/.ssh/other".into()) };
         let t = cfg.resolve(&env).unwrap();
         assert_eq!((t.hostname.as_str(), t.port, t.user.as_str()), ("10.0.0.5", 22, "other"));
         assert_eq!(t.identity_files, vec![env.home.join(".ssh/other")]);
@@ -503,7 +463,10 @@ mod tests {
         let text = "User global\nHost web-* !web-old\n  HostName %h.example.com\n  IdentityFile ~/.ssh/web\n  Port 2222\nHost *\n  HostName ignored\n  User later\n  Port 1\n  IdentityFile /k/all\n";
         let home = Path::new("/h");
         let p = query(text, "WEB-1", home).unwrap();
-        assert_eq!(p, HostParams { host_name: Some("WEB-1.example.com".into()), port: Some(2222), user: Some("global".into()), identity_files: vec![PathBuf::from("/h/.ssh/web"), PathBuf::from("/k/all")] });
+        assert_eq!(
+            p,
+            HostParams { host_name: Some("WEB-1.example.com".into()), port: Some(2222), user: Some("global".into()), identity_files: vec![PathBuf::from("/h/.ssh/web"), PathBuf::from("/k/all")] }
+        );
         assert_eq!(query(text, "web-old", home).unwrap().host_name.as_deref(), Some("ignored"), "negated pattern skips the block");
         assert!(query("Port x\n", "a", home).is_err());
     }

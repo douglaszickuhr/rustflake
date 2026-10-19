@@ -125,7 +125,9 @@ impl PlanView {
     fn render_overview(&self, p: &Profile, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let head = |s: String| div().pt_2().font_weight(FontWeight::SEMIBOLD).child(s);
-        let row = |k: String, v: String| h_flex().justify_between().gap_2().text_sm().child(div().text_color(theme.muted_foreground).child(k)).child(div().font_family(theme.mono_font_family.clone()).child(v));
+        let row = |k: String, v: String| {
+            h_flex().justify_between().gap_2().text_sm().child(div().text_color(theme.muted_foreground).child(k)).child(div().font_family(theme.mono_font_family.clone()).child(v))
+        };
         let mut out = v_flex().gap_2();
 
         let top = top_nodes(&self.plan.root, 5);
@@ -361,11 +363,7 @@ impl Render for PlanView {
             PlanNote::NoCost { .. } => t!("plan.note_no_cost").to_string(),
             PlanNote::Cached => t!("plan.note_cached").to_string(),
         });
-        let header = if self.plan.analyzed {
-            t!("plan.real", time = self.plan.total_ms.map_or(String::new(), |ms| format!("{ms:.1} ms"))).to_string()
-        } else {
-            t!("plan.estimated").to_string()
-        };
+        let header = if self.plan.analyzed { t!("plan.real", time = self.plan.total_ms.map_or(String::new(), |ms| format!("{ms:.1} ms"))).to_string() } else { t!("plan.estimated").to_string() };
         let viewport = self.viewport.clone();
         let content = div().relative().w(px(w * z)).h(px(h * z)).child(arrows).children(labels).children(boxes);
         v_flex()
@@ -392,12 +390,18 @@ impl Render for PlanView {
                             .p(px(PAD))
                             .child(canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
                             // ⌘ + scroll zooms; registered on a child to run before the area's scrolling.
-                            .child(div().min_w_full().min_h_full().on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
-                                if ev.modifiers.platform {
-                                    cx.stop_propagation();
-                                    v.wheel(ev, cx);
-                                }
-                            })).child(content)),
+                            .child(
+                                div()
+                                    .min_w_full()
+                                    .min_h_full()
+                                    .on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
+                                        if ev.modifiers.platform {
+                                            cx.stop_propagation();
+                                            v.wheel(ev, cx);
+                                        }
+                                    }))
+                                    .child(content),
+                            ),
                     )
                     .child(div().id("plan-details").w(px(280.)).h_full().overflow_y_scroll().border_l_1().border_color(theme.border).p_3().child(self.render_details(cx))),
             )

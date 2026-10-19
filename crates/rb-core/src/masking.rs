@@ -33,7 +33,5 @@ pub struct TagCount {
 pub async fn tag_counts(s: &Session, org: &OrgConfig) -> Result<Vec<TagCount>, DbError> {
     let Some(sql) = org.tag_counts_sql() else { return Ok(Vec::new()) };
     let (names, rows) = s.query_named(&sql).await?;
-    Ok(named(&names, &rows)
-        .filter_map(|r| Some(TagCount { database: r.text("database")?, schema: r.text("schema")?, value: r.text("value")?, columns: r.get("columns")?.parse().ok()? }))
-        .collect())
+    Ok(named(&names, &rows).filter_map(|r| Some(TagCount { database: r.text("database")?, schema: r.text("schema")?, value: r.text("value")?, columns: r.get("columns")?.parse().ok()? })).collect())
 }

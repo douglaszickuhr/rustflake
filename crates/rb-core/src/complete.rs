@@ -32,29 +32,106 @@ pub struct Completion {
 }
 
 const KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "IS", "IN", "LIKE", "ILIKE", "BETWEEN",
-    "EXISTS", "JOIN", "LEFT JOIN", "INNER JOIN", "ON", "GROUP BY", "ORDER BY", "HAVING", "LIMIT",
-    "OFFSET", "DISTINCT", "AS", "CASE", "WHEN", "THEN", "ELSE", "END", "INSERT INTO", "VALUES",
-    "UPDATE", "SET", "DELETE FROM", "WITH", "UNION ALL", "CREATE TABLE", "ALTER TABLE",
-    "DROP TABLE", "ASC", "DESC", "COUNT", "COALESCE", "CAST",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "AND",
+    "OR",
+    "NOT",
+    "NULL",
+    "IS",
+    "IN",
+    "LIKE",
+    "ILIKE",
+    "BETWEEN",
+    "EXISTS",
+    "JOIN",
+    "LEFT JOIN",
+    "INNER JOIN",
+    "ON",
+    "GROUP BY",
+    "ORDER BY",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "DISTINCT",
+    "AS",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "INSERT INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE FROM",
+    "WITH",
+    "UNION ALL",
+    "CREATE TABLE",
+    "ALTER TABLE",
+    "DROP TABLE",
+    "ASC",
+    "DESC",
+    "COUNT",
+    "COALESCE",
+    "CAST",
 ];
 
-const PG_KEYWORDS: &[&str] = &[
-    "RETURNING", "ON CONFLICT", "CREATE INDEX", "EXPLAIN ANALYZE", "NOW()", "LATERAL",
-];
+const PG_KEYWORDS: &[&str] = &["RETURNING", "ON CONFLICT", "CREATE INDEX", "EXPLAIN ANALYZE", "NOW()", "LATERAL"];
 
 const SF_KEYWORDS: &[&str] = &[
-    "QUALIFY", "LATERAL FLATTEN", "SAMPLE", "MERGE INTO", "CREATE OR REPLACE TABLE", "USE WAREHOUSE",
-    "USE ROLE", "USE DATABASE", "USE SCHEMA", "SHOW TABLES", "DESCRIBE TABLE", "IFF", "TRY_CAST",
-    "PARSE_JSON", "OBJECT_CONSTRUCT", "ARRAY_AGG", "DATEADD", "DATEDIFF", "CURRENT_TIMESTAMP()",
+    "QUALIFY",
+    "LATERAL FLATTEN",
+    "SAMPLE",
+    "MERGE INTO",
+    "CREATE OR REPLACE TABLE",
+    "USE WAREHOUSE",
+    "USE ROLE",
+    "USE DATABASE",
+    "USE SCHEMA",
+    "SHOW TABLES",
+    "DESCRIBE TABLE",
+    "IFF",
+    "TRY_CAST",
+    "PARSE_JSON",
+    "OBJECT_CONSTRUCT",
+    "ARRAY_AGG",
+    "DATEADD",
+    "DATEDIFF",
+    "CURRENT_TIMESTAMP()",
 ];
 
 const TABLE_CONTEXT: &[&str] = &["from", "join", "update", "into", "table"];
 
 const NOT_ALIAS: &[&str] = &[
-    "where", "join", "inner", "left", "right", "full", "cross", "on", "using", "natural", "lateral",
-    "group", "order", "limit", "offset", "set", "values", "select", "having", "window", "union",
-    "except", "intersect", "returning", "fetch", "for", "as",
+    "where",
+    "join",
+    "inner",
+    "left",
+    "right",
+    "full",
+    "cross",
+    "on",
+    "using",
+    "natural",
+    "lateral",
+    "group",
+    "order",
+    "limit",
+    "offset",
+    "set",
+    "values",
+    "select",
+    "having",
+    "window",
+    "union",
+    "except",
+    "intersect",
+    "returning",
+    "fetch",
+    "for",
+    "as",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,24 +273,15 @@ pub fn relation_at(src: &str, cursor: usize, cache: &MetaCache) -> Option<(Range
 }
 
 fn resolve_schema(cache: &MetaCache, table: &str) -> String {
-    cache
-        .search_path
-        .iter()
-        .find(|s| cache.objects.get(*s).is_some_and(|o| o.contains_relation(table)))
-        .or(cache.search_path.first())
-        .cloned()
-        .unwrap_or_else(|| "public".into())
+    cache.search_path.iter().find(|s| cache.objects.get(*s).is_some_and(|o| o.contains_relation(table))).or(cache.search_path.first()).cloned().unwrap_or_else(|| "public".into())
 }
 
 fn push_columns(out: &mut Completion, cache: &MetaCache, r: &TableRef) {
     let schema = r.schema.as_deref().map(|s| cache.schema_key(s)).unwrap_or_else(|| resolve_schema(cache, &r.table));
     match cache.columns.get(&(schema.clone(), r.table.clone())) {
-        Some(cols) => out.candidates.extend(cols.iter().map(|c| Candidate {
-            label: c.name.clone(),
-            insert: cache.dialect.quote(&c.name),
-            kind: CandidateKind::Column,
-            detail: Some(c.type_name.clone()),
-        })),
+        Some(cols) => {
+            out.candidates.extend(cols.iter().map(|c| Candidate { label: c.name.clone(), insert: cache.dialect.quote(&c.name), kind: CandidateKind::Column, detail: Some(c.type_name.clone()) }))
+        }
         None => out.missing.push(MetaRequest::Columns(schema, r.table.clone())),
     }
 }
@@ -328,12 +396,7 @@ mod tests {
         let mut c = MetaCache { search_path: vec!["public".into()], schemas: vec!["public".into(), "Sales".into()], ..Default::default() };
         c.objects.insert(
             "public".into(),
-            SchemaObjects {
-                tables: vec!["Order Items".into(), "orders".into(), "users".into()],
-                views: vec!["active_users".into()],
-                matviews: vec![],
-                functions: vec!["calc_total(integer)".into()],
-            },
+            SchemaObjects { tables: vec!["Order Items".into(), "orders".into(), "users".into()], views: vec!["active_users".into()], matviews: vec![], functions: vec!["calc_total(integer)".into()] },
         );
         c.columns.insert(("public".into(), "users".into()), vec![col("id", "integer"), col("email", "text")]);
         c
@@ -378,10 +441,7 @@ mod tests {
         let mut c = MetaCache { dialect: crate::dialect::Dialect::Snowflake, ..Default::default() };
         c.search_path = vec!["DB.PUBLIC".into()];
         c.schemas = vec!["DB.PUBLIC".into(), "DB.RAW".into()];
-        c.objects.insert(
-            "DB.PUBLIC".into(),
-            SchemaObjects { tables: vec!["ORDERS".into(), "Order Items".into()], ..Default::default() },
-        );
+        c.objects.insert("DB.PUBLIC".into(), SchemaObjects { tables: vec!["ORDERS".into(), "Order Items".into()], ..Default::default() });
         c.objects.insert("DB.RAW".into(), SchemaObjects { tables: vec!["EVENTS".into()], ..Default::default() });
         c.columns.insert(("DB.PUBLIC".into(), "ORDERS".into()), vec![col("ID", "NUMBER(38,0)"), col("status", "VARCHAR")]);
         c

@@ -1,5 +1,5 @@
-use std::cell::Cell;
 use rust_i18n::t;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use std::path::Path;
@@ -147,15 +147,9 @@ impl Fields {
 
 /// Shows as placeholder what `~/.ssh/config` resolves for the typed host.
 fn show_resolved(host: &str, user: &WeakEntity<InputState>, port: &WeakEntity<InputState>, key: &WeakEntity<InputState>, window: &mut Window, cx: &mut App) {
-    let resolved = (!host.is_empty())
-        .then(|| SshConfig { host: host.into(), user: None, port: None, identity_file: None }.resolve(&SshEnv::system()).ok())
-        .flatten();
+    let resolved = (!host.is_empty()).then(|| SshConfig { host: host.into(), user: None, port: None, identity_file: None }.resolve(&SshEnv::system()).ok()).flatten();
     let (u, p, k) = match resolved {
-        Some(t) => (
-            t.user,
-            t.port.to_string(),
-            t.identity_files.first().map_or(t!("conn.default_keys").to_string(), |p| p.display().to_string()),
-        ),
+        Some(t) => (t.user, t.port.to_string(), t.identity_files.first().map_or(t!("conn.default_keys").to_string(), |p| p.display().to_string())),
         None => Default::default(),
     };
     user.update(cx, |s, cx| s.set_placeholder(u, window, cx)).ok();
@@ -427,27 +421,19 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
             }
         };
         let form = v_flex().gap_3().child(bar).child(form);
-        dialog
-            .title(title.clone())
-            .w(px(560.))
-            .child(form)
-            .footer(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(Button::new("conn-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx)))
-                    .child(Button::new("conn-save").label(t!("common.save").to_string()).primary().on_click(move |_, window, cx| {
-                        match f.read(cx) {
-                            Ok((cfg, password, passphrase)) => {
-                                let saved = ws.update(cx, |ws, cx| ws.save_connection(cfg, password, passphrase, window, cx)).unwrap_or(false);
-                                if saved {
-                                    window.close_dialog(cx);
-                                }
-                            }
-                            Err(msg) => window.push_notification(Notification::error(msg), cx),
+        dialog.title(title.clone()).w(px(560.)).child(form).footer(
+            h_flex().justify_end().gap_2().child(Button::new("conn-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx))).child(
+                Button::new("conn-save").label(t!("common.save").to_string()).primary().on_click(move |_, window, cx| match f.read(cx) {
+                    Ok((cfg, password, passphrase)) => {
+                        let saved = ws.update(cx, |ws, cx| ws.save_connection(cfg, password, passphrase, window, cx)).unwrap_or(false);
+                        if saved {
+                            window.close_dialog(cx);
                         }
-                    })),
-            )
+                    }
+                    Err(msg) => window.push_notification(Notification::error(msg), cx),
+                }),
+            ),
+        )
     });
 }
 

@@ -1,19 +1,19 @@
+use rust_i18n::t;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use rust_i18n::t;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{Icon, InteractiveElementExt as _, Selectable as _, Sizable as _, Theme};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex};
+use gpui_kit::component::{Icon, InteractiveElementExt as _, Selectable as _, Sizable as _, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::config::{self, ConfigFile, ConnectionConfig, Language, ThemeChoice};
@@ -25,21 +25,21 @@ use rb_core::session::Credentials;
 use rb_core::ssh::{self, SshEnv};
 
 use crate::admin_tab::{AdminTab, Target};
-use crate::ui::Load;
-use crate::dbt_store::DbtStore;
-use crate::picker::Picker;
-use crate::warehouse_tab::WarehouseTab;
-use rb_core::picker::{list_sql, parse_available_roles, push_recent};
-use crate::indexer::Indexer;
 use crate::appearance::{self, Appearance, palette};
+use crate::dbt_store::DbtStore;
 use crate::frame::{context_parts, env_color};
+use crate::indexer::Indexer;
 use crate::lang::{self, Lang};
 use crate::meta::{ConnTarget, MetaStore};
-use crate::settings;
+use crate::picker::Picker;
 use crate::schema_tree::SchemaTree;
+use crate::settings;
 use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
+use crate::ui::Load;
+use crate::warehouse_tab::WarehouseTab;
 use crate::{CloseTab, Db, EditConnection, NewSqlTab, QuickOpen, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
+use rb_core::picker::{list_sql, parse_available_roles, push_recent};
 
 /// Open connection: its own metadata session and tree; each tab keeps its own session.
 pub struct Open {
@@ -85,11 +85,7 @@ fn logo(cfg: &ConnectionConfig) -> Icon {
 }
 
 pub fn kind_logo(snowflake: bool) -> Icon {
-    if snowflake {
-        Icon::default().path("icons/snowflake-logo.svg").text_color(rgb(0x29b5e8))
-    } else {
-        Icon::default().path("icons/postgresql.svg").text_color(rgb(0x4169e1))
-    }
+    if snowflake { Icon::default().path("icons/snowflake-logo.svg").text_color(rgb(0x29b5e8)) } else { Icon::default().path("icons/postgresql.svg").text_color(rgb(0x4169e1)) }
 }
 
 pub struct Workspace {
@@ -215,11 +211,7 @@ impl Workspace {
                             secrets::set_password(&id, &password)?;
                         }
                         // The dialog's passphrase belongs to the SSH key (Postgres) or the Snowflake key.
-                        let (keep, other) = if is_sf {
-                            (secrets::key_account(&id), secrets::ssh_account(&id))
-                        } else {
-                            (secrets::ssh_account(&id), secrets::key_account(&id))
-                        };
+                        let (keep, other) = if is_sf { (secrets::key_account(&id), secrets::ssh_account(&id)) } else { (secrets::ssh_account(&id), secrets::key_account(&id)) };
                         if !(is_sf || has_ssh) {
                             secrets::delete_password(&keep)?;
                         } else if !passphrase.is_empty() {
@@ -325,9 +317,7 @@ impl Workspace {
                         ws.objects_open = true;
                         ws.on_connected(&id, window, cx);
                     }
-                    Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => {
-                        ws.confirm_trust(&id, host, port, fingerprint, key, window, cx)
-                    }
+                    Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => ws.confirm_trust(&id, host, port, fingerprint, key, window, cx),
                     Err(e) => window.push_notification(Notification::error(t!("ws.connect_failed", error = e).to_string()), cx),
                 }
                 ws.reconnect_next(window, cx);
@@ -636,20 +626,14 @@ impl Workspace {
         let ws = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, _| {
             let (ws, id) = (ws.clone(), c.id.clone());
-            dialog
-                .title(t!("ws.remove_title").to_string())
-                .w(px(420.))
-                .child(t!("ws.remove_confirm", name = c.name).to_string())
-                .footer(
-                    h_flex()
-                        .justify_end()
-                        .gap_2()
-                        .child(Button::new("rm-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx)))
-                        .child(Button::new("rm-ok").label(t!("ws.remove").to_string()).danger().on_click(move |_, window, cx| {
-                            window.close_dialog(cx);
-                            ws.update(cx, |ws, cx| ws.remove_connection(&id, window, cx)).ok();
-                        })),
-                )
+            dialog.title(t!("ws.remove_title").to_string()).w(px(420.)).child(t!("ws.remove_confirm", name = c.name).to_string()).footer(
+                h_flex().justify_end().gap_2().child(Button::new("rm-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx))).child(
+                    Button::new("rm-ok").label(t!("ws.remove").to_string()).danger().on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        ws.update(cx, |ws, cx| ws.remove_connection(&id, window, cx)).ok();
+                    }),
+                ),
+            )
         });
     }
 
@@ -713,26 +697,20 @@ impl Workspace {
         let id = id.to_string();
         window.open_dialog(cx, move |dialog, _, _| {
             let (ws, host, key, id) = (ws.clone(), host.clone(), key.clone(), id.clone());
-            dialog
-                .title(t!("ws.unknown_host_title").to_string())
-                .w(px(480.))
-                .child(t!("ws.unknown_host_body", host = host, port = port, fingerprint = fingerprint).to_string())
-                .footer(
-                    h_flex()
-                        .justify_end()
-                        .gap_2()
-                        .child(Button::new("trust-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx)))
-                        .child(Button::new("trust-ok").label(t!("ws.trust").to_string()).primary().on_click(move |_, window, cx| {
-                            window.close_dialog(cx);
-                            // ponytail: one-line append to known_hosts on the UI thread; small file.
-                            match ssh::trust_host(&SshEnv::system().known_hosts, &host, port, &key) {
-                                Ok(()) => {
-                                    ws.update(cx, |ws, cx| ws.connect(&id, window, cx)).ok();
-                                }
-                                Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+            dialog.title(t!("ws.unknown_host_title").to_string()).w(px(480.)).child(t!("ws.unknown_host_body", host = host, port = port, fingerprint = fingerprint).to_string()).footer(
+                h_flex().justify_end().gap_2().child(Button::new("trust-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx))).child(
+                    Button::new("trust-ok").label(t!("ws.trust").to_string()).primary().on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        // ponytail: one-line append to known_hosts on the UI thread; small file.
+                        match ssh::trust_host(&SshEnv::system().known_hosts, &host, port, &key) {
+                            Ok(()) => {
+                                ws.update(cx, |ws, cx| ws.connect(&id, window, cx)).ok();
                             }
-                        })),
-                )
+                            Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+                        }
+                    }),
+                ),
+            )
         });
     }
 
@@ -772,9 +750,14 @@ impl Workspace {
     fn edit_db_filter(&mut self, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.open_conn(conn_id).map(|o| o.meta.read(cx).cache.db_filter.clone()).unwrap_or_default();
         let (ws, id) = (cx.entity().downgrade(), conn_id.to_string());
-        db_filter::open(current, move |patterns, window, cx| {
-            ws.update(cx, |ws, cx| ws.set_db_filter(&id, patterns, window, cx)).ok();
-        }, window, cx);
+        db_filter::open(
+            current,
+            move |patterns, window, cx| {
+                ws.update(cx, |ws, cx| ws.set_db_filter(&id, patterns, window, cx)).ok();
+            },
+            window,
+            cx,
+        );
     }
 
     /// Saves the filter to the TOML and applies it to the tree and autocomplete, without reconnecting.
@@ -895,86 +878,68 @@ impl Workspace {
             let (labels, active) = (labels.clone(), self.active_tab);
             let ws = cx.entity().downgrade();
             div().on_mouse_down(MouseButton::Left, no_drag).child(
-                Button::new("tabs-more")
-                    .ghost()
-                    .small()
-                    .icon(IconName::ChevronDown)
-                    .label(labels.len().to_string())
-                    .tooltip(t!("ws.all_tabs").to_string())
-                    .dropdown_menu(move |menu, _, _| {
-                        labels.iter().enumerate().fold(menu.scrollable(true), |m, (i, l)| {
-                            let ws = ws.clone();
-                            m.item(PopupMenuItem::new(l.clone()).checked(i == active).on_click(move |_, _, cx| {
-                                ws.update(cx, |ws, cx| ws.select_tab(i, cx)).ok();
-                            }))
-                        })
-                    }),
+                Button::new("tabs-more").ghost().small().icon(IconName::ChevronDown).label(labels.len().to_string()).tooltip(t!("ws.all_tabs").to_string()).dropdown_menu(move |menu, _, _| {
+                    labels.iter().enumerate().fold(menu.scrollable(true), |m, (i, l)| {
+                        let ws = ws.clone();
+                        m.item(PopupMenuItem::new(l.clone()).checked(i == active).on_click(move |_, _, cx| {
+                            ws.update(cx, |ws, cx| ws.select_tab(i, cx)).ok();
+                        }))
+                    })
+                }),
             )
         });
-        let bar = self
-            .tabs
-            .iter()
-            .enumerate()
-            .fold(
-                TabBar::new("tabs")
-                    .max_width(px(width))
-                    .track_scroll(&self.tab_scroll)
-                    .selected_index(self.active_tab)
-                    .on_click(cx.listener(|ws, ix: &usize, _, cx| ws.select_tab(*ix, cx)))
-                    // + right after the last tab; the TabBar only draws that space if there is a suffix.
-                    // The empty space after the tabs also drags the window (the "+" doesn't).
-                    .last_empty_space(
-                        drag_space("drag-tabs", cx).flex_1().child(
-                            div().on_mouse_down(MouseButton::Left, no_drag).child(Button::new("new-tab").label("+").ghost().tooltip(t!("ws.new_script").to_string()).on_click(cx.listener(|ws, _, window, cx| ws.new_sql_tab(window, cx)))),
-                        ),
-                    )
-                    .suffix(div()),
-                |bar, (i, t)| {
-                    let id = t.conn_id(cx);
-                    let cfg = self.connections.iter().find(|c| c.id == id);
-                    let label = labels[i].clone();
-                    // Script: double-click on the name renames the file.
-                    let label = match t {
-                        TabView::Sql(s) => {
-                            let s = s.clone();
-                            div()
-                                .id(("tab-label", i))
-                                .min_w_0()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .tooltip({
-                                    let tip = format!("{label}\n{}", t!("ws.rename_hint"));
-                                    move |w, cx| Tooltip::new(tip.clone()).build(w, cx)
-                                })
-                                .on_double_click(cx.listener(move |_, _, window, cx| rename_script(s.clone(), window, cx)))
-                                .child(label)
-                                .into_any_element()
-                        }
-                        _ => {
-                            let tip = label.clone();
-                            div()
-                                .id(("tab-label", i))
-                                .min_w_0()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
-                                .child(label)
-                                .into_any_element()
-                        }
-                    };
-                    bar.child(
-                        Tab::new()
-                            .when_some(cfg, |tab, c| tab.prefix(div().pl_2().child(logo(c).small())))
+        let bar = self.tabs.iter().enumerate().fold(
+            TabBar::new("tabs")
+                .max_width(px(width))
+                .track_scroll(&self.tab_scroll)
+                .selected_index(self.active_tab)
+                .on_click(cx.listener(|ws, ix: &usize, _, cx| ws.select_tab(*ix, cx)))
+                // + right after the last tab; the TabBar only draws that space if there is a suffix.
+                // The empty space after the tabs also drags the window (the "+" doesn't).
+                .last_empty_space(
+                    drag_space("drag-tabs", cx).flex_1().child(
+                        div()
+                            .on_mouse_down(MouseButton::Left, no_drag)
+                            .child(Button::new("new-tab").label("+").ghost().tooltip(t!("ws.new_script").to_string()).on_click(cx.listener(|ws, _, window, cx| ws.new_sql_tab(window, cx)))),
+                    ),
+                )
+                .suffix(div()),
+            |bar, (i, t)| {
+                let id = t.conn_id(cx);
+                let cfg = self.connections.iter().find(|c| c.id == id);
+                let label = labels[i].clone();
+                // Script: double-click on the name renames the file.
+                let label = match t {
+                    TabView::Sql(s) => {
+                        let s = s.clone();
+                        div()
+                            .id(("tab-label", i))
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .tooltip({
+                                let tip = format!("{label}\n{}", t!("ws.rename_hint"));
+                                move |w, cx| Tooltip::new(tip.clone()).build(w, cx)
+                            })
+                            .on_double_click(cx.listener(move |_, _, window, cx| rename_script(s.clone(), window, cx)))
                             .child(label)
-                            .suffix(Button::new(("close", i)).label("×").ghost().tooltip(t!("ws.close_tab").to_string()).on_click(cx.listener(move |ws, _, window, cx| {
-                                // Without this the click bubbles up to the tab, which would do active_tab = i after the removal
-                                // (nonexistent index when closing the last tab → panic in render).
-                                cx.stop_propagation();
-                                ws.close_tab(i, window, cx)
-                            }))),
-                    )
-                },
-            );
+                            .into_any_element()
+                    }
+                    _ => {
+                        let tip = label.clone();
+                        div().id(("tab-label", i)).min_w_0().whitespace_nowrap().text_ellipsis().tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx)).child(label).into_any_element()
+                    }
+                };
+                bar.child(Tab::new().when_some(cfg, |tab, c| tab.prefix(div().pl_2().child(logo(c).small()))).child(label).suffix(
+                    Button::new(("close", i)).label("×").ghost().tooltip(t!("ws.close_tab").to_string()).on_click(cx.listener(move |ws, _, window, cx| {
+                        // Without this the click bubbles up to the tab, which would do active_tab = i after the removal
+                        // (nonexistent index when closing the last tab → panic in render).
+                        cx.stop_propagation();
+                        ws.close_tab(i, window, cx)
+                    })),
+                ))
+            },
+        );
         // Measures the bar's real width; if it changed (window resized), redraw.
         let w = self.tab_bar_w.clone();
         let measure = canvas(
@@ -1022,7 +987,9 @@ impl Workspace {
             .child(div().id("title-tabs").flex_1().min_w_0().overflow_hidden().on_mouse_down(MouseButton::Left, no_drag).child(self.render_tab_bar(cx)))
             .child(
                 h_flex().flex_shrink_0().justify_end().child(
-                    div().on_mouse_down(MouseButton::Left, no_drag).child(Button::new("goto").outline().small().icon(IconName::Search).label(format!("{}  ⌘K", t!("frame.go_to"))).on_click(cx.listener(|ws, _, w, cx| ws.quick_open(w, cx)))),
+                    div()
+                        .on_mouse_down(MouseButton::Left, no_drag)
+                        .child(Button::new("goto").outline().small().icon(IconName::Search).label(format!("{}  ⌘K", t!("frame.go_to"))).on_click(cx.listener(|ws, _, w, cx| ws.quick_open(w, cx)))),
                 ),
             )
     }
@@ -1073,10 +1040,12 @@ impl Workspace {
             let has_db = o.meta.read(cx).cache.current_db().is_some();
             for kind in ["role", "warehouse", "database", "schema"].into_iter().filter(|k| *k != "schema" || has_db) {
                 let (id, cl) = (id.clone(), close.clone());
-                menu = menu.child(side_item(ElementId::Name(format!("m-ctx-{kind}").into()), None, t!("ws.choose", kind = kind_label(kind)).to_string(), false, cx).on_click(cx.listener(move |ws, _, w, cx| {
-                    cl(w, cx);
-                    ws.pick_context(&id, kind, w, cx)
-                })));
+                menu = menu.child(side_item(ElementId::Name(format!("m-ctx-{kind}").into()), None, t!("ws.choose", kind = kind_label(kind)).to_string(), false, cx).on_click(cx.listener(
+                    move |ws, _, w, cx| {
+                        cl(w, cx);
+                        ws.pick_context(&id, kind, w, cx)
+                    },
+                )));
             }
         }
         menu.into_any_element()
@@ -1161,7 +1130,9 @@ impl Workspace {
                     .gap_1()
                     .child(side_item(("e-conn", ix), Some(logo(c)), c.name.clone(), false, cx).flex_1().on_click(cx.listener(move |ws, _, w, cx| ws.connect(&id1, w, cx))))
                     .when_some(c.environment, |d, e| d.child(div().text_xs().text_color(theme.muted_foreground).child(e.label())))
-                    .child(Button::new(("e-edit", ix)).label("✎").ghost().xsmall().tooltip(t!("conn.edit_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| ws.edit_connection(&id2, w, cx))))
+                    .child(
+                        Button::new(("e-edit", ix)).label("✎").ghost().xsmall().tooltip(t!("conn.edit_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| ws.edit_connection(&id2, w, cx))),
+                    )
                     .child(Button::new(("e-del", ix)).label("×").ghost().xsmall().tooltip(t!("ws.remove_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| ws.confirm_remove(&id3, w, cx)))),
             );
         }

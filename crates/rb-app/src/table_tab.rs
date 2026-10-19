@@ -1,10 +1,10 @@
-use std::rc::Rc;
 use rust_i18n::t;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableSelection, TableState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -20,11 +20,11 @@ use std::collections::HashMap;
 
 use rb_core::table_info::{ColInfo, Facts, LinNode};
 
-use crate::ui::Load;
 use crate::dbt_store::DbtStore;
 use crate::grid::{self, ResultGrid};
 use crate::lang::Lang;
 use crate::meta::{ConnTarget, MetaStore};
+use crate::ui::Load;
 use crate::{CancelQuery, CopyCells, Db, SaveEdits};
 
 /// Opens a SQL tab with the text (Query button).
@@ -140,7 +140,17 @@ pub struct TableTab {
 
 impl TableTab {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(schema: String, table: String, conn: ConnTarget, meta: Entity<MetaStore>, dbt: Option<Entity<DbtStore>>, open_query: OpenQuery, open_table: crate::schema_tree::OpenTable, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        schema: String,
+        table: String,
+        conn: ConnTarget,
+        meta: Entity<MetaStore>,
+        dbt: Option<Entity<DbtStore>>,
+        open_query: OpenQuery,
+        open_table: crate::schema_tree::OpenTable,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("table.filter_placeholder").to_string()));
         let grid = cx.new(|cx| TableState::new(ResultGrid::new(true), window, cx).cell_selectable(true));
 
@@ -398,16 +408,7 @@ impl TableTab {
                             })
                             .child(DataTable::new(grid).stripe(true).bordered(true)),
                     )
-                    .child(
-                        h_flex()
-                            .px_2()
-                            .py_1()
-                            .gap_3()
-                            .text_sm()
-                            .when(c.busy, |d| d.child(Spinner::new().small()))
-                            .child(t!("grid.rows", n = rows).to_string())
-                            .child(c.status.clone()),
-                    )
+                    .child(h_flex().px_2().py_1().gap_3().text_sm().when(c.busy, |d| d.child(Spinner::new().small())).child(t!("grid.rows", n = rows).to_string()).child(c.status.clone()))
                     .into_any_element()
             }
             _ => div().into_any_element(),
@@ -581,13 +582,11 @@ impl TableTab {
                             .child(Button::new("save").label(format!("{} ⌘S", t!("common.save"))).primary().disabled(!pending).on_click(cx.listener(|t, _, _, cx| t.save(cx))))
                     }),
             )
-            .child(
-                div()
-                    .key_context("ResultGrid")
-                    .flex_1()
-                    .on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx)))
-                    .child(if self.text_mode { self.text_view.render(&self.grid, window, cx) } else { DataTable::new(&self.grid).stripe(true).bordered(true).into_any_element() }),
-            )
+            .child(div().key_context("ResultGrid").flex_1().on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx))).child(if self.text_mode {
+                self.text_view.render(&self.grid, window, cx)
+            } else {
+                DataTable::new(&self.grid).stripe(true).bordered(true).into_any_element()
+            }))
             .child(
                 h_flex()
                     .px_2()

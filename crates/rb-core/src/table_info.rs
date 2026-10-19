@@ -151,13 +151,7 @@ pub struct DefRow {
 }
 
 /// Snowflake columns rule; dbt comes in through the description (preferred) and the tests.
-pub fn merge(
-    cols: &[ColInfo],
-    dbt_cols: &[(String, String)],
-    tags: &HashMap<String, (u8, String)>,
-    masking: &HashMap<String, String>,
-    tests: &HashMap<String, Vec<String>>,
-) -> Vec<DefRow> {
+pub fn merge(cols: &[ColInfo], dbt_cols: &[(String, String)], tags: &HashMap<String, (u8, String)>, masking: &HashMap<String, String>, tests: &HashMap<String, Vec<String>>) -> Vec<DefRow> {
     let up = |m: &HashMap<String, Vec<String>>| m.iter().map(|(k, v)| (k.to_uppercase(), v.clone())).collect::<HashMap<_, _>>();
     let tests = up(tests);
     cols.iter()
@@ -201,10 +195,7 @@ pub fn summary(rows: &[DefRow]) -> Summary {
 }
 
 pub fn column_lineage_sql(db: &str, schema: &str, table: &str, column: &str) -> String {
-    format!(
-        "select * from table(snowflake.core.get_lineage({}, 'COLUMN', 'UPSTREAM', 5))",
-        sql_str(&format!("{}.{}", fq(db, schema, table), quote_always(column)))
-    )
+    format!("select * from table(snowflake.core.get_lineage({}, 'COLUMN', 'UPSTREAM', 5))", sql_str(&format!("{}.{}", fq(db, schema, table), quote_always(column))))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -225,7 +216,11 @@ pub fn parse_column_lineage(names: &[String], rows: &Rows) -> Vec<LinNode> {
         let (db, schema) = (r.text("source_object_database").unwrap_or_default(), r.text("source_object_schema").unwrap_or_default());
         // Self-edge only if it is truly the same object (database and schema too).
         let same = |c: &str, v: &str| r.text(c).is_none_or(|x| x == v);
-        if same("target_object_database", &db) && same("target_object_schema", &schema) && Some(&object) == r.text("target_object_name").as_ref() && Some(&column) == r.text("target_column_name").as_ref() {
+        if same("target_object_database", &db)
+            && same("target_object_schema", &schema)
+            && Some(&object) == r.text("target_object_name").as_ref()
+            && Some(&column) == r.text("target_column_name").as_ref()
+        {
             continue;
         }
         let distance = r.text("distance").and_then(|d| d.parse().ok()).unwrap_or(0);
@@ -294,7 +289,10 @@ mod tests {
     fn only_the_classification_tag_and_masking_policies_count() {
         let (n, r) = t(
             &["COLUMN_NAME", "TAG_NAME", "TAG_VALUE", "TAG_DATABASE", "TAG_SCHEMA"],
-            &[&[Some("A"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("GOVERNANCE"), Some("TAGS")], &[Some("B"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("OTHER"), Some("TAGS")]],
+            &[
+                &[Some("A"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("GOVERNANCE"), Some("TAGS")],
+                &[Some("B"), Some("DATA_CLASSIFICATION"), Some("C-3 Confidential"), Some("OTHER"), Some("TAGS")],
+            ],
         );
         let tg = parse_class_tags(&crate::org_config::acme(), &n, &r);
         assert_eq!(tg.len(), 1, "same name in another database is not the org's tag");
@@ -329,7 +327,17 @@ mod tests {
     #[test]
     fn same_named_objects_in_other_databases_are_distinct() {
         let (n, r) = t(
-            &["SOURCE_OBJECT_DATABASE", "SOURCE_OBJECT_SCHEMA", "SOURCE_OBJECT_NAME", "SOURCE_COLUMN_NAME", "TARGET_OBJECT_DATABASE", "TARGET_OBJECT_SCHEMA", "TARGET_OBJECT_NAME", "TARGET_COLUMN_NAME", "DISTANCE"],
+            &[
+                "SOURCE_OBJECT_DATABASE",
+                "SOURCE_OBJECT_SCHEMA",
+                "SOURCE_OBJECT_NAME",
+                "SOURCE_COLUMN_NAME",
+                "TARGET_OBJECT_DATABASE",
+                "TARGET_OBJECT_SCHEMA",
+                "TARGET_OBJECT_NAME",
+                "TARGET_COLUMN_NAME",
+                "DISTANCE",
+            ],
             &[
                 &[Some("RAW"), Some("S"), Some("ORDERS"), Some("ID"), Some("STG"), Some("S"), Some("ORDERS"), Some("ID"), Some("2")],
                 &[Some("STG"), Some("S"), Some("ORDERS"), Some("ID"), Some("M"), Some("S"), Some("ORDERS"), Some("ID"), Some("1")],

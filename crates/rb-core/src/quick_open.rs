@@ -82,7 +82,15 @@ pub fn rank(hits: Vec<Hit>, text: &str) -> Vec<Hit> {
         .into_iter()
         .filter_map(|h| {
             let n = h.name.to_uppercase();
-            let tier = if n == q { 0 } else if n.starts_with(&q) { 1 } else if n.contains(&q) { 2 } else { return None };
+            let tier = if n == q {
+                0
+            } else if n.starts_with(&q) {
+                1
+            } else if n.contains(&q) {
+                2
+            } else {
+                return None;
+            };
             Some((tier, n.len(), h))
         })
         .collect();
@@ -159,11 +167,7 @@ pub fn refresh_plan(d: &IndexDiff, cache: &MetaCache) -> RefreshPlan {
     let loaded = |s: &&String| cache.objects.contains_key(*s);
     let dbs = d.changed_dbs.iter().filter(|db| cache.loaded_dbs.contains(*db)).map(|db| MetaRequest::Schemas(db.clone()));
     let schemas = d.changed_schemas.iter().filter(loaded).filter(|s| !d.removed_schemas.contains(*s)).map(|s| MetaRequest::Objects(s.clone()));
-    RefreshPlan {
-        reload: dbs.chain(schemas).collect(),
-        drop_schemas: d.removed_schemas.iter().filter(loaded).cloned().collect(),
-        reload_roots: !d.changed_dbs.is_empty(),
-    }
+    RefreshPlan { reload: dbs.chain(schemas).collect(), drop_schemas: d.removed_schemas.iter().filter(loaded).cloned().collect(), reload_roots: !d.changed_dbs.is_empty() }
 }
 
 /// Local search: visible databases (from the cache), schemas and index objects in the visible databases.
@@ -196,13 +200,7 @@ pub async fn pg_search(s: &Session, text: &str) -> Result<Vec<Hit>, DbError> {
             let (kind, schema, rel) = (r.first()?.clone()?, r.get(1)?.clone()?, r.get(2).cloned().flatten());
             Some(match (kind.as_str(), rel) {
                 ("schema", _) => Hit { kind: HitKind::Schema, matview: false, database: None, schema: None, name: schema },
-                (k, Some(name)) => Hit {
-                    kind: if matches!(k, "v" | "m") { HitKind::View } else { HitKind::Table },
-                    matview: k == "m",
-                    database: None,
-                    schema: Some(schema),
-                    name,
-                },
+                (k, Some(name)) => Hit { kind: if matches!(k, "v" | "m") { HitKind::View } else { HitKind::Table }, matview: k == "m", database: None, schema: Some(schema), name },
                 _ => return None,
             })
         })
