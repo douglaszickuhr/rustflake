@@ -1156,10 +1156,15 @@ en = "%{n} direct roles"
 pt = "%{n} roles diretas"
 es = "%{n} roles directos"
 
+[admin.direct_one]
+en = "1 direct role"
+pt = "1 role direta"
+es = "1 rol directo"
+
 [admin.inherited_loading]
-en = "→ loading inherited…"
-pt = "→ carregando herdadas…"
-es = "→ cargando heredados…"
+en = "→ inherited"
+pt = "→ herdadas"
+es = "→ heredados"
 
 [admin.inherited_n]
 en = "→ %{n} inherited"
@@ -1260,6 +1265,11 @@ es = "monitorizar"
 en = "operate · monitor"
 pt = "operar · monitorar"
 es = "operar · monitorizar"
+
+[admin.one_role]
+en = "1 role"
+pt = "1 role"
+es = "1 rol"
 
 [admin.n_roles]
 en = "%{n} roles"
@@ -2068,6 +2078,31 @@ en = "GitHub: %{repo} · branch %{branch}"
 pt = "GitHub: %{repo} · branch %{branch}"
 es = "GitHub: %{repo} · rama %{branch}"
 
+[tv.matched_by_name_tip]
+en = "The dbt manifest was built for another target: it points at %{relation}. Matched to this table by name."
+pt = "O manifest do dbt é de outro target: aponta para %{relation}. Associado a esta tabela pelo nome."
+es = "El manifest de dbt es de otro target: apunta a %{relation}. Asociado a esta tabla por nombre."
+
+[tv.copy_name]
+en = "%{name} · click to copy"
+pt = "%{name} · clique para copiar"
+es = "%{name} · clic para copiar"
+
+[tv.dbt_tag]
+en = "dbt tag"
+pt = "tag do dbt"
+es = "etiqueta de dbt"
+
+[tv.created_at]
+en = "Created %{at}"
+pt = "Criada em %{at}"
+es = "Creada el %{at}"
+
+[tv.bytes_exact]
+en = "%{n} bytes"
+pt = "%{n} bytes"
+es = "%{n} bytes"
+
 [tv.matched_by_name]
 en = "matched by name (manifest from another target)"
 pt = "casado pelo nome (manifest de outro target)"
@@ -2282,3 +2317,118 @@ es = "Columnas"
 en = "%{n} object(s) on this path are outside the graph"
 pt = "%{n} objeto(s) deste caminho estão fora do gráfico"
 es = "%{n} objeto(s) de este camino están fuera del gráfico"
+
+[keys.all]
+en = "All shortcuts"
+pt = "Todos os atalhos"
+es = "Todos los atajos"
+
+[keys.editor]
+en = "Script editor"
+pt = "Editor de script"
+es = "Editor de script"
+
+[keys.app]
+en = "App"
+pt = "App"
+es = "App"
+
+[keys.results]
+en = "Results and tree"
+pt = "Resultados e árvore"
+es = "Resultados y árbol"
+
+[keys.diagrams]
+en = "Plan and lineage"
+pt = "Plano e lineage"
+es = "Plan y lineage"
+
+[keys.explain_analyze]
+en = "explain analyze (runs it)"
+pt = "explain analyze (executa)"
+es = "explain analyze (lo ejecuta)"
+
+[keys.format]
+en = "format SQL"
+pt = "formatar SQL"
+es = "formatear SQL"
+
+[keys.comment]
+en = "comment / uncomment"
+pt = "comentar / descomentar"
+es = "comentar / descomentar"
+
+[keys.find]
+en = "find"
+pt = "buscar"
+es = "buscar"
+
+[keys.replace]
+en = "find and replace"
+pt = "buscar e substituir"
+es = "buscar y reemplazar"
+
+[keys.complete]
+en = "completions"
+pt = "sugestões"
+es = "sugerencias"
+
+[keys.cancel]
+en = "cancel the running query"
+pt = "cancelar a query em execução"
+es = "cancelar la consulta en curso"
+
+[keys.goto]
+en = "go to anything"
+pt = "ir para qualquer coisa"
+es = "ir a cualquier cosa"
+
+[keys.new_script]
+en = "new script"
+pt = "novo script"
+es = "nuevo script"
+
+[keys.close_tab]
+en = "close tab"
+pt = "fechar aba"
+es = "cerrar pestaña"
+
+[keys.history]
+en = "query history"
+pt = "histórico de queries"
+es = "historial de consultas"
+
+[keys.edit_connection]
+en = "edit the connection"
+pt = "editar a conexão"
+es = "editar la conexión"
+
+[keys.quit]
+en = "quit"
+pt = "sair"
+es = "salir"
+
+[keys.copy]
+en = "copy selected cells"
+pt = "copiar células selecionadas"
+es = "copiar celdas seleccionadas"
+
+[keys.save_edits]
+en = "save table edits"
+pt = "salvar edições da tabela"
+es = "guardar ediciones de la tabla"
+
+[keys.refresh_tree]
+en = "refresh the tree node"
+pt = "atualizar o nó da árvore"
+es = "actualizar el nodo del árbol"
+
+[keys.zoom]
+en = "zoom"
+pt = "zoom"
+es = "zoom"
+
+[keys.fit]
+en = "fit to window"
+pt = "ajustar à janela"
+es = "ajustar a la ventana"

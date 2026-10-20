@@ -61,6 +61,14 @@ struct RawOrgConfig {
     masking: Option<Masking>,
     #[serde(default)]
     tabs: Vec<RawTab>,
+    lineage: Option<RawLineage>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLineage {
+    #[serde(default)]
+    ignore: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -159,6 +167,7 @@ pub struct OrgConfig {
     class: Option<Classification>,
     masking: Masking,
     tabs: Vec<CustomTab>,
+    lineage_ignore: Vec<String>,
 }
 
 impl OrgConfig {
@@ -211,7 +220,15 @@ impl OrgConfig {
             }
             tabs.push(CustomTab { name: r.name, kind, pattern: r.pattern.filter(|p| !p.trim().is_empty()) });
         }
-        Ok(OrgConfig { name: raw.name, rules, class, masking: raw.masking.unwrap_or_default(), tabs })
+        let lineage_ignore = raw.lineage.map(|l| l.ignore).unwrap_or_default();
+        Ok(OrgConfig { name: raw.name, rules, class, masking: raw.masking.unwrap_or_default(), tabs, lineage_ignore })
+    }
+
+    /// Object left out of the lineage graph (`[lineage] ignore`): a glob without a dot matches the
+    /// database (`DEV_*`), with dots the whole `DB.SCHEMA.NAME` (`*.DBT_TEMP*.*`).
+    pub fn lineage_ignored(&self, db: &str, schema: &str, name: &str) -> bool {
+        let full = format!("{db}.{schema}.{name}");
+        self.lineage_ignore.iter().any(|p| crate::metadata::glob_match(p, if p.contains('.') { &full } else { db }))
     }
 
     pub fn name(&self) -> &str {
@@ -566,5 +583,15 @@ mod tests {
         assert_eq!(OrgConfig::none().level_color(3), LevelColor::Muted);
         let e = OrgConfig::parse("name = 'X'\n[classification]\ntag = 'A.B.C'\ncolors = ['red']").unwrap_err();
         assert!(e.contains("red"), "{e}");
+    }
+
+    #[test]
+    fn lineage_ignore_globs() {
+        let a = OrgConfig::parse("name = 'X'\n[lineage]\nignore = ['DEV_*', '*.DBT_TEMP*.*']").unwrap();
+        assert!(a.lineage_ignored("dev_john", "GAINSIGHT", "STG"), "database glob, any case");
+        assert!(a.lineage_ignored("ANALYTICS", "DBT_TEMP_X", "T"), "dotted glob: whole name");
+        assert!(!a.lineage_ignored("MARTS_PROD", "DEV_SCHEMA", "T"), "a database glob doesn't look at the schema");
+        assert!(!OrgConfig::none().lineage_ignored("DEV_X", "S", "T"));
+        assert!(OrgConfig::parse("name = 'X'\n[lineage]\nskip = ['A']").is_err(), "unknown key");
     }
 }

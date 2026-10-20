@@ -124,17 +124,22 @@ impl ResultGrid {
         self.rs.as_ref().filter(|_| row < loaded).and_then(|rs| rs.text(row, col))
     }
 
+    /// `sel` in table columns: column 0 is the row number (see [`ROW_NO`]).
     pub fn copy_selection(&self, sel: TableSelection) -> Option<String> {
         let rs = self.rs.as_ref()?;
         let all: Vec<usize> = (0..rs.columns.len()).collect();
         match sel {
-            TableSelection::Cell(r, c) => Some(self.full_text(r, c).unwrap_or_default()),
+            TableSelection::Cell(r, 0) => Some((r + 1).to_string()),
+            TableSelection::Cell(r, c) => Some(self.full_text(r, c - ROW_NO).unwrap_or_default()),
             TableSelection::Row(r) if r < rs.rows() => Some(rs.to_tsv(r..r + 1, &all)),
-            TableSelection::Column(c) => Some(rs.to_tsv(0..rs.rows(), &[c])),
+            TableSelection::Column(c) if c >= ROW_NO => Some(rs.to_tsv(0..rs.rows(), &[c - ROW_NO])),
             _ => None,
         }
     }
 }
+
+/// Columns before the data in the table: the pinned row number. Table column `c` is data column `c - ROW_NO`.
+pub const ROW_NO: usize = 1;
 
 pub fn copy_to_clipboard(table: &Entity<TableState<ResultGrid>>, cx: &mut App) {
     let t = table.read(cx);
@@ -145,20 +150,31 @@ pub fn copy_to_clipboard(table: &Entity<TableState<ResultGrid>>, cx: &mut App) {
 
 impl TableDelegate for ResultGrid {
     fn columns_count(&self, _: &App) -> usize {
-        self.rs.as_ref().map_or(0, |rs| rs.columns.len())
+        self.rs.as_ref().map_or(0, |rs| rs.columns.len() + ROW_NO)
     }
 
     fn rows_count(&self, _: &App) -> usize {
         self.loaded_rows() + self.edits.as_ref().map_or(0, PendingEdits::inserted_rows)
     }
 
-    fn column(&self, col_ix: usize, _: &App) -> Column {
+    fn column(&self, col_ix: usize, cx: &App) -> Column {
+        if col_ix == 0 {
+            // Wide enough for the biggest number shown.
+            let digits = self.rows_count(cx).max(1).to_string().len() as f32;
+            return Column::new("row-no", "#").width(px(digits * 8. + 20.)).fixed_left().resizable(false).movable(false).text_right();
+        }
+        let col_ix = col_ix - ROW_NO;
         let name = self.rs.as_ref().map_or(String::new(), |rs| rs.columns[col_ix].name.clone());
         let col = Column::new(format!("c{col_ix}"), name).width(px(self.widths.get(col_ix).copied().unwrap_or(120.)));
         if self.sortable { col.sortable() } else { col }
     }
 
     fn render_td(&mut self, row: usize, col: usize, _window: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+        if col == 0 {
+            return div().size_full().text_right().text_color(cx.theme().muted_foreground).child((row + 1).to_string()).into_any_element();
+        }
+        let id_col = col;
+        let col = col - ROW_NO;
         let (text, null, edited, deleted) = self.cell(row, col);
         // ponytail: width estimated at ~7px per character; measure the text if the guess is way off.
         let width = self.widths.get(col).copied().unwrap_or(120.);
@@ -167,7 +183,7 @@ impl TableDelegate for ResultGrid {
         let table = (!null && clipped).then(|| cx.entity().downgrade());
         let cols = self.columns_count(cx);
         div()
-            .id(("cell", row * cols + col))
+            .id(("cell", row * cols + id_col))
             .when_some(table, |d, table| {
                 d.tooltip(move |window, cx| {
                     let full = table.upgrade().and_then(|t| t.read(cx).delegate().full_text(row, col)).unwrap_or_default();
@@ -183,15 +199,16 @@ impl TableDelegate for ResultGrid {
             .when(edited, |d| d.bg(cx.theme().accent))
             .when(deleted, |d| d.line_through().text_color(cx.theme().danger))
             .child(text)
+            .into_any_element()
     }
 
     fn cell_text(&self, row: usize, col: usize, _: &App) -> String {
-        self.full_text(row, col).unwrap_or_default()
+        if col == 0 { (row + 1).to_string() } else { self.full_text(row, col - ROW_NO).unwrap_or_default() }
     }
 
     fn perform_sort(&mut self, col_ix: usize, sort: ColumnSort, window: &mut Window, cx: &mut Context<TableState<Self>>) {
-        if let Some(f) = self.on_sort.clone() {
-            f(col_ix, sort, window, cx);
+        if let (Some(f), Some(c)) = (self.on_sort.clone(), col_ix.checked_sub(ROW_NO)) {
+            f(c, sort, window, cx);
         }
     }
 
@@ -259,6 +276,15 @@ mod tests {
         g.rs = Some(ResultSet::new(cols, b, true));
         g.edits = Some(PendingEdits::default());
         g
+    }
+
+    #[test]
+    fn row_number_column_shifts_the_data() {
+        let g = grid_with_more();
+        assert_eq!(g.copy_selection(TableSelection::Cell(0, 0)).as_deref(), Some("1"), "column 0 is the row number");
+        assert_eq!(g.copy_selection(TableSelection::Cell(0, 1)).as_deref(), Some("1"), "column 1 is the first data column (id = 1)");
+        assert_eq!(g.copy_selection(TableSelection::Column(0)), None, "the number column has nothing to copy");
+        assert_eq!(g.copy_selection(TableSelection::Column(1)).as_deref(), Some("1\n"), "TSV of the first data column");
     }
 
     #[test]

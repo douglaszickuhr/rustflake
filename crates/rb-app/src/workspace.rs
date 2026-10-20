@@ -598,7 +598,7 @@ impl Workspace {
         if let TabView::Table(t) = tab
             && t.read(cx).has_pending(cx)
         {
-            window.push_notification(Notification::error(t!("ws.pending_before_close").to_string()), cx);
+            window.push_notification(Notification::error(crate::ui::keys(&t!("ws.pending_before_close"))), cx);
             return;
         }
         let conn_id = self.tabs[ix].conn_id(cx);
@@ -641,7 +641,7 @@ impl Workspace {
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.tabs.is_empty() {
             let Some(o) = self.current_open() else { return self.render_connections(cx) };
-            let msg = format!("{} — {}", o.conn.cfg.name, t!("ws.new_script_hint"));
+            let msg = format!("{} — {}", o.conn.cfg.name, crate::ui::keys(&t!("ws.new_script_hint")));
             return v_flex().flex_1().h_full().items_center().justify_center().child(msg).into_any_element();
         }
         let content = match &self.tabs[self.active_tab] {
@@ -934,7 +934,7 @@ impl Workspace {
                     drag_space("drag-tabs", cx).flex_1().child(
                         div()
                             .on_mouse_down(MouseButton::Left, no_drag)
-                            .child(Button::new("new-tab").label("+").ghost().tooltip(t!("ws.new_script").to_string()).on_click(cx.listener(|ws, _, window, cx| ws.new_sql_tab(window, cx)))),
+                            .child(Button::new("new-tab").label("+").ghost().tooltip(crate::ui::keys(&t!("ws.new_script"))).on_click(cx.listener(|ws, _, window, cx| ws.new_sql_tab(window, cx)))),
                     ),
                 )
                 .suffix(div()),
@@ -965,7 +965,7 @@ impl Workspace {
                     }
                 };
                 bar.child(Tab::new().when_some(cfg, |tab, c| tab.prefix(div().pl_2().child(logo(c).small()))).child(label).suffix(
-                    Button::new(("close", i)).label("×").ghost().tooltip(t!("ws.close_tab").to_string()).on_click(cx.listener(move |ws, _, window, cx| {
+                    Button::new(("close", i)).label("×").ghost().tooltip(crate::ui::keys(&t!("ws.close_tab"))).on_click(cx.listener(move |ws, _, window, cx| {
                         // Without this the click bubbles up to the tab, which would do active_tab = i after the removal
                         // (nonexistent index when closing the last tab → panic in render).
                         cx.stop_propagation();
@@ -1019,13 +1019,9 @@ impl Workspace {
             .border_b_1()
             .border_color(theme.border)
             .child(div().id("title-tabs").flex_1().min_w_0().overflow_hidden().on_mouse_down(MouseButton::Left, no_drag).child(self.render_tab_bar(cx)))
-            .child(
-                h_flex().flex_shrink_0().justify_end().child(
-                    div()
-                        .on_mouse_down(MouseButton::Left, no_drag)
-                        .child(Button::new("goto").outline().small().icon(IconName::Search).label(format!("{}  ⌘K", t!("frame.go_to"))).on_click(cx.listener(|ws, _, w, cx| ws.quick_open(w, cx)))),
-                ),
-            )
+            .child(h_flex().flex_shrink_0().justify_end().child(div().on_mouse_down(MouseButton::Left, no_drag).child(
+                Button::new("goto").outline().small().icon(IconName::Search).label(crate::ui::keys(&format!("{}  ⌘K", t!("frame.go_to")))).on_click(cx.listener(|ws, _, w, cx| ws.quick_open(w, cx))),
+            )))
     }
 
     /// Context bar menu: connections and, on Snowflake, role/warehouse/database/schema.
@@ -1109,7 +1105,7 @@ impl Workspace {
             })))
             .when_some(sf.clone(), |d, id| d.child(btn("rail-access", IconName::Users, t!("frame.access").to_string(), false).on_click(cx.listener(move |ws, _, w, cx| ws.open_admin(&id, w, cx)))))
             .when_some(sf, |d, id| d.child(btn("rail-wh", IconName::Warehouse, t!("frame.warehouses").to_string(), false).on_click(cx.listener(move |ws, _, w, cx| ws.open_warehouses(&id, w, cx)))))
-            .child(btn("rail-hist", IconName::RotateCcwClock, t!("frame.history").to_string(), false).on_click(cx.listener(|ws, _, w, cx| ws.show_history(w, cx))))
+            .child(btn("rail-hist", IconName::RotateCcwClock, crate::ui::keys(&t!("frame.history")), false).on_click(cx.listener(|ws, _, w, cx| ws.show_history(w, cx))))
             .child(div().flex_1())
             .child(btn("rail-lang", IconName::Globe, lang::label(cx.global::<Lang>().0), false).on_click(cx.listener(|ws, _, w, cx| ws.pick_language(w, cx))))
             .child(btn("rail-theme", IconName::SunMoon, appearance::label(cx.global::<Appearance>().0, cx), false).on_click(cx.listener(|ws, _, w, cx| ws.pick_theme(w, cx))))
@@ -1265,7 +1261,7 @@ impl Workspace {
     /// Status bar: "connecting…" and the shortcuts. Execution status lives in the SQL tab's footer.
     fn render_status(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let hint = |s: String| div().font_family(theme.mono_font_family.clone()).child(s);
+        let hint = |s: String| div().font_family(theme.mono_font_family.clone()).child(crate::ui::keys(&s));
         h_flex()
             .h(px(28.))
             .flex_shrink_0()
@@ -1283,7 +1279,49 @@ impl Workspace {
             .child(hint(format!("⌘⇧↵ {}", t!("frame.hint_all"))))
             .child(hint(format!("⌘E {}", t!("frame.hint_explain"))))
             .child(hint("⌘K".into()))
+            .child(
+                Popover::new("all-keys")
+                    .anchor(Anchor::BottomRight)
+                    .trigger(Button::new("all-keys-btn").label("+").ghost().xsmall().tooltip(t!("keys.all").to_string()))
+                    .content(|_, _, cx| shortcuts_list(cx)),
+            )
     }
+}
+
+/// Every shortcut, by where it works; the status bar only has room for the main four.
+fn shortcuts_list(cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let groups: [(&str, &[(&str, &str)]); 4] = [
+        (
+            "keys.editor",
+            &[
+                ("⌘↵", "frame.hint_statement"),
+                ("⌘⇧↵", "frame.hint_all"),
+                ("⌘E", "frame.hint_explain"),
+                ("⌘⇧E", "keys.explain_analyze"),
+                ("⌘⇧F", "keys.format"),
+                ("⌘/", "keys.comment"),
+                ("⌘F", "keys.find"),
+                ("⌥⌘F", "keys.replace"),
+                ("⌃Space", "keys.complete"),
+                ("⌘.", "keys.cancel"),
+            ],
+        ),
+        ("keys.app", &[("⌘K", "keys.goto"), ("⌘T", "keys.new_script"), ("⌘W", "keys.close_tab"), ("⌘Y", "keys.history"), ("⌘,", "keys.edit_connection"), ("⌘Q", "keys.quit")]),
+        ("keys.results", &[("⌘C", "keys.copy"), ("⌘S", "keys.save_edits"), ("⌘R / F5", "keys.refresh_tree")]),
+        ("keys.diagrams", &[("⌘+ ⌘−", "keys.zoom"), ("⌘0", "keys.fit"), ("⌘ scroll", "keys.zoom")]),
+    ];
+    v_flex()
+        .gap_3()
+        .p_1()
+        .text_xs()
+        .children(groups.iter().map(|(title, keys)| {
+            v_flex().gap_1().child(div().text_color(theme.muted_foreground).child(t!(*title).to_string().to_uppercase())).children(
+                keys.iter()
+                    .map(|(k, label)| h_flex().gap_3().child(div().w(px(120.)).flex_shrink_0().font_family(theme.mono_font_family.clone()).child(crate::ui::keys(k))).child(t!(*label).to_string())),
+            )
+        }))
+        .into_any_element()
 }
 
 /// A click on a tab/button of the title row must not become a window drag.

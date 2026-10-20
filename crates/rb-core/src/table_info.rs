@@ -14,7 +14,7 @@ fn fq(db: &str, schema: &str, table: &str) -> String {
 /// Always the INFORMATION_SCHEMA of the table's database (may not be the session's).
 pub fn facts_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
-        "select table_type, row_count, bytes, last_altered, comment from {}.information_schema.tables where table_schema = {} and table_name = {}",
+        "select table_type, row_count, bytes, created, last_altered, comment from {}.information_schema.tables where table_schema = {} and table_name = {}",
         quote_always(db),
         sql_str(schema),
         sql_str(table)
@@ -26,6 +26,7 @@ pub struct Facts {
     pub kind: String,
     pub rows: Option<u64>,
     pub bytes: Option<u64>,
+    pub created: Option<String>,
     pub last_altered: Option<String>,
     pub comment: Option<String>,
 }
@@ -36,6 +37,7 @@ pub fn parse_facts(names: &[String], rows: &Rows) -> Option<Facts> {
         kind: r.text("table_type").unwrap_or_default(),
         rows: r.text("row_count").and_then(|v| v.parse().ok()),
         bytes: r.text("bytes").and_then(|v| v.parse().ok()),
+        created: r.text("created"),
         last_altered: r.text("last_altered"),
         comment: r.text("comment"),
     })

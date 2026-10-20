@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -298,13 +297,12 @@ impl WarehouseTab {
         }) else {
             return div().into_any_element();
         };
-        let status = match w.state.as_str() {
-            "STARTED" => Tag::success(),
-            "RESIZING" | "SUSPENDING" => Tag::warning(),
-            _ => Tag::secondary(),
-        }
-        .small()
-        .child(w.state.to_lowercase());
+        let tone = match w.state.as_str() {
+            "STARTED" => crate::ui::Tone::Success,
+            "RESIZING" | "SUSPENDING" => crate::ui::Tone::Warning,
+            _ => crate::ui::Tone::Neutral,
+        };
+        let status = crate::ui::badge(tone, cx).child(w.state.to_lowercase());
         let header = h_flex()
             .gap_3()
             .items_center()
@@ -352,7 +350,9 @@ impl WarehouseTab {
             for (ri, r) in roles.into_iter().enumerate() {
                 let goto = self.goto.clone();
                 let target = Target::Role(r.clone());
-                row = row.child(div().id(("wh-role", gi * 10_000 + ri)).cursor_pointer().child(Tag::secondary().small().child(r)).on_click(move |_, w, cx| goto(target.clone(), w, cx)));
+                row = row.child(
+                    div().id(("wh-role", gi * 10_000 + ri)).cursor_pointer().child(crate::ui::badge(crate::ui::Tone::Neutral, cx).child(r)).on_click(move |_, w, cx| goto(target.clone(), w, cx)),
+                );
             }
             out = out.child(row);
         }
@@ -373,7 +373,7 @@ impl WarehouseTab {
                     for (i, u) in who.into_iter().enumerate() {
                         let goto = self.goto.clone();
                         let target = Target::User(u.clone());
-                        list = list.child(div().id(("wh-user", i)).cursor_pointer().child(Tag::info().small().child(u)).on_click(move |_, w, cx| goto(target.clone(), w, cx)));
+                        list = list.child(div().id(("wh-user", i)).cursor_pointer().child(crate::ui::badge(crate::ui::Tone::Info, cx).child(u)).on_click(move |_, w, cx| goto(target.clone(), w, cx)));
                     }
                     out = out.child(list);
                 }

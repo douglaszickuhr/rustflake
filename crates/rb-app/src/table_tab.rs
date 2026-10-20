@@ -189,8 +189,11 @@ impl TableTab {
                 }
             }),
             cx.subscribe_in(&grid, window, |this, _, ev: &TableEvent, window, cx| {
-                if let TableEvent::DoubleClickedCell(r, c) = ev {
-                    this.edit_cell(*r, *c, window, cx);
+                // Column 0 is the row number; the data starts after it.
+                if let TableEvent::DoubleClickedCell(r, c) = ev
+                    && let Some(c) = c.checked_sub(grid::ROW_NO)
+                {
+                    this.edit_cell(*r, c, window, cx);
                 }
             }),
             cx.observe(&grid, |_, _, cx| cx.notify()),
@@ -293,7 +296,7 @@ impl TableTab {
     pub(crate) fn load(&mut self, cx: &mut Context<Self>) {
         self.data_started = true;
         if self.has_pending(cx) {
-            self.status = t!("table.save_before_reload").to_string().into();
+            self.status = crate::ui::keys(&t!("table.save_before_reload")).into();
             cx.notify();
             return;
         }
@@ -601,7 +604,7 @@ impl TableTab {
                             .child(Button::new("discard").label(t!("table.discard").to_string()).ghost().on_click(cx.listener(|t, _, _, cx| {
                                 t.with_edits(cx, |e, _| *e = PendingEdits::default());
                             })))
-                            .child(Button::new("save").label(format!("{} ⌘S", t!("common.save"))).primary().disabled(!pending).on_click(cx.listener(|t, _, _, cx| t.save(cx))))
+                            .child(Button::new("save").label(crate::ui::keys(&format!("{} ⌘S", t!("common.save")))).primary().disabled(!pending).on_click(cx.listener(|t, _, _, cx| t.save(cx))))
                     }),
             )
             .child(div().key_context("ResultGrid").flex_1().on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx))).child(if self.text_mode {

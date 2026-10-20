@@ -167,6 +167,13 @@ pub struct SqlTab {
 }
 
 impl SqlTab {
+    /// A query starts: clears the last error and closes the completion popup (it stayed open over the results).
+    fn start_running(&mut self, cx: &mut Context<Self>) {
+        self.running = true;
+        self.error = None;
+        self.editor.update(cx, |e, cx| e.dismiss_lsp_overlays(cx));
+    }
+
     pub fn new(path: PathBuf, conn: ConnTarget, meta: Entity<MetaStore>, open_table: crate::schema_tree::OpenTable, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let editor = cx.new(|cx| EditorState::new(window, cx).language("sql").default_value(text));
@@ -297,8 +304,7 @@ impl SqlTab {
             return self.explain_sql(src, inner, analyze, window, cx);
         }
         self.ran_use = ranges.iter().any(|r| is_use(&src[r.clone()]));
-        self.running = true;
-        self.error = None;
+        self.start_running(cx);
         self.status = t!("sql.running").to_string().into();
         // The previous result stays on screen (with skeleton if slow) until the new one arrives.
         self._busy = self.active_grid().map(|g| grid::busy_later(g, cx));
@@ -434,8 +440,7 @@ impl SqlTab {
                 p.truncated = true;
             }
         }
-        self.running = true;
-        self.error = None;
+        self.start_running(cx);
         self.status = t!("sql.running").to_string().into();
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -470,8 +475,7 @@ impl SqlTab {
                 p.truncated = true;
             }
         }
-        self.running = true;
-        self.error = None;
+        self.start_running(cx);
         self.status = t!("sql.running").to_string().into();
         cx.notify();
         let conn = self.conn.clone();
@@ -775,7 +779,7 @@ impl Render for SqlTab {
                     .when_some(grid_error, |d, e| d.child(e))
                     .child(div().flex_1())
                     .when_some(query_id, |d, id| d.child(query_id_button("footer-qid", id)))
-                    .when(self.running, |d| d.child(Button::new("cancel").label(format!("{} ⌘.", t!("common.cancel"))).ghost().on_click(cx.listener(|t, _, _, _| t.cancel())))),
+                    .when(self.running, |d| d.child(Button::new("cancel").label(crate::ui::keys(&format!("{} ⌘.", t!("common.cancel")))).ghost().on_click(cx.listener(|t, _, _, _| t.cancel())))),
             )
     }
 }

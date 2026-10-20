@@ -5,7 +5,6 @@ use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -78,7 +77,7 @@ impl DbFilterEditor {
 impl Render for DbFilterEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chips = self.tags.iter().enumerate().map(|(i, t)| {
-            let tag = if t.starts_with('!') { Tag::danger() } else { Tag::secondary() };
+            let tag = crate::ui::badge(if t.starts_with('!') { crate::ui::Tone::Danger } else { crate::ui::Tone::Neutral }, cx);
             let tag = tag.child(h_flex().gap_1().child(t.clone()).child(div().id(("dbf-rm", i)).cursor_pointer().child("×").on_click(cx.listener(move |this, _, _, cx| {
                 this.tags.remove(i);
                 cx.notify();

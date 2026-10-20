@@ -122,7 +122,7 @@ impl Render for HistoryPopup {
         } else if self.hits.is_empty() {
             t!("history.empty").to_string()
         } else {
-            t!("history.hint").to_string()
+            crate::ui::keys(&t!("history.hint"))
         };
         v_flex()
             .key_context("QuickOpen")

@@ -12,7 +12,6 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, Selectable as _, Sizable as _, Theme, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -682,11 +681,11 @@ impl AdminTab {
         let shown = u.display_name.clone().unwrap_or_else(|| u.name.clone());
         let initials: String = shown.split([' ', '_', '.']).filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
         let status = if u.disabled {
-            Tag::danger().small().child(t!("admin.disabled").to_string())
+            crate::ui::badge(crate::ui::Tone::Danger, cx).child(t!("admin.disabled").to_string())
         } else if u.locked {
-            Tag::warning().small().child(t!("admin.locked").to_string())
+            crate::ui::badge(crate::ui::Tone::Warning, cx).child(t!("admin.locked").to_string())
         } else {
-            Tag::success().small().child(t!("admin.active").to_string())
+            crate::ui::badge(crate::ui::Tone::Success, cx).child(t!("admin.active").to_string())
         };
         let mut kind_auth: Vec<String> = u.user_type.iter().map(|t| title_case(t)).collect();
         kind_auth.extend(user_view::auth_summary(&u, &recent).into_iter().map(|a| if a == "password" { t!("admin.password").to_string() } else { a.to_string() }));
@@ -717,9 +716,13 @@ impl AdminTab {
                             .gap_1()
                             .flex_wrap()
                             .child(status)
-                            .when(!kind_auth.is_empty(), |d| d.child(Tag::secondary().small().child(kind_auth.join(" · "))))
-                            .child(if u.has_mfa { Tag::success().small().child("MFA") } else { Tag::warning().small().child(t!("admin.no_mfa").to_string()) })
-                            .when(scim.is_some(), |d| d.child(Tag::info().small().child(t!("admin.scim").to_string()))),
+                            .when(!kind_auth.is_empty(), |d| d.child(crate::ui::badge(crate::ui::Tone::Neutral, cx).child(kind_auth.join(" · "))))
+                            .child(if u.has_mfa {
+                                crate::ui::badge(crate::ui::Tone::Success, cx).child("MFA")
+                            } else {
+                                crate::ui::badge(crate::ui::Tone::Warning, cx).child(t!("admin.no_mfa").to_string())
+                            })
+                            .when(scim.is_some(), |d| d.child(crate::ui::badge(crate::ui::Tone::Info, cx).child(t!("admin.scim").to_string()))),
                     ),
             )
             .when_some(scim, |d, owner| d.child(div().text_xs().text_color(theme.muted_foreground).child(t!("admin.scim_note", owner = owner).to_string())));
@@ -809,7 +812,7 @@ impl AdminTab {
                             .child(div().w(px(130.)).flex_shrink_0().child(e.at.get(..16).unwrap_or(&e.at).to_string()))
                             .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(theme.muted_foreground).child(how))
                             .child(div().font_family(theme.mono_font_family.clone()).text_xs().text_color(theme.muted_foreground).child(e.ip.clone().unwrap_or_default()))
-                            .when(n > 1, |d| d.child(Tag::secondary().small().child(format!("×{n}")))),
+                            .when(n > 1, |d| d.child(crate::ui::badge(crate::ui::Tone::Neutral, cx).child(format!("×{n}")))),
                     )
                     .when_some(e.error.clone(), |d, err| d.child(div().text_xs().text_color(theme.danger).child(err))),
             );
@@ -954,7 +957,6 @@ impl AdminTab {
         };
         let target = Target::UserRoles(name.to_string());
         out.child(self.render_access_facts(name, &direct, &eff, loading, cx))
-            .when(loading, |d| d.child(div().text_sm().text_color(theme.muted_foreground).child(t!("admin.loading_inherited").to_string())))
             .child(Button::new("all-roles").label(t!("admin.all_roles").to_string()).outline().small().on_click(cx.listener(move |t, _, _, cx| t.open(target.clone(), cx))))
             .into_any_element()
     }
@@ -989,12 +991,24 @@ impl AdminTab {
         }
         v_flex()
             .gap_2()
-            .child(h_flex().items_baseline().gap_2().child(div().text_xl().child(t!("admin.direct_n", n = direct.len()).to_string())).child(if loading {
-                // "0 inherited" while loading looked like the final answer.
-                h_flex().gap_1().items_center().text_base().text_color(theme.muted_foreground).child(Spinner::new().small()).child(t!("admin.inherited_loading").to_string())
-            } else {
-                h_flex().text_base().text_color(theme.muted_foreground).child(t!("admin.inherited_n", n = eff.len()).to_string())
-            }))
+            .child(h_flex().items_center().gap_2().child(div().text_xl().child(if direct.len() == 1 { t!("admin.direct_one") } else { t!("admin.direct_n", n = direct.len()) }.to_string())).child(
+                if loading {
+                    // "0 inherited" while loading looked like the final answer; why it's slow goes in the hover.
+                    let why = t!("admin.loading_inherited").to_string();
+                    h_flex()
+                        .id("inherited-loading")
+                        .gap_1p5()
+                        .items_center()
+                        .text_base()
+                        .text_color(theme.muted_foreground)
+                        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why.clone()).build(w, cx))
+                        .child(t!("admin.inherited_loading").to_string())
+                        .child(Spinner::new().xsmall())
+                        .into_any_element()
+                } else {
+                    h_flex().text_base().text_color(theme.muted_foreground).child(t!("admin.inherited_n", n = eff.len()).to_string()).into_any_element()
+                },
+            ))
             // Counts with only the direct ones would be wrong: they wait for the inherited.
             .when(!loading, |d| d.child(h_flex().flex_wrap().gap_x_4().gap_y_1().text_sm().text_color(theme.muted_foreground).children(facts)))
     }
@@ -1142,7 +1156,8 @@ impl AdminTab {
             for (ii, (it, members)) in hits.into_iter().take(if collapsed { 5 } else { total }).enumerate() {
                 let key = format!("{k:?}:{}", it.name);
                 let open = searching || self.item_open.contains(&key);
-                let multi = it.roles.len() > 1;
+                // Expands with one role too: under a database, that role (e.g. `…_MONOLITH_RO_AR`) is the schema.
+                let multi = !it.roles.is_empty();
                 let first = it.roles[0].clone();
                 let (used, warn) = used_text(used_of(it));
                 let label = if it.name.is_empty() { t!("admin.unknown_db").to_string() } else { item_title(&self.conn.org, it) };
@@ -1446,8 +1461,8 @@ fn detail_text(it: &UnlockItem) -> String {
         Detail::Warehouse { operate: true, monitor: true } => t!("admin.wh_both").to_string(),
         Detail::Warehouse { operate: true, .. } => t!("admin.wh_operate").to_string(),
         Detail::Warehouse { .. } => t!("admin.wh_monitor").to_string(),
-        Detail::Level(_) => t!("admin.n_roles", n = n).to_string(),
-        Detail::Data { write } => format!("{} · {}", if write { t!("admin.read_write") } else { t!("admin.read") }, t!("admin.n_roles", n = n)),
+        Detail::Level(_) => n_roles(n),
+        Detail::Data { write } => format!("{} · {}", if write { t!("admin.read_write") } else { t!("admin.read") }, n_roles(n)),
         Detail::None => match it.kind {
             ItemKind::Department => t!("admin.base_role").to_string(),
             ItemKind::Functional => t!("admin.functional_role").to_string(),
@@ -1471,7 +1486,7 @@ fn one_line(el: impl IntoElement) -> Div {
 /// Clickable tag that navigates to the role.
 fn role_tag(id: impl Into<ElementId>, name: &str, cx: &mut Context<AdminTab>) -> Stateful<Div> {
     let target = Target::Role(name.to_string());
-    div().id(id).cursor_pointer().child(Tag::secondary().small().child(name.to_string())).on_click(cx.listener(move |t, _, _, cx| t.open(target.clone(), cx)))
+    div().id(id).cursor_pointer().child(crate::ui::badge(crate::ui::Tone::Neutral, cx).child(name.to_string())).on_click(cx.listener(move |t, _, _, cx| t.open(target.clone(), cx)))
 }
 
 fn user_tag(id: impl Into<ElementId>, name: &str, cx: &mut Context<AdminTab>) -> Stateful<Div> {
@@ -1479,7 +1494,7 @@ fn user_tag(id: impl Into<ElementId>, name: &str, cx: &mut Context<AdminTab>) ->
     div()
         .id(id)
         .cursor_pointer()
-        .child(Tag::info().small().child(h_flex().gap_1().child(Icon::new(IconName::CircleUser).xsmall()).child(name.to_string())))
+        .child(crate::ui::badge(crate::ui::Tone::Info, cx).child(h_flex().gap_1().child(Icon::new(IconName::CircleUser).xsmall()).child(name.to_string())))
         .on_click(cx.listener(move |t, _, _, cx| t.open(target.clone(), cx)))
 }
 
@@ -1518,4 +1533,8 @@ mod tests {
         assert_eq!(super::human_ms(90_000), "1.5 min");
         assert_eq!(super::human_ms(4_000_000), "1.1 h");
     }
+}
+
+fn n_roles(n: usize) -> String {
+    if n == 1 { t!("admin.one_role").to_string() } else { t!("admin.n_roles", n = n).to_string() }
 }

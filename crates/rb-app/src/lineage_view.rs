@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -67,10 +66,6 @@ pub struct LineageView {
     selected: Option<Sel>,
     /// Drag to pan: where the mouse went down and the scroll offset at that moment.
     pan: Option<(Point<Pixels>, Point<Pixels>)>,
-    /// Pushing past the left/right edge (drag or scroll) expands that side: amount pushed so far
-    /// with the wheel, and when it last fired (a flick shouldn't open several levels at once).
-    pull: f32,
-    pulled_at: Option<std::time::Instant>,
     visible: Visible,
     layout: Layout,
     columns: HashMap<ObjKey, Load<Vec<String>>>,
@@ -104,8 +99,6 @@ impl LineageView {
             pinned: HashSet::new(),
             selected: None,
             pan: None,
-            pull: 0.0,
-            pulled_at: None,
             visible: Visible::default(),
             layout: Layout::default(),
             columns: HashMap::new(),
@@ -144,7 +137,11 @@ impl LineageView {
                         return;
                     }
                     v.sides[dir as usize] = match res {
-                        Ok(rows) => {
+                        Ok(mut rows) => {
+                            // `[lineage] ignore` (e.g. personal DEV_* databases); never the focus itself.
+                            let (org, focus) = (v.conn.org.clone(), v.graph.focus.clone());
+                            let skip = |k: &ObjKey| *k != focus && org.lineage_ignored(&k.db, &k.schema, &k.name);
+                            rows.retain(|r| !skip(&r.src.key) && !skip(&r.dst.key));
                             v.graph.add(dir, rows);
                             Load::Ready(())
                         }
@@ -253,35 +250,6 @@ impl LineageView {
         } else if self.graph.frontier.contains(&(k.clone(), dir)) {
             self.center_on(&k, cx);
         }
-    }
-
-    /// Horizontal scroll range: offsets go from `min` (right edge) to 0 (left edge).
-    fn min_offset_x(&self) -> Option<f32> {
-        let area = self.viewport.get()?;
-        let (w, _) = self.content_size();
-        Some((f32::from(area.size.width) - (w * self.zoom + 2.0 * PAD)).min(0.0))
-    }
-
-    /// Opens one more level on `dir`'s side: the outermost visible nodes with something cached outward.
-    fn expand_edge(&mut self, dir: Dir, cx: &mut Context<Self>) {
-        if self.pulled_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(700)) {
-            return;
-        }
-        let side = |c: i32| if dir == Dir::Up { -c } else { c };
-        let nodes: Vec<(ObjKey, i32)> = self.layout.pos.iter().filter_map(|(s, c, _)| if let Slot::Node(k) = s { Some((k.clone(), side(*c))) } else { None }).collect();
-        let Some(outer) = nodes.iter().map(|n| n.1).max().filter(|c| *c >= 0) else { return };
-        let open: Vec<ObjKey> = nodes
-            .into_iter()
-            .filter(|(k, c)| *c == outer && self.graph.side_of(k).is_none_or(|d| d == dir) && !self.expanded.contains(k) && !self.graph.outward(k, dir).is_empty())
-            .map(|(k, _)| k)
-            .collect();
-        self.pulled_at = Some(std::time::Instant::now());
-        if open.is_empty() {
-            return;
-        }
-        self.expanded.extend(open);
-        self.relayout();
-        cx.notify();
     }
 
     fn project(&self, cx: &App) -> Option<Arc<DbtProject>> {
@@ -633,6 +601,9 @@ impl Render for LineageView {
         let done = self.sides.iter().all(|s| matches!(s, Load::Ready(())));
         let center: Option<AnyElement> = if failed.len() == 2 {
             Some(div().p_4().text_sm().text_color(theme.danger).whitespace_normal().child(error_text(&failed[0])).into_any_element())
+        } else if !done && self.graph.count(Dir::Up) + self.graph.count(Dir::Down) == 0 {
+            // Nothing beyond the focus yet: a lone box looked like "no lineage", so just a spinner.
+            Some(h_flex().p_4().gap_2().text_sm().text_color(theme.muted_foreground).child(Spinner::new().small()).child(t!("tree.loading").to_string()).into_any_element())
         } else if done && self.graph.count(Dir::Up) + self.graph.count(Dir::Down) == 0 {
             Some(v_flex().p_4().gap_1().text_sm().child(t!("tv.no_lineage").to_string()).child(div().text_color(theme.muted_foreground).child(t!("tv.lineage_lag").to_string())).into_any_element())
         } else {
@@ -660,14 +631,14 @@ impl Render for LineageView {
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(Tag::info().small().child(c))
+                        .child(crate::ui::badge(crate::ui::Tone::Info, cx).child(c))
                         .when(matches!(self.column.as_ref().and_then(|c| self.col_rows.get(c)), Some(Load::Loading)), |d| d.child(Spinner::new().xsmall()))
                         .child(Button::new("lin-clear").label(t!("lin.clear_column").to_string()).ghost().xsmall().on_click(cx.listener(|v, _, _, cx| v.clear_column(cx)))),
                 )
             })
             .child(div().flex_1())
             .child(div().text_xs().text_color(theme.muted_foreground).child(t!("tv.lineage_lag").to_string()))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(t!("plan.zoom_hint").to_string()))
+            .child(div().text_xs().text_color(theme.muted_foreground).child(crate::ui::keys(&t!("plan.zoom_hint"))))
             .child(Button::new("lin-reload").label(t!("table.reload").to_string()).ghost().xsmall().on_click(cx.listener(|v, _, _, cx| v.reload(cx))));
 
         v_flex()
@@ -698,6 +669,8 @@ impl Render for LineageView {
                             .id("lin-area")
                             .relative()
                             .flex_1()
+                            // Without it the area grows to the graph's width and the window clips it: no scrolling.
+                            .min_w_0()
                             .h_full()
                             .overflow_scroll()
                             .track_scroll(&self.scroll)
@@ -707,7 +680,6 @@ impl Render for LineageView {
                                 cx.listener(|v, ev: &MouseDownEvent, window, cx| {
                                     v.focus.focus(window, cx);
                                     v.pan = Some((ev.position, v.scroll.offset()));
-                                    v.pulled_at = None;
                                 }),
                             )
                             .on_mouse_move(cx.listener(|v, ev: &MouseMoveEvent, _, cx| {
@@ -716,11 +688,7 @@ impl Render for LineageView {
                                     v.pan = None;
                                     return;
                                 }
-                                let want = offset + (ev.position - start);
-                                v.scroll.set_offset(want);
-                                if let Some(dir) = v.min_offset_x().and_then(|min| edge_pull(f32::from(want.x), min, PULL)) {
-                                    v.expand_edge(dir, cx);
-                                }
+                                v.scroll.set_offset(offset + (ev.position - start));
                                 cx.notify();
                             }))
                             .on_mouse_up(MouseButton::Left, cx.listener(|v, _, _, _| v.pan = None))
@@ -729,23 +697,17 @@ impl Render for LineageView {
                             .child(canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
                             // ⌘ + scroll zooms; registered on a child to run before the area's scrolling.
                             .child(
+                                // The graph's own size (at least the area): a wrapper as wide as the area left the
+                                // graph overflowing it, and the scroll range only counts the wrapper.
                                 div()
+                                    .w(px(w * z))
+                                    .h(px(h * z))
                                     .min_w_full()
                                     .min_h_full()
                                     .on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
                                         if ev.modifiers.platform {
                                             cx.stop_propagation();
                                             v.wheel(ev, cx);
-                                            return;
-                                        }
-                                        // At an edge, keep pushing the same way: adds up until it opens that side.
-                                        let dx = f32::from(ev.delta.pixel_delta(px(16.0)).x);
-                                        let (x, min) = (f32::from(v.scroll.offset().x), v.min_offset_x().unwrap_or(0.0));
-                                        let at_edge = (dx > 0.0 && x >= -1.0) || (dx < 0.0 && x <= min + 1.0);
-                                        v.pull = if at_edge && v.pull.signum() != -dx.signum() { v.pull + dx } else { 0.0 };
-                                        if let Some(dir) = edge_pull(v.pull, 0.0, PULL) {
-                                            v.pull = 0.0;
-                                            v.expand_edge(dir, cx);
                                         }
                                     }))
                                     .child(content),
@@ -794,8 +756,8 @@ impl LineageView {
                     .child(
                         h_flex()
                             .gap_1()
-                            .child(Tag::secondary().small().child(o.kind.clone().unwrap_or_else(|| k.domain.clone())))
-                            .when_some(dbt.clone(), |d, (n, layer)| d.child(Tag::info().small().child(format!("dbt {} · {layer}", n.resource_type)))),
+                            .child(crate::ui::badge(crate::ui::Tone::Neutral, cx).child(o.kind.clone().unwrap_or_else(|| k.domain.clone())))
+                            .when_some(dbt.clone(), |d, (n, layer)| d.child(crate::ui::badge(crate::ui::Tone::Info, cx).child(format!("dbt {} · {layer}", n.resource_type)))),
                     )
                     .when_some(dbt.as_ref().map(|(n, _)| n.description.clone()).filter(|d| !d.is_empty()), |d, desc| {
                         d.child(div().text_sm().whitespace_normal().text_color(theme.muted_foreground).child(desc))
@@ -937,33 +899,5 @@ impl LineageView {
                 out
             }
         }
-    }
-}
-
-/// How far past an edge the user has to push before that side opens.
-const PULL: f32 = 120.0;
-
-/// `x` past 0 (left edge) by more than `pull` → upstream; below `min` (right edge) → downstream.
-fn edge_pull(x: f32, min: f32, pull: f32) -> Option<Dir> {
-    if x > pull {
-        Some(Dir::Up)
-    } else if x < min - pull {
-        Some(Dir::Down)
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Dir, edge_pull};
-
-    #[test]
-    fn pushing_past_an_edge_picks_that_side() {
-        assert_eq!(edge_pull(121.0, -500.0, 120.0), Some(Dir::Up), "past the left edge");
-        assert_eq!(edge_pull(-621.0, -500.0, 120.0), Some(Dir::Down), "past the right edge");
-        assert_eq!(edge_pull(100.0, -500.0, 120.0), None, "not far enough");
-        assert_eq!(edge_pull(-300.0, -500.0, 120.0), None, "inside the range");
-        assert_eq!(edge_pull(-121.0, 0.0, 120.0), Some(Dir::Down), "graph fits: either side can still be pulled");
     }
 }

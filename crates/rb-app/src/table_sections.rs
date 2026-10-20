@@ -6,7 +6,6 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Editor, EditorState, Input};
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -34,6 +33,11 @@ pub(crate) fn kind_dot(kind: &str, theme: &gpui_kit::component::Theme) -> Hsla {
 
 fn ago(ts: &str) -> Option<String> {
     user_view::parse_ts(ts).map(crate::ui::ago)
+}
+
+/// Plain text hover, for `.tooltip(...)`.
+fn tip(text: String) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    move |w, cx| Tooltip::new(text.clone()).build(w, cx)
 }
 
 impl TableTab {
@@ -198,26 +202,61 @@ impl TableTab {
         // Same qualifier as the grid: quotes for lowercase/spaced names.
         let fq = rb_core::dialect::Dialect::Snowflake.qualified(&self.schema, &self.table);
         let open_query = self.open_query.clone();
-        let mut top = h_flex()
-            .gap_3()
-            .flex_wrap()
-            .items_center()
-            .child(div().text_xl().font_family(theme.mono_font_family.clone()).child(self.table.clone()))
-            .child(div().text_sm().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(format!("{db}.{schema}")));
+        let mut top = h_flex().gap_3().flex_wrap().items_center().child(div().text_xl().font_family(theme.mono_font_family.clone()).child(self.table.clone())).child({
+            // Click copies the full name (the one to paste in SQL).
+            let full = format!("{db}.{schema}.{}", self.table);
+            div()
+                .id("tv-fqn")
+                .text_sm()
+                .font_family(theme.mono_font_family.clone())
+                .text_color(theme.muted_foreground)
+                .cursor_pointer()
+                .hover(|d| d.text_color(theme.foreground))
+                .tooltip(tip(t!("tv.copy_name", name = full.clone()).to_string()))
+                .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(full.clone())))
+                .child(format!("{db}.{schema}"))
+        });
         if let Some(n) = &node {
             let badge = match &n.materialized {
                 Some(m) => format!("{} · {m}", n.resource_type),
                 None => n.resource_type.clone(),
             };
+            let node_tip = format!("{}\n{}", n.unique_id, n.file);
+            let relation = n.relation.clone().unwrap_or_default();
             top = top
-                .child(Tag::info().small().child(format!("dbt {badge}")))
-                .when(by_name, |d| d.child(div().text_xs().text_color(theme.warning).child(t!("tv.matched_by_name").to_string())))
+                .child(
+                    // Outlined pill with the node type's dot (same colors as lineage): the filled cyan tag was hard to read.
+                    h_flex()
+                        .id("tv-dbt-badge")
+                        .h(px(22.))
+                        .px_2()
+                        .gap_1p5()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_xs()
+                        .tooltip(tip(node_tip))
+                        .child(div().size(px(7.)).rounded_full().bg(kind_dot(&n.resource_type, &theme)))
+                        .child(format!("dbt {badge}")),
+                )
+                .when(by_name, |d| {
+                    d.child(
+                        div()
+                            .id("tv-by-name")
+                            .text_xs()
+                            .text_color(theme.warning)
+                            .tooltip(tip(t!("tv.matched_by_name_tip", relation = relation).to_string()))
+                            .child(t!("tv.matched_by_name").to_string()),
+                    )
+                })
                 .when_some(n.owner.clone(), |d, o| d.child(div().text_sm().text_color(theme.muted_foreground).child(format!("{} {o}", t!("tv.owner")))))
-                .children(n.tags.iter().map(|tg| Tag::secondary().small().child(tg.clone())));
+                .children(
+                    n.tags
+                        .iter()
+                        .enumerate()
+                        .map(|(i, tg)| div().id(("tv-dbt-tag", i)).tooltip(tip(t!("tv.dbt_tag").to_string())).child(crate::ui::badge(crate::ui::Tone::Neutral, cx).child(tg.clone()))),
+                );
         }
-        top = top
-            .child(div().flex_1())
-            .child(Button::new("tv-query").label(t!("tv.query").to_string()).outline().small().on_click(move |_, w, cx| open_query(format!("select * from {fq} limit 100;"), w, cx)));
         let facts = match &self.facts {
             Some(Load::Ready(f)) => {
                 let kind = match f.kind.as_str() {
@@ -226,15 +265,18 @@ impl TableTab {
                     "MATERIALIZED VIEW" => t!("tv.kind_matview").to_string(),
                     other => other.to_lowercase(),
                 };
-                let mut v = vec![kind];
-                v.extend(f.rows.map(|r| t!("tv.rows", n = short_count(r as f64)).to_string()));
-                v.extend(f.bytes.map(|b| format!("{}B", short_count(b as f64))));
-                v.extend(f.last_altered.as_deref().and_then(ago).map(|a| t!("tv.changed", ago = a).to_string()));
+                // Short on screen; the exact value on hover.
+                let at = |ts: &Option<String>| ts.as_deref().and_then(user_view::parse_ts);
+                let mut v = vec![(kind, at(&f.created).map(|s| t!("tv.created_at", at = crate::ui::local_time(s)).to_string()))];
+                v.extend(f.rows.map(|r| (t!("tv.rows", n = short_count(r as f64)).to_string(), Some(t!("tv.rows", n = crate::ui::grouped(r)).to_string()))));
+                v.extend(f.bytes.map(|b| (format!("{}B", short_count(b as f64)), Some(t!("tv.bytes_exact", n = crate::ui::grouped(b)).to_string()))));
+                v.extend(at(&f.last_altered).map(|s| (t!("tv.changed", ago = crate::ui::ago(s)).to_string(), Some(crate::ui::local_time(s)))));
                 v
             }
-            Some(Load::Failed(m)) => vec![m.clone()],
-            _ => vec![t!("tree.loading").to_string()],
+            Some(Load::Failed(m)) => vec![(m.clone(), None)],
+            _ => vec![(t!("tree.loading").to_string(), None)],
         };
+        let facts = facts.into_iter().enumerate().map(|(i, (text, hover))| div().id(("tv-fact", i)).when_some(hover, |d, h| d.tooltip(tip(h))).child(text));
         let tab = |id: &'static str, label: String, s: Section, cur: Section, cx: &mut Context<Self>| {
             Button::new(id).label(label).ghost().small().selected(s == cur).on_click(cx.listener(move |t, _, _, cx| t.go(s, cx)))
         };
@@ -289,7 +331,10 @@ impl TableTab {
                     .children(self.custom.iter().enumerate().map(|(i, c)| {
                         let s = Section::Custom(i);
                         Button::new(("tv-custom", i)).label(c.name.clone()).ghost().small().selected(s == cur).on_click(cx.listener(move |t, _, _, cx| t.go(s, cx)))
-                    })),
+                    }))
+                    // Action at the end of the sections row: in the title row it wrapped onto a line of its own.
+                    .child(div().flex_1())
+                    .child(Button::new("tv-query").label(t!("tv.query").to_string()).outline().small().on_click(move |_, w, cx| open_query(format!("select * from {fq} limit 100;"), w, cx))),
             )
     }
 
@@ -517,7 +562,7 @@ impl TableTab {
                     let t = p.manifest.tests_of(&n.unique_id).into_iter().find(|t| &t.kind == kind && t.column.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(&r.col.name)))?;
                     p.results.get(&t.unique_id).cloned()
                 });
-                out = out.child(h_flex().gap_2().text_sm().child(Tag::info().small().child(kind.clone())).when_some(status, |d, (s, when)| {
+                out = out.child(h_flex().gap_2().text_sm().child(crate::ui::badge(crate::ui::Tone::Info, cx).child(kind.clone())).when_some(status, |d, (s, when)| {
                     d.child(
                         div()
                             .text_xs()
@@ -740,7 +785,7 @@ impl TableTab {
                         .gap_1()
                         .py_1()
                         .child(div().w(px(110.)).text_sm().text_color(theme.muted_foreground).child(t!("tv.tags").to_string()))
-                        .children(node.tags.iter().map(|t| Tag::secondary().small().child(t.clone()))),
+                        .children(node.tags.iter().map(|t| crate::ui::badge(crate::ui::Tone::Neutral, cx).child(t.clone()))),
                 )
             });
         left = left.child(head(t!("tv.tests_n", n = tests.len()).to_string()));
@@ -750,7 +795,7 @@ impl TableTab {
                     .gap_2()
                     .items_start()
                     .text_sm()
-                    .child(Tag::info().small().child(kind))
+                    .child(crate::ui::badge(crate::ui::Tone::Info, cx).child(kind))
                     .child(div().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(cols.join(", "))),
             );
         }
@@ -801,8 +846,9 @@ impl TableTab {
         let has_compiled = compiled_sql.is_some();
         let compile_node = node.clone();
         let toggle = |id: &'static str, label: String, on: bool, value: bool, cx: &mut Context<Self>| {
-            Button::new(id).label(label).xsmall().outline().selected(on).on_click(cx.listener(move |t, _, _, cx| {
+            Button::new(id).label(label).xsmall().ghost().selected(on).on_click(cx.listener(move |t, _, _, cx| {
                 t.show_compiled = value;
+                t.show_blame = false;
                 cx.notify();
             }))
         };
@@ -855,10 +901,27 @@ impl TableTab {
                     .border_b_1()
                     .border_color(theme.border)
                     .child(div().flex_1().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).overflow_hidden().text_ellipsis().child(node.file.clone()))
-                    .child(Button::new("tv-blame").label("Blame").xsmall().outline().selected(self.show_blame).on_click({
+                    // How to look at the file: one segmented control (Source | Compiled | Blame)…
+                    .child({
+                        let blame_on = self.show_blame && !compiled;
                         let (dir, file) = (project.dir.clone(), node.file.clone());
-                        cx.listener(move |t, _, _, cx| t.toggle_blame(dir.clone(), file.clone(), cx))
-                    }))
+                        h_flex()
+                            .gap_0p5()
+                            .p_0p5()
+                            .rounded(theme.radius)
+                            .bg(theme.secondary)
+                            .child(toggle("tv-src", t!("tv.source").to_string(), !compiled && !blame_on, false, cx))
+                            .child(toggle("tv-cmp", t!("tv.compiled").to_string(), compiled, true, cx).disabled(!has_compiled).when(!has_compiled, |b| b.tooltip(t!("tv.no_compiled").to_string())))
+                            .child(Button::new("tv-blame").label("Blame").ghost().xsmall().selected(blame_on).on_click(cx.listener(move |t, _, _, cx| {
+                                t.show_compiled = false;
+                                if !t.show_blame {
+                                    t.toggle_blame(dir.clone(), file.clone(), cx);
+                                }
+                                cx.notify();
+                            })))
+                    })
+                    // …then what to do with it, after a divider.
+                    .child(div().w(px(1.)).h(px(16.)).bg(theme.border))
                     .child(
                         Button::new("tv-compile")
                             .label(if self.compiling { t!("tv.compiling").to_string() } else { t!("tv.compile").to_string() })
@@ -868,8 +931,6 @@ impl TableTab {
                             .tooltip(t!("tv.compile_tip").to_string())
                             .on_click(cx.listener(move |t, _, _, cx| t.compile(compile_node.clone(), cx))),
                     )
-                    .child(toggle("tv-src", t!("tv.source").to_string(), !compiled, false, cx))
-                    .child(toggle("tv-cmp", t!("tv.compiled").to_string(), compiled, true, cx).disabled(!has_compiled).when(!has_compiled, |b| b.tooltip(t!("tv.no_compiled").to_string())))
                     .when_some(url, |d, u| d.child(Button::new("tv-gh").label(t!("tv.open_github").to_string()).outline().xsmall().on_click(move |_, _, cx| cx.open_url(&u))))
                     .child(Button::new("tv-ed").label(t!("tv.open_editor").to_string()).outline().xsmall().on_click(move |_, _, cx| {
                         // `status` in the background: waits for `open` to finish (no zombie) without blocking the UI.

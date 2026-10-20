@@ -377,7 +377,7 @@ impl Render for PlanView {
             .on_action(cx.listener(|v, _: &PlanZoomIn, _, cx| v.zoom_step(true, cx)))
             .on_action(cx.listener(|v, _: &PlanZoomOut, _, cx| v.zoom_step(false, cx)))
             .on_action(cx.listener(|v, _: &PlanFit, _, cx| v.zoom_fit(cx)))
-            .child(h_flex().px_2().py_1().gap_3().text_sm().child(header).child(div().text_color(theme.muted_foreground).child(t!("plan.zoom_hint").to_string())))
+            .child(h_flex().px_2().py_1().gap_3().text_sm().child(header).child(div().text_color(theme.muted_foreground).child(crate::ui::keys(&t!("plan.zoom_hint")))))
             .when_some(note, |d, n| d.child(div().mx_2().mb_1().px_2().py_1().rounded(theme.radius).bg(theme.secondary).text_sm().text_color(theme.muted_foreground).child(n)))
             .child(
                 h_flex()
@@ -388,6 +388,8 @@ impl Render for PlanView {
                             .id("plan-area")
                             .relative()
                             .flex_1()
+                            // Without it the area grows to the graph's width and the window clips it: no scrolling.
+                            .min_w_0()
                             .h_full()
                             .overflow_scroll()
                             .track_scroll(&self.scroll)
@@ -395,7 +397,11 @@ impl Render for PlanView {
                             .child(canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
                             // ⌘ + scroll zooms; registered on a child to run before the area's scrolling.
                             .child(
+                                // The graph's own size (at least the area): a wrapper as wide as the area left the
+                                // graph overflowing it, and the scroll range only counts the wrapper.
                                 div()
+                                    .w(px(w * z))
+                                    .h(px(h * z))
                                     .min_w_full()
                                     .min_h_full()
                                     .on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {

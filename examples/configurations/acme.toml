@@ -41,3 +41,7 @@ match = "ANALYTICS.*.*"
 [[tabs]]
 name = "Catalog"
 url = "https://catalog.example.com/assets/{database}.{schema}.{table}"
+
+# Left out of the lineage graph: a glob without a dot matches the database, with dots DB.SCHEMA.NAME.
+[lineage]
+ignore = ["DEV_*"]
