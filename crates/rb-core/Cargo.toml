@@ -15,6 +15,7 @@ rustls-native-certs = "0.8"
 russh = "0.64.1"
 security-framework = "3"
 sqlformat = "0.5"
+sqlparser = "0.63"
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 regex = "1"

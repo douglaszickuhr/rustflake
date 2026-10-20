@@ -15,6 +15,7 @@ pub mod masking;
 pub mod metadata;
 pub mod org_config;
 pub mod picker;
+pub mod query_edit;
 pub mod quick_open;
 pub mod secrets;
 pub mod session;

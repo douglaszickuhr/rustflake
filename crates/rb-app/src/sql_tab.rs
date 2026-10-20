@@ -1,6 +1,7 @@
 use rust_i18n::t;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use gpui_kit::component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline, InputEvent};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::table::{DataTable, TableState};
+use gpui_kit::component::table::TableState;
 use gpui_kit::component::{ActiveTheme as _, Icon, RopeExt as _, Sizable as _, h_flex, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -18,11 +19,12 @@ use rb_core::DbError;
 use rb_core::batch::ResultSet;
 use rb_core::error::error_byte_offset;
 use rb_core::history::{self, Entry};
+use rb_core::query_edit;
 use rb_core::session::{ExecOutcome, Session};
 use rb_core::split::{explain_prefix, is_use, split_statements, statement_at};
 
 use crate::completion::{SqlCompletion, SqlDefinition};
-use crate::grid::{self, ResultGrid};
+use crate::grid::{self, Derive, ResultGrid};
 use crate::meta::{ConnTarget, MetaStore};
 use crate::plan_view::PlanView;
 use crate::{CancelQuery, CopyCells, Db, ExplainAnalyze, ExplainEstimate, FormatSql, PlanFit, PlanZoomIn, PlanZoomOut, RunScript, RunStatement, TabKey, ToggleComment};
@@ -143,6 +145,8 @@ pub struct SqlTab {
     focus: FocusHandle,
     pub path: PathBuf,
     pub editor: Entity<EditorState>,
+    /// Opens a new script and runs it (queries derived from a result cell).
+    run_query: crate::table_tab::OpenQuery,
     results: Vec<ResultPane>,
     messages: Vec<Message>,
     show_messages: bool,
@@ -174,7 +178,15 @@ impl SqlTab {
         self.editor.update(cx, |e, cx| e.dismiss_lsp_overlays(cx));
     }
 
-    pub fn new(path: PathBuf, conn: ConnTarget, meta: Entity<MetaStore>, open_table: crate::schema_tree::OpenTable, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        conn: ConnTarget,
+        meta: Entity<MetaStore>,
+        open_table: crate::schema_tree::OpenTable,
+        run_query: crate::table_tab::OpenQuery,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let editor = cx.new(|cx| EditorState::new(window, cx).language("sql").default_value(text));
         let target = crate::completion::DefinitionTarget::default();
@@ -199,6 +211,7 @@ impl SqlTab {
             focus: cx.focus_handle(),
             path,
             editor,
+            run_query,
             results: Vec::new(),
             messages: Vec::new(),
             show_messages: false,
@@ -285,7 +298,7 @@ impl SqlTab {
         }
     }
 
-    fn run(&mut self, whole_script: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn run(&mut self, whole_script: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.running {
             return;
         }
@@ -383,13 +396,25 @@ impl SqlTab {
         self._grid_subs.clear();
         let executed = outcomes.len();
         let mut results = Vec::new();
-        let with_out = outcomes.into_iter().enumerate().filter(|(i, _)| with_rows.contains(i)).filter_map(|(i, o)| o.res.ok().map(|out| (i, out)));
-        for (k, (i, out)) in with_out.enumerate() {
+        let with_out = outcomes.into_iter().enumerate().filter(|(i, _)| with_rows.contains(i)).filter_map(|(i, o)| o.res.ok().map(|out| (i, o.range, out)));
+        let dialect = self.meta.read(cx).cache.dialect;
+        for (k, (i, range, out)) in with_out.enumerate() {
             let truncated = out.more && cursor_closed(i, executed);
             let rs = ResultSet::new(out.columns, out.batch, out.more && !truncated);
             let grid = self.new_grid(window, cx);
+            let (sql, run_query) = (src[range].to_string(), self.run_query.clone());
+            let on_derive: crate::grid::OnDerive = Rc::new(move |d, window, cx| {
+                let derived = match d {
+                    Derive::CountBy(cols) => query_edit::count_by(&sql, &cols, dialect),
+                    Derive::Distinct(col) => query_edit::distinct(&sql, &col, dialect),
+                    Derive::Range(col) => query_edit::range(&sql, &col, dialect),
+                    Derive::Filter(col, f) => query_edit::with_filter(&sql, &col, &f, dialect),
+                };
+                run_query(format!("{derived};"), window, cx);
+            });
             grid.update(cx, |t, cx| {
                 t.delegate_mut().set_result(rs, session.clone(), out.exec_id);
+                t.delegate_mut().on_derive = Some(on_derive);
                 t.refresh(cx);
             });
             results.push(ResultPane { title: t!("results.result", n = k + 1).to_string().into(), grid, truncated, query_id: out.query_id.clone() });
@@ -723,7 +748,7 @@ impl Render for SqlTab {
                     })
                     // Error without rows: just the message, no empty grid.
                     .when_some(g.filter(|g| self.error.is_none() || g.read(cx).delegate().loaded_rows() > 0), |d, g| {
-                        let body = if self.text_mode { self.text_view.render(&g, window, cx) } else { DataTable::new(&g).stripe(true).bordered(true).into_any_element() };
+                        let body = if self.text_mode { self.text_view.render(&g, window, cx) } else { grid::view(&g).into_any_element() };
                         d.child(div().flex_1().min_h_0().child(body))
                     })
                     .into_any_element()

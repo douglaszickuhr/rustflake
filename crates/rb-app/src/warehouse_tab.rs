@@ -88,7 +88,7 @@ impl WarehouseTab {
         t!("wh.title").to_string().into()
     }
 
-    fn reload(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
         self.list = Load::Loading;

@@ -29,6 +29,11 @@ use std::time::Instant;
 use gpui_kit::*;
 
 rust_i18n::i18n!("locales", fallback = "en");
+
+/// ⌘1…⌘8 picks that tab; `usize::MAX` (⌘9) is the last one.
+#[derive(gpui_kit::Action, Clone, PartialEq)]
+#[action(namespace = rustflake, no_json)]
+pub struct SelectTab(pub usize);
 use rb_core::session::Engine;
 
 gpui_kit::actions!(
@@ -56,7 +61,8 @@ gpui_kit::actions!(
         PlanFit,
         ToggleComment,
         EditConnection,
-        ClearLineage
+        ClearLineage,
+        Refresh
     ]
 );
 
@@ -174,6 +180,17 @@ fn main() {
             KeyBinding::new("secondary-k", QuickOpen, Some("Workspace")),
             KeyBinding::new("secondary-y", ShowHistory, Some("Workspace")),
             KeyBinding::new("secondary-,", EditConnection, Some("Workspace")),
+            KeyBinding::new("secondary-r", Refresh, Some("Workspace")),
+            KeyBinding::new("secondary-1", SelectTab(0), Some("Workspace")),
+            KeyBinding::new("secondary-2", SelectTab(1), Some("Workspace")),
+            KeyBinding::new("secondary-3", SelectTab(2), Some("Workspace")),
+            KeyBinding::new("secondary-4", SelectTab(3), Some("Workspace")),
+            KeyBinding::new("secondary-5", SelectTab(4), Some("Workspace")),
+            KeyBinding::new("secondary-6", SelectTab(5), Some("Workspace")),
+            KeyBinding::new("secondary-7", SelectTab(6), Some("Workspace")),
+            KeyBinding::new("secondary-8", SelectTab(7), Some("Workspace")),
+            // Like browsers: ⌘9 is the last tab, however many there are.
+            KeyBinding::new("secondary-9", SelectTab(usize::MAX), Some("Workspace")),
             // The field uses ↑↓ to move the cursor; the deeper binding wins.
             KeyBinding::new("up", QuickPrev, Some("QuickOpen > Input")),
             KeyBinding::new("down", QuickNext, Some("QuickOpen > Input")),

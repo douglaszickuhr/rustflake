@@ -4,14 +4,17 @@ use std::time::Duration;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::{Editor, EditorState};
-use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelection, TableState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableSelection, TableState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::batch::ResultSet;
 use rb_core::decode::{detail_text, one_line};
+use rb_core::query_edit::Filter;
 use rb_core::session::Session;
 use rb_core::table::PendingEdits;
+use rust_i18n::t;
 
 pub const MAX_CELL_CHARS: usize = 200;
 /// Text limit in the detail tooltip; the full value remains in ⌘C.
@@ -21,11 +24,64 @@ const BUSY_DELAY: Duration = Duration::from_millis(150);
 
 pub type OnSort = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
 
+/// A query asked for from a cell's right-click menu; the grid's owner knows the SQL behind it.
+#[derive(Clone)]
+pub enum Derive {
+    CountBy(Vec<String>),
+    Distinct(String),
+    Range(String),
+    Filter(String, Filter),
+}
+
+fn menu_item(f: &OnDerive, label: String, d: Derive) -> PopupMenuItem {
+    let f = f.clone();
+    PopupMenuItem::new(label).on_click(move |_, window, cx| f(d.clone(), window, cx))
+}
+
+/// min/max make sense here. Snowflake results come as TEXT (types aren't decoded), so it's always offered there.
+fn orderable(t: &rb_core::Type) -> bool {
+    use rb_core::Type as T;
+    [T::TEXT, T::VARCHAR, T::BPCHAR, T::NAME, T::INT2, T::INT4, T::INT8, T::NUMERIC, T::FLOAT4, T::FLOAT8, T::MONEY, T::DATE, T::TIME, T::TIMESTAMP, T::TIMESTAMPTZ, T::INTERVAL].contains(t)
+}
+pub type OnDerive = Rc<dyn Fn(Derive, &mut Window, &mut App)>;
+
+/// The grid as drawn everywhere, with the right-click menu. The table's own menu only knows rows,
+/// and with selectable cells it never gets one, so the menu lives on a wrapper around it.
+pub fn view(grid: &Entity<TableState<ResultGrid>>) -> impl IntoElement {
+    let g = grid.clone();
+    div()
+        .id("grid-menu")
+        .size_full()
+        // Capture runs parent first: forget the last header here, the header's own listener sets it again.
+        .capture_any_mouse_down({
+            let g = grid.clone();
+            move |_, _, cx| g.update(cx, |t, _| t.delegate_mut().menu_header = None)
+        })
+        .child(DataTable::new(grid).stripe(true).bordered(true))
+        .context_menu(move |menu, _, cx| {
+            let t = g.read(cx);
+            if let Some(col) = t.delegate().menu_header {
+                return t.delegate().header_menu(menu, col);
+            }
+            // The table records the right-clicked cell itself (column 0 is the row number).
+            match t.right_clicked_cell().and_then(|(r, c)| Some((r, c.checked_sub(ROW_NO)?))) {
+                Some(cell) => t.delegate().derive_menu(menu, cell),
+                None => menu,
+            }
+        })
+}
+
 pub struct ResultGrid {
     pub rs: Option<ResultSet>,
     pub edits: Option<PendingEdits>,
     pub sortable: bool,
     pub on_sort: Option<OnSort>,
+    /// Without it the right-click menu stays empty.
+    pub on_derive: Option<OnDerive>,
+    /// Header (data column) under the current right click; the table only records cells.
+    menu_header: Option<usize>,
+    /// Columns marked with ⌘-click on the header, for a count grouped by all of them.
+    group_cols: Vec<usize>,
     pub error: Option<String>,
     /// Save in progress: blocks new saves, edits and paging.
     pub saving: bool,
@@ -41,12 +97,66 @@ pub struct ResultGrid {
 
 impl ResultGrid {
     pub fn new(sortable: bool) -> Self {
-        ResultGrid { rs: None, edits: None, sortable, on_sort: None, error: None, saving: false, session: None, exec_id: 0, widths: Vec::new(), loading_more: false, busy: false, generation: 0 }
+        ResultGrid {
+            rs: None,
+            edits: None,
+            sortable,
+            on_sort: None,
+            on_derive: None,
+            menu_header: None,
+            group_cols: Vec::new(),
+            error: None,
+            saving: false,
+            session: None,
+            exec_id: 0,
+            widths: Vec::new(),
+            loading_more: false,
+            busy: false,
+            generation: 0,
+        }
+    }
+
+    /// Right-click menu for a header: what applies to the whole column.
+    fn header_menu(&self, menu: PopupMenu, col: usize) -> PopupMenu {
+        let (Some(f), Some(rs)) = (self.on_derive.as_ref(), self.rs.as_ref()) else { return menu };
+        let Some(info) = rs.columns.get(col) else { return menu };
+        let name = info.name.clone();
+        // Columns marked with ⌘-click, plus this one, in table order.
+        let mut group = self.group_cols.clone();
+        if !group.contains(&col) {
+            group.push(col);
+        }
+        group.sort_unstable();
+        let names: Vec<String> = group.iter().filter_map(|c| rs.columns.get(*c)).map(|c| c.name.clone()).collect();
+        let menu = if names.len() > 1 { menu.item(menu_item(f, t!("grid.count_by", col = names.join(", ")).to_string(), Derive::CountBy(names))) } else { menu };
+        menu.item(menu_item(f, t!("grid.count_by", col = name).to_string(), Derive::CountBy(vec![name.clone()])))
+            .item(menu_item(f, t!("grid.distinct", col = name).to_string(), Derive::Distinct(name.clone())))
+            .when(orderable(&info.type_), |m| m.item(menu_item(f, t!("grid.range", col = name).to_string(), Derive::Range(name.clone()))))
+    }
+
+    /// Right-click menu for a cell (data column): count by its column, filter by its value.
+    fn derive_menu(&self, menu: PopupMenu, (row, col): (usize, usize)) -> PopupMenu {
+        let Some(f) = self.on_derive.clone() else { return menu };
+        let Some(name) = self.rs.as_ref().and_then(|rs| rs.columns.get(col)).map(|c| c.name.clone()) else { return menu };
+        let item = |label: String, d: Derive| menu_item(&f, label, d);
+        let menu = menu.item(item(t!("grid.count_by", col = name).to_string(), Derive::CountBy(vec![name.clone()]))).separator();
+        match self.full_text(row, col) {
+            Some(v) => {
+                let shown = one_line(&v, 40);
+                menu.item(item(t!("grid.only", col = name, v = shown).to_string(), Derive::Filter(name.clone(), Filter::Eq(v.clone()))))
+                    .item(item(t!("grid.exclude", col = name, v = shown).to_string(), Derive::Filter(name.clone(), Filter::Ne(v))))
+                    .item(item(t!("grid.not_null", col = name).to_string(), Derive::Filter(name, Filter::NotNull)))
+            }
+            None => menu
+                .item(item(t!("grid.null", col = name).to_string(), Derive::Filter(name.clone(), Filter::IsNull)))
+                .item(item(t!("grid.not_null", col = name).to_string(), Derive::Filter(name, Filter::NotNull))),
+        }
     }
 
     pub fn set_result(&mut self, rs: ResultSet, session: Arc<Session>, exec_id: u64) {
         self.generation += 1;
         self.exec_id = exec_id;
+        self.group_cols.clear();
         self.widths = (0..rs.columns.len())
             .map(|c| {
                 let sample = (0..rs.rows().min(100)).map(|r| rs.display(r, c, 60).map_or(4, |s| s.chars().count())).max().unwrap_or(0);
@@ -155,6 +265,31 @@ impl TableDelegate for ResultGrid {
 
     fn rows_count(&self, _: &App) -> usize {
         self.loaded_rows() + self.edits.as_ref().map_or(0, PendingEdits::inserted_rows)
+    }
+
+    fn render_th(&mut self, col_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+        let name = self.column(col_ix, cx).name.clone();
+        let marked = col_ix.checked_sub(ROW_NO).is_some_and(|c| self.group_cols.contains(&c));
+        div()
+            .size_full()
+            .when(marked, |d| d.text_color(cx.theme().primary).font_weight(FontWeight::SEMIBOLD))
+            .when_some(col_ix.checked_sub(ROW_NO), |d, col| {
+                d.capture_any_mouse_down(cx.listener(move |t, e: &MouseDownEvent, _, cx| {
+                    if e.button == MouseButton::Right {
+                        t.delegate_mut().menu_header = Some(col);
+                    } else if e.button == MouseButton::Left && e.modifiers.secondary() {
+                        // ⌘-click (Ctrl elsewhere) marks the column for group by, instead of sorting or selecting it.
+                        let g = &mut t.delegate_mut().group_cols;
+                        match g.iter().position(|c| *c == col) {
+                            Some(i) => _ = g.remove(i),
+                            None => g.push(col),
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }))
+            })
+            .child(name)
     }
 
     fn column(&self, col_ix: usize, cx: &App) -> Column {

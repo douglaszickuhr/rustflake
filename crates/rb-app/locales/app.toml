@@ -2418,6 +2418,16 @@ en = "save table edits"
 pt = "salvar edições da tabela"
 es = "guardar ediciones de la tabla"
 
+[keys.refresh]
+en = "refresh the open tab"
+pt = "atualizar a aba aberta"
+es = "actualizar la pestaña abierta"
+
+[keys.switch_tab]
+en = "go to tab 1–8 (9: last)"
+pt = "ir para a aba 1–8 (9: última)"
+es = "ir a la pestaña 1–8 (9: última)"
+
 [keys.refresh_tree]
 en = "refresh the tree node"
 pt = "atualizar o nó da árvore"
@@ -2432,3 +2442,43 @@ es = "zoom"
 en = "fit to window"
 pt = "ajustar à janela"
 es = "ajustar a la ventana"
+
+[grid.count_by]
+en = "Count rows by %{col}"
+pt = "Contar linhas por %{col}"
+es = "Contar filas por %{col}"
+
+[grid.only]
+en = "Only %{col} = %{v}"
+pt = "Só %{col} = %{v}"
+es = "Solo %{col} = %{v}"
+
+[grid.exclude]
+en = "Exclude %{col} = %{v}"
+pt = "Excluir %{col} = %{v}"
+es = "Excluir %{col} = %{v}"
+
+[grid.null]
+en = "Only %{col} is null"
+pt = "Só %{col} nulo"
+es = "Solo %{col} nulo"
+
+[grid.not_null]
+en = "Only %{col} is not null"
+pt = "Só %{col} não nulo"
+es = "Solo %{col} no nulo"
+
+[grid.distinct]
+en = "Distinct values of %{col}"
+pt = "Valores distintos de %{col}"
+es = "Valores distintos de %{col}"
+
+[grid.range]
+en = "Min / max of %{col}"
+pt = "Mín / máx de %{col}"
+es = "Mín / máx de %{col}"
+
+[keys.group_mark]
+en = "mark a column to count by several"
+pt = "marcar coluna para contar por várias"
+es = "marcar columna para contar por varias"

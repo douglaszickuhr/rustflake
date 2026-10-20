@@ -187,7 +187,7 @@ impl AdminTab {
     }
 
     /// Connects (same login: the engine reuses the Snowflake session) and loads the lists.
-    fn reload(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let (conn, existing, engine) = (self.conn.clone(), self.session.clone(), cx.global::<Db>().0.clone());
         self.users = Load::Loading;
         self.roles = Load::Loading;

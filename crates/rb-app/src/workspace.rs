@@ -38,7 +38,7 @@ use crate::sql_tab::SqlTab;
 use crate::table_tab::TableTab;
 use crate::ui::Load;
 use crate::warehouse_tab::WarehouseTab;
-use crate::{CloseTab, Db, EditConnection, NewSqlTab, QuickOpen, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
+use crate::{CloseTab, Db, EditConnection, NewSqlTab, QuickOpen, Refresh, SelectTab, ShowHistory, conn_dialog, db_filter, history_popup, quick_open};
 use rb_core::picker::{list_sql, parse_available_roles, push_recent};
 
 /// Open connection: its own metadata session and tree; each tab keeps its own session.
@@ -90,6 +90,8 @@ pub fn kind_logo(snowflake: bool) -> Icon {
 
 pub struct Workspace {
     focus: FocusHandle,
+    /// The open tab's area: a click there takes focus from the tree, so ⌘R refreshes the tab, not a tree node.
+    main_focus: FocusHandle,
     pub connections: Vec<ConnectionConfig>,
     pub open: Vec<Open>,
     /// Connection highlighted in the sidebar: receives new tabs and shows the tree.
@@ -147,6 +149,7 @@ impl Workspace {
         Workspace {
             reconnect_queue,
             focus: cx.focus_handle(),
+            main_focus: cx.focus_handle(),
             connections,
             open: Vec::new(),
             current: None,
@@ -391,6 +394,8 @@ impl Workspace {
     pub fn open_table(&mut self, conn_id: &str, schema: String, table: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(o) = self.open_conn(conn_id) else { return };
         let title: SharedString = format!("{schema}.{table}").into();
+        // Focus leaves the tree, so ⌘R refreshes the table.
+        self.main_focus.focus(window, cx);
         if let Some(ix) = self.tabs.iter().position(|t| matches!(t, TabView::Table(_)) && t.conn_id(cx) == conn_id && t.title(cx) == title) {
             self.select_tab(ix, cx);
             return;
@@ -404,7 +409,8 @@ impl Workspace {
         let open_table: crate::schema_tree::OpenTable = Rc::new(move |schema, table, window, cx| {
             ws.update(cx, |ws, cx| ws.open_table(&id, schema, table, window, cx)).ok();
         });
-        let tab = cx.new(|cx| TableTab::new(schema, table, conn, meta, dbt, open_query, open_table, window, cx));
+        let run_query = self.run_query_cb(conn_id, cx);
+        let tab = cx.new(|cx| TableTab::new(schema, table, conn, meta, dbt, open_query, run_query, open_table, window, cx));
         self.tabs.push(TabView::Table(tab));
         self.select_tab(self.tabs.len() - 1, cx);
         self.save_tables(conn_id, cx);
@@ -541,6 +547,20 @@ impl Workspace {
     }
 
     /// New script already holding the SQL (Query button of the table tab).
+    /// Callback for tabs: a new script with `sql`, run right away.
+    fn run_query_cb(&self, conn_id: &str, cx: &Context<Self>) -> crate::table_tab::OpenQuery {
+        let (ws, id) = (cx.entity().downgrade(), conn_id.to_string());
+        Rc::new(move |sql, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_query(&id, &sql, window, cx);
+                if let Some(TabView::Sql(t)) = ws.tabs.get(ws.active_tab) {
+                    t.update(cx, |t, cx| t.run(true, window, cx));
+                }
+            })
+            .ok();
+        })
+    }
+
     fn open_query(&mut self, conn_id: &str, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
         let created = config::new_script(&config::scripts_dir().join(conn_id)).and_then(|p| config::write_private(&p, sql).map(|_| p).map_err(|e| rb_core::DbError::Io(e.to_string())));
         match created {
@@ -586,7 +606,8 @@ impl Workspace {
         let open_table: crate::schema_tree::OpenTable = Rc::new(move |schema, table, window, cx| {
             ws.update(cx, |ws, cx| ws.open_table(&id, schema, table, window, cx)).ok();
         });
-        let tab = cx.new(|cx| SqlTab::new(path, conn, meta, open_table, window, cx));
+        let run_query = self.run_query_cb(conn_id, cx);
+        let tab = cx.new(|cx| SqlTab::new(path, conn, meta, open_table, run_query, window, cx));
         tab.read(cx).editor.clone().update(cx, |e, cx| e.focus(window, cx));
         self.tabs.push(TabView::Sql(tab));
         self.select_tab(self.tabs.len() - 1, cx);
@@ -652,7 +673,23 @@ impl Workspace {
         };
         // min_w_0: without it the flex item measures at least the content width (all the grid's columns)
         // and overflows the window instead of letting the grid scroll horizontally.
-        div().flex_1().min_w_0().min_h_0().size_full().child(content).into_any_element()
+        div()
+            .track_focus(&self.main_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|ws, _, window, cx| {
+                    // Fields inside already took focus on their own mouse down: keep it.
+                    if !ws.main_focus.contains_focused(window, cx) {
+                        ws.main_focus.focus(window, cx);
+                    }
+                }),
+            )
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .size_full()
+            .child(content)
+            .into_any_element()
     }
 
     fn confirm_remove(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1307,8 +1344,20 @@ fn shortcuts_list(cx: &App) -> AnyElement {
                 ("⌘.", "keys.cancel"),
             ],
         ),
-        ("keys.app", &[("⌘K", "keys.goto"), ("⌘T", "keys.new_script"), ("⌘W", "keys.close_tab"), ("⌘Y", "keys.history"), ("⌘,", "keys.edit_connection"), ("⌘Q", "keys.quit")]),
-        ("keys.results", &[("⌘C", "keys.copy"), ("⌘S", "keys.save_edits"), ("⌘R / F5", "keys.refresh_tree")]),
+        (
+            "keys.app",
+            &[
+                ("⌘K", "keys.goto"),
+                ("⌘T", "keys.new_script"),
+                ("⌘W", "keys.close_tab"),
+                ("⌘Y", "keys.history"),
+                ("⌘,", "keys.edit_connection"),
+                ("⌘R", "keys.refresh"),
+                ("⌘1…⌘9", "keys.switch_tab"),
+                ("⌘Q", "keys.quit"),
+            ],
+        ),
+        ("keys.results", &[("⌘C", "keys.copy"), ("⌘-click header", "keys.group_mark"), ("⌘S", "keys.save_edits"), ("F5", "keys.refresh_tree")]),
         ("keys.diagrams", &[("⌘+ ⌘−", "keys.zoom"), ("⌘0", "keys.fit"), ("⌘ scroll", "keys.zoom")]),
     ];
     v_flex()
@@ -1459,6 +1508,18 @@ impl Render for Workspace {
                 None => conn_dialog::open(None, window, cx),
             }))
             .on_action(cx.listener(|ws, _: &CloseTab, window, cx| ws.close_tab(ws.active_tab, window, cx)))
+            .on_action(cx.listener(|ws, a: &SelectTab, _, cx| {
+                if !ws.tabs.is_empty() {
+                    ws.select_tab(a.0.min(ws.tabs.len() - 1), cx);
+                }
+            }))
+            .on_action(cx.listener(|ws, _: &Refresh, _, cx| match ws.tabs.get(ws.active_tab) {
+                Some(TabView::Table(t)) => t.update(cx, |t, cx| t.refresh(cx)),
+                Some(TabView::Admin(t)) => t.update(cx, |t, cx| t.reload(cx)),
+                Some(TabView::Warehouses(t)) => t.update(cx, |t, cx| t.reload(cx)),
+                // A script reruns with ⌘↵, not ⌘R.
+                Some(TabView::Sql(_)) | None => {}
+            }))
             .child(self.render_title(window, cx))
             .child(h_flex().flex_1().min_h_0().child(self.render_rail(cx)).child(div().flex_1().min_w_0().h_full().child(split)))
             .child(self.render_status(cx))

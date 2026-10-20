@@ -13,6 +13,7 @@ use rb_core::batch::ResultSet;
 use rb_core::dialect::Dialect;
 use rb_core::metadata::MetaRequest;
 use rb_core::org_config::TabKind;
+use rb_core::query_edit;
 use rb_core::session::Session;
 use rb_core::table::{EditTarget, PendingEdits, TABLE_LIMIT, build_sql, columns_match, select_sql};
 
@@ -154,6 +155,7 @@ impl TableTab {
         meta: Entity<MetaStore>,
         dbt: Option<Entity<DbtStore>>,
         open_query: OpenQuery,
+        run_query: OpenQuery,
         open_table: crate::schema_tree::OpenTable,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -171,6 +173,12 @@ impl TableTab {
             });
         });
         grid.update(cx, |t, _| t.delegate_mut().on_sort = Some(on_sort));
+        // Right-click a cell: count by its column in a new script, or narrow the filter field.
+        let weak = cx.entity().downgrade();
+        let on_derive: grid::OnDerive = Rc::new(move |d, window, cx| {
+            weak.update(cx, |tab, cx| tab.derive(d, &run_query, window, cx)).ok();
+        });
+        grid.update(cx, |t, _| t.delegate_mut().on_derive = Some(on_derive));
 
         let subs = vec![
             // The placeholder lives in the field state: it changes along with the language.
@@ -286,6 +294,30 @@ impl TableTab {
         self.target = Some(target);
         if self.section == Section::Data {
             self.load(cx);
+        }
+    }
+
+    fn derive(&mut self, d: grid::Derive, run_query: &OpenQuery, window: &mut Window, cx: &mut Context<Self>) {
+        let dialect = self.meta.read(cx).cache.dialect;
+        let filter = self.filter.read(cx).value().trim().to_string();
+        match d {
+            grid::Derive::Filter(col, f) => {
+                let cond = query_edit::condition_on(&col, &f, dialect);
+                let both = if filter.is_empty() { cond } else { format!("({filter}) and {cond}") };
+                self.filter.update(cx, |s, cx| s.set_value(both, window, cx));
+                self.load(cx);
+            }
+            // The rest runs over the whole table (with the filter), in a new script.
+            d => {
+                let base = select_sql(&dialect.qualified(&self.schema, &self.table), Some(&filter), None, None);
+                let sql = match d {
+                    grid::Derive::CountBy(cols) => query_edit::count_by(&base, &cols, dialect),
+                    grid::Derive::Distinct(col) => query_edit::distinct(&base, &col, dialect),
+                    grid::Derive::Range(col) => query_edit::range(&base, &col, dialect),
+                    grid::Derive::Filter(..) => unreachable!("handled above"),
+                };
+                run_query(format!("{sql};"), window, cx);
+            }
         }
     }
 
@@ -593,7 +625,7 @@ impl TableTab {
                     .p_2()
                     .gap_2()
                     .child(div().flex_1().child(Input::new(&self.filter)))
-                    .child(Button::new("reload").label(t!("table.reload").to_string()).ghost().on_click(cx.listener(|t, _, _, cx| t.load(cx))))
+                    .child(Button::new("reload").label(t!("table.reload").to_string()).ghost().tooltip(crate::ui::keys("⌘R")).on_click(cx.listener(|t, _, _, cx| t.load(cx))))
                     .when(editable, |d| {
                         d.child(Button::new("add-row").label(format!("+ {}", t!("table.row"))).ghost().on_click(cx.listener(|t, _, _, cx| t.with_edits(cx, |e, _| e.add_row()))))
                             .child(Button::new("del-row").label(t!("table.delete_row").to_string()).ghost().on_click(cx.listener(|t, _, _, cx| {
@@ -610,7 +642,7 @@ impl TableTab {
             .child(div().key_context("ResultGrid").flex_1().on_action(cx.listener(|t, _: &CopyCells, _, cx| grid::copy_to_clipboard(&t.grid, cx))).child(if self.text_mode {
                 self.text_view.render(&self.grid, window, cx)
             } else {
-                DataTable::new(&self.grid).stripe(true).bordered(true).into_any_element()
+                grid::view(&self.grid).into_any_element()
             }))
             .child(
                 h_flex()

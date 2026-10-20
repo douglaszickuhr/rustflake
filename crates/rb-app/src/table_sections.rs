@@ -93,6 +93,29 @@ impl TableTab {
         );
     }
 
+    /// ⌘R: fetches again everything already shown (header facts, definition, data, lineage, the open
+    /// custom tab). Sections never opened stay unloaded; dbt reads local files and has its own Compile.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.facts = None;
+        self.ensure_facts(cx);
+        if self.def_raw.take().is_some() {
+            self.col_lineage.clear();
+            self.ensure_definition(cx);
+        }
+        if self.data_started {
+            self.load(cx);
+        }
+        if let Some(l) = &self.lineage {
+            l.update(cx, |l, cx| l.reload(cx));
+        }
+        if let Section::Custom(i) = self.section
+            && self.custom.get(i).is_some_and(|c| c.opened)
+        {
+            self.load_custom(i, cx);
+        }
+        cx.notify();
+    }
+
     pub(crate) fn ensure_definition(&mut self, cx: &mut Context<Self>) {
         if self.def_raw.is_some() {
             return;
@@ -493,7 +516,7 @@ impl TableTab {
     /// Header cell that sorts by its column; clicking it again flips the direction.
     fn sort_head(&self, by: DefSort, label: String, cx: &mut Context<Self>) -> Stateful<Div> {
         let (cur, asc) = self.def_sort;
-        let arrow = (cur == by).then(|| if asc { "↑" } else { "↓" });
+        let arrow = (cur == by).then_some(if asc { "↑" } else { "↓" });
         h_flex()
             .id(SharedString::from(format!("def-sort-{by:?}")))
             .gap_1()

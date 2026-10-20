@@ -187,7 +187,7 @@ impl LineageView {
     }
 
     /// Fetches again; keeps what was expanded and selected (by key), drops the column highlight.
-    fn reload(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(focus) = self.graph.objs.get(&self.graph.focus).cloned() else { return };
         self.graph = Graph::new(focus);
         self.column = None;
