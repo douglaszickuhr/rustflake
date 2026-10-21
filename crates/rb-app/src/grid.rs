@@ -6,19 +6,16 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableSelection, TableState};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::batch::ResultSet;
-use rb_core::decode::{detail_text, one_line};
+use rb_core::decode::one_line;
 use rb_core::query_edit::Filter;
 use rb_core::session::Session;
 use rb_core::table::PendingEdits;
 use rust_i18n::t;
 
 pub const MAX_CELL_CHARS: usize = 200;
-/// Text limit in the detail tooltip; the full value remains in ⌘C.
-const MAX_DETAIL_CHARS: usize = 6_000;
 /// A query faster than this doesn't show the skeleton: the old result stays until the new one arrives.
 const BUSY_DELAY: Duration = Duration::from_millis(150);
 
@@ -49,9 +46,34 @@ pub type OnDerive = Rc<dyn Fn(Derive, &mut Window, &mut App)>;
 /// and with selectable cells it never gets one, so the menu lives on a wrapper around it.
 pub fn view(grid: &Entity<TableState<ResultGrid>>) -> impl IntoElement {
     let g = grid.clone();
+    // The grid's real width: when it changes, the last column is stretched again to fill it.
+    let measure = canvas(
+        {
+            let g = grid.clone();
+            move |b, _, cx| {
+                let now = f32::from(b.size.width);
+                if (g.read(cx).delegate().avail - now).abs() > 0.5 {
+                    // Not while the table is being drawn: right after this frame.
+                    let g = g.clone();
+                    cx.defer(move |cx| {
+                        g.update(cx, |t, cx| {
+                            t.delegate_mut().avail = now;
+                            t.refresh(cx);
+                            cx.notify();
+                        })
+                    });
+                }
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full();
     div()
         .id("grid-menu")
+        .relative()
         .size_full()
+        .child(measure)
         // Capture runs parent first: forget the last header here, the header's own listener sets it again.
         .capture_any_mouse_down({
             let g = grid.clone();
@@ -71,6 +93,12 @@ pub fn view(grid: &Entity<TableState<ResultGrid>>) -> impl IntoElement {
         })
 }
 
+/// Widest a column starts, in characters: 60 when there are many, more when few columns share the
+/// window (one JSON column shouldn't stop at 60). ponytail: ~1400px budget, not the real grid width.
+fn width_cap(columns: usize) -> usize {
+    (160 / columns.max(1)).clamp(60, MAX_CELL_CHARS)
+}
+
 pub struct ResultGrid {
     pub rs: Option<ResultSet>,
     pub edits: Option<PendingEdits>,
@@ -78,6 +106,8 @@ pub struct ResultGrid {
     pub on_sort: Option<OnSort>,
     /// Without it the right-click menu stays empty.
     pub on_derive: Option<OnDerive>,
+    /// Width the grid had in the last frame (0 until measured); the last column fills what's left.
+    avail: f32,
     /// Header (data column) under the current right click; the table only records cells.
     menu_header: Option<usize>,
     /// Columns marked with ⌘-click on the header, for a count grouped by all of them.
@@ -104,6 +134,7 @@ impl ResultGrid {
             on_sort: None,
             on_derive: None,
             menu_header: None,
+            avail: 0.,
             group_cols: Vec::new(),
             error: None,
             saving: false,
@@ -114,6 +145,22 @@ impl ResultGrid {
             busy: false,
             generation: 0,
         }
+    }
+
+    /// Row-number column: wide enough for the biggest number shown.
+    fn row_no_width(&self, cx: &App) -> f32 {
+        self.rows_count(cx).max(1).to_string().len() as f32 * 8. + 20.
+    }
+
+    /// Width a data column is drawn at: its estimate, the last one stretched over the free space.
+    fn shown_width(&self, col: usize, cx: &App) -> f32 {
+        let est = self.widths.get(col).copied().unwrap_or(120.);
+        if col + 1 != self.widths.len() {
+            return est;
+        }
+        // Room for the vertical scrollbar, so the fill doesn't add a horizontal one.
+        let used: f32 = self.row_no_width(cx) + self.widths[..col].iter().sum::<f32>() + 16.;
+        est.max(self.avail - used)
     }
 
     /// Right-click menu for a header: what applies to the whole column.
@@ -157,10 +204,11 @@ impl ResultGrid {
         self.generation += 1;
         self.exec_id = exec_id;
         self.group_cols.clear();
+        let cap = width_cap(rs.columns.len());
         self.widths = (0..rs.columns.len())
             .map(|c| {
-                let sample = (0..rs.rows().min(100)).map(|r| rs.display(r, c, 60).map_or(4, |s| s.chars().count())).max().unwrap_or(0);
-                let chars = sample.max(rs.columns[c].name.chars().count()).clamp(4, 60);
+                let sample = (0..rs.rows().min(100)).map(|r| rs.display(r, c, cap).map_or(4, |s| s.chars().count())).max().unwrap_or(0);
+                let chars = sample.max(rs.columns[c].name.chars().count()).clamp(4, cap);
                 chars as f32 * 8.5 + 24.
             })
             .collect();
@@ -207,19 +255,20 @@ impl ResultGrid {
     }
 
     /// (text, is NULL, was edited, row marked for deletion)
-    fn cell(&self, row: usize, col: usize) -> (SharedString, bool, bool, bool) {
+    /// Text drawn in a cell, cut at `max` characters (enough to fill its width; the rest is clipped).
+    fn cell(&self, row: usize, col: usize, max: usize) -> (SharedString, bool, bool, bool) {
         let loaded = self.loaded_rows();
         let deleted = self.edits.as_ref().is_some_and(|e| e.is_deleted(row));
         if let Some(v) = self.edits.as_ref().and_then(|e| e.get(row, col, loaded)) {
             return match v {
-                Some(s) => (one_line(s, MAX_CELL_CHARS).into(), false, true, deleted),
+                Some(s) => (one_line(s, max).into(), false, true, deleted),
                 None => ("NULL".into(), true, true, deleted),
             };
         }
         if row >= loaded {
             return ("DEFAULT".into(), true, false, false);
         }
-        match self.rs.as_ref().and_then(|rs| rs.display(row, col, MAX_CELL_CHARS)) {
+        match self.rs.as_ref().and_then(|rs| rs.display(row, col, max)) {
             Some(s) => (s.into(), false, false, deleted),
             None => ("NULL".into(), true, false, deleted),
         }
@@ -294,13 +343,11 @@ impl TableDelegate for ResultGrid {
 
     fn column(&self, col_ix: usize, cx: &App) -> Column {
         if col_ix == 0 {
-            // Wide enough for the biggest number shown.
-            let digits = self.rows_count(cx).max(1).to_string().len() as f32;
-            return Column::new("row-no", "#").width(px(digits * 8. + 20.)).fixed_left().resizable(false).movable(false).text_right();
+            return Column::new("row-no", "#").width(px(self.row_no_width(cx))).fixed_left().resizable(false).movable(false).text_right();
         }
         let col_ix = col_ix - ROW_NO;
         let name = self.rs.as_ref().map_or(String::new(), |rs| rs.columns[col_ix].name.clone());
-        let col = Column::new(format!("c{col_ix}"), name).width(px(self.widths.get(col_ix).copied().unwrap_or(120.)));
+        let col = Column::new(format!("c{col_ix}"), name).width(px(self.shown_width(col_ix, cx)));
         if self.sortable { col.sortable() } else { col }
     }
 
@@ -310,9 +357,10 @@ impl TableDelegate for ResultGrid {
         }
         let id_col = col;
         let col = col - ROW_NO;
-        let (text, null, edited, deleted) = self.cell(row, col);
         // ponytail: width estimated at ~7px per character; measure the text if the guess is way off.
-        let width = self.widths.get(col).copied().unwrap_or(120.);
+        let width = self.shown_width(col, cx);
+        // Enough characters to reach the right edge (narrow ones like `i` included); the rest is clipped.
+        let (text, null, edited, deleted) = self.cell(row, col, ((width / 5.) as usize).max(MAX_CELL_CHARS));
         let clipped = text.chars().count() as f32 * 7. > width - 12.;
         // The full value (and its pretty JSON) is built on hover, not for every clipped cell every frame.
         let table = (!null && clipped).then(|| cx.entity().downgrade());
@@ -320,11 +368,10 @@ impl TableDelegate for ResultGrid {
         div()
             .id(("cell", row * cols + id_col))
             .when_some(table, |d, table| {
-                d.tooltip(move |window, cx| {
+                // Hoverable: the pointer can move into the card to scroll it or copy the value.
+                d.hoverable_tooltip(move |window, cx| {
                     let full = table.upgrade().and_then(|t| t.read(cx).delegate().full_text(row, col)).unwrap_or_default();
-                    let detail = SharedString::from(detail_text(&full, MAX_DETAIL_CHARS));
-                    Tooltip::element(move |_, cx| div().max_w(px(720.)).max_h(px(480.)).overflow_hidden().py_1().font_family(cx.theme().mono_font_family.clone()).text_xs().child(detail.clone()))
-                        .build(window, cx)
+                    cx.new(|cx| crate::cell_detail::CellDetail::new(full, window, cx)).into()
                 })
             })
             .size_full()
@@ -411,6 +458,11 @@ mod tests {
         g.rs = Some(ResultSet::new(cols, b, true));
         g.edits = Some(PendingEdits::default());
         g
+    }
+
+    #[test]
+    fn few_columns_may_grow_wider() {
+        assert_eq!((super::width_cap(1), super::width_cap(2), super::width_cap(3), super::width_cap(40)), (160, 80, 60, 60));
     }
 
     #[test]

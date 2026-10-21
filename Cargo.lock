@@ -6102,6 +6102,7 @@ dependencies = [
  "chrono",
  "pollster 1.0.1",
  "regex",
+ "reqwest",
  "russh",
  "rust-i18n",
  "rustls",

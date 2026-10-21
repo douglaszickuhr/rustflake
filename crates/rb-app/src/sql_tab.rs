@@ -58,6 +58,16 @@ struct ResultPane {
     query_id: Option<String>,
 }
 
+/// Statements inside the selected text, as ranges of the whole script; None without a selection
+/// (or with only blanks selected), so the cursor's statement runs instead.
+fn selected_statements(src: &str, sel: Range<usize>) -> Option<Vec<Range<usize>>> {
+    let text = src.get(sel.clone())?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(split_statements(text).into_iter().map(|r| r.start + sel.start..r.end + sel.start).collect())
+}
+
 /// Indices of statements that become a result tab (returned columns) and whether the
 /// "Messages" tab shows up (script with more than one statement).
 fn panes(has_columns: &[bool], statements: usize) -> (Vec<usize>, bool) {
@@ -194,6 +204,7 @@ impl SqlTab {
             let lsp = ed.lsp_mut();
             lsp.completion_provider = Some(std::rc::Rc::new(SqlCompletion::new(meta.clone())));
             lsp.definition_provider = Some(std::rc::Rc::new(SqlDefinition::new(meta.clone(), target.clone())));
+            lsp.hover_provider = Some(std::rc::Rc::new(crate::hover::SqlHover::new(meta.clone(), conn.clone())));
             // ⌘-click on a table: opens its tab instead of jumping within the script.
             lsp.show_document = Some(std::rc::Rc::new(move |_, window, cx| {
                 if let Some((schema, table)) = target.borrow().clone() {
@@ -305,7 +316,12 @@ impl SqlTab {
         let state = self.editor.read(cx);
         let src = state.value().to_string();
         let cursor = state.cursor();
-        let ranges: Vec<Range<usize>> = if whole_script { split_statements(&src) } else { statement_at(&src, cursor).into_iter().collect() };
+        let ranges: Vec<Range<usize>> = match selected_statements(&src, state.selected_range()) {
+            // A selection runs just that text, with ⌘↵ or ⌘⇧↵.
+            Some(sel) => sel,
+            None if whole_script => split_statements(&src),
+            None => statement_at(&src, cursor).into_iter().collect(),
+        };
         if ranges.is_empty() {
             return;
         }
@@ -450,7 +466,8 @@ impl SqlTab {
         }
         let state = self.editor.read(cx);
         let src = state.value().to_string();
-        let Some(r) = statement_at(&src, state.cursor()) else { return };
+        let selected = selected_statements(&src, state.selected_range()).and_then(|v| v.into_iter().next());
+        let Some(r) = selected.or_else(|| statement_at(&src, state.cursor())) else { return };
         let sql = src[r].to_string();
         self.explain_sql(src, sql, analyze, window, cx);
     }
@@ -826,6 +843,18 @@ mod tests {
     use core::prelude::v1::test;
 
     use super::*;
+
+    #[test]
+    fn selection_runs_only_the_selected_statements() {
+        let src = "with x as (\nselect a from t limit 100\n) select * from x;\nselect 2;";
+        let inner = src.find("select a").unwrap()..src.find("100").unwrap() + 3;
+        let got = selected_statements(src, inner.clone()).unwrap();
+        assert_eq!(got.iter().map(|r| &src[r.clone()]).collect::<Vec<_>>(), ["select a from t limit 100"], "the CTE body alone, at its place in the script");
+        let two = src.find(") select").unwrap() + 2..src.len();
+        assert_eq!(selected_statements(src, two).unwrap().len(), 2, "a selection over two statements runs both");
+        assert_eq!(selected_statements(src, 5..5), None, "no selection: the cursor's statement");
+        assert_eq!(selected_statements(src, 11..12), None, "only a line break selected");
+    }
 
     #[test]
     fn statements_become_result_tabs_and_messages() {

@@ -411,6 +411,50 @@ pub fn resolve(name: Option<&str>) -> Result<OrgConfig, String> {
     })
 }
 
+/// Validates `text` and saves it in `dir`, replacing the file of a configuration with the same
+/// name (or as `<name>.toml`). Returns the installed configuration.
+pub fn install_into(dir: &Path, text: &str) -> Result<OrgConfig, String> {
+    let cfg = OrgConfig::parse(text)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let same_name = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+        .find(|p| std::fs::read_to_string(p).ok().and_then(|s| OrgConfig::parse(&s).ok()).is_some_and(|o| o.name.eq_ignore_ascii_case(&cfg.name)));
+    let file: String = cfg.name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    let path = same_name.unwrap_or_else(|| dir.join(format!("{}.toml", file.trim_matches('-'))));
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    Ok(cfg)
+}
+
+pub fn install(text: &str) -> Result<OrgConfig, String> {
+    install_into(&org_configs_dir(), text)
+}
+
+/// A GitHub page link (`github.com/o/r/blob/branch/f.toml`) points at HTML: use the raw file instead.
+pub fn raw_url(url: &str) -> String {
+    let url = url.trim();
+    match url.strip_prefix("https://github.com/").and_then(|rest| rest.split_once("/blob/")) {
+        Some((repo, path)) => format!("https://raw.githubusercontent.com/{repo}/{path}"),
+        None => url.to_string(),
+    }
+}
+
+/// Downloads a configuration's text (blocking: call it off the UI thread).
+pub fn fetch_text(url: &str) -> Result<String, String> {
+    let url = raw_url(url);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    rt.block_on(async {
+        let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("{url}: HTTP {}", resp.status()));
+        }
+        resp.text().await.map_err(|e| e.to_string())
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn acme() -> OrgConfig {
     OrgConfig::parse(include_str!("../tests/fixtures/acme.toml")).unwrap()
@@ -420,6 +464,28 @@ pub(crate) fn acme() -> OrgConfig {
 mod tests {
     use super::*;
     use crate::admin::RoleKind::*;
+
+    #[test]
+    fn install_saves_valid_configs_and_replaces_by_name() {
+        let dir = std::env::temp_dir().join(format!("rf-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = include_str!("../tests/fixtures/acme.toml");
+        let a = install_into(&dir, src).unwrap();
+        // Someone kept the same config under another file name: installing again replaces that one.
+        let files = |d: &Path| std::fs::read_dir(d).unwrap().count();
+        std::fs::rename(std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path(), dir.join("mine.toml")).unwrap();
+        install_into(&dir, src).unwrap();
+        assert_eq!((files(&dir), dir.join("mine.toml").exists()), (1, true));
+        assert!(install_into(&dir, "name = ").is_err(), "invalid TOML isn't saved");
+        assert_eq!(load_all(&dir).0[0].name, a.name);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn github_page_links_become_raw_links() {
+        assert_eq!(raw_url(" https://github.com/acme/conf/blob/main/data/acme.toml "), "https://raw.githubusercontent.com/acme/conf/main/data/acme.toml");
+        assert_eq!(raw_url("https://example.com/a.toml"), "https://example.com/a.toml");
+    }
 
     #[test]
     fn custom_tabs_match_and_fill_placeholders() {

@@ -1,5 +1,6 @@
 mod admin_tab;
 mod appearance;
+mod cell_detail;
 mod completion;
 mod conn_dialog;
 mod db_filter;
@@ -7,6 +8,7 @@ mod dbt_store;
 mod frame;
 mod grid;
 mod history_popup;
+mod hover;
 mod indexer;
 mod lang;
 mod lineage_view;

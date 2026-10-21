@@ -1,17 +1,17 @@
 use rust_i18n::t;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use std::path::Path;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::form::{field, v_form};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{IconName, IndexPath, Selectable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{IconName, IndexPath, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::config::{ConnectionConfig, DbtConfig, Environment, SnowflakeAuth, SnowflakeConfig, SshConfig, SslMode, new_id};
@@ -58,6 +58,32 @@ struct Fields {
     org: Entity<SelectState<Vec<String>>>,
     /// Config files that failed to load.
     org_errs: String,
+    /// Other ways to bring a configuration: 0 none open, 1 from a URL, 2 pasted.
+    org_src: Rc<Cell<u8>>,
+    org_url: Entity<InputState>,
+    org_paste: Entity<TextareaState>,
+    /// Result of the last import (Ok = what was installed), shown under the field.
+    org_msg: Rc<RefCell<Option<Result<String, String>>>>,
+}
+
+/// Installs a configuration's text (validated, saved under configurations/) and selects it.
+fn install_config(f: &Fields, text: &str, window: &mut Window, cx: &mut App) {
+    let msg = match rb_core::org_config::install(text) {
+        Ok(cfg) => {
+            let (installed, _) = rb_core::org_config::load_all(&rb_core::org_config::org_configs_dir());
+            let items: Vec<String> = std::iter::once(t!("conn.config_none").to_string()).chain(installed.iter().map(|a| a.name().to_string())).collect();
+            let name = cfg.name().to_string();
+            f.org.update(cx, |s, cx| {
+                s.set_items(items, window, cx);
+                s.set_selected_value(&name, window, cx);
+            });
+            f.org_src.set(0);
+            Ok(t!("conn.config_installed", name = name).to_string())
+        }
+        Err(e) => Err(e),
+    };
+    *f.org_msg.borrow_mut() = Some(msg);
+    window.refresh();
 }
 
 /// Snowflake block from the dialog fields.
@@ -182,6 +208,83 @@ fn key_field(id: &'static str, input: &Entity<InputState>) -> impl IntoElement {
     }))
 }
 
+/// Installed configurations, plus importing one from a URL, pasted text or any file.
+fn config_field(f: &Rc<Fields>) -> impl IntoElement {
+    let src = f.org_src.get();
+    let toggle = |id: &'static str, label: String, mode: u8| {
+        let cell = f.org_src.clone();
+        Button::new(id).label(label).small().ghost().selected(src == mode).on_click(move |_, w, _| {
+            cell.set(if cell.get() == mode { 0 } else { mode });
+            w.refresh();
+        })
+    };
+    let from_file = {
+        let f = f.clone();
+        Button::new("cfg-file").label(t!("conn.config_from_file").to_string()).small().ghost().on_click(move |_, window, cx| {
+            let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(t!("conn.config_from_file").to_string().into()) });
+            let f = f.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let Ok(Ok(Some(paths))) = rx.await else { return };
+                    let Some(path) = paths.first() else { return };
+                    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+                    cx.update(|window, cx| match text {
+                        Ok(text) => install_config(&f, &text, window, cx),
+                        Err(e) => {
+                            *f.org_msg.borrow_mut() = Some(Err(e));
+                            window.refresh();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+        })
+    };
+    let import_url = {
+        let f = f.clone();
+        Button::new("cfg-url-go").label(t!("conn.config_import").to_string()).small().primary().on_click(move |_, window, cx| {
+            let url = f.org_url.read(cx).value().trim().to_string();
+            if url.is_empty() {
+                return;
+            }
+            *f.org_msg.borrow_mut() = Some(Ok(t!("conn.config_downloading").to_string()));
+            window.refresh();
+            let f = f.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let text: Result<String, String> = cx.background_executor().spawn(async move { rb_core::org_config::fetch_text(&url) }).await;
+                    cx.update(|window, cx| match text {
+                        Ok(text) => install_config(&f, &text, window, cx),
+                        Err(e) => {
+                            *f.org_msg.borrow_mut() = Some(Err(e));
+                            window.refresh();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+        })
+    };
+    let import_paste = {
+        let f = f.clone();
+        Button::new("cfg-paste-go").label(t!("conn.config_import").to_string()).small().primary().on_click(move |_, window, cx| {
+            let text = f.org_paste.read(cx).value().to_string();
+            install_config(&f, &text, window, cx);
+        })
+    };
+    let msg = f.org_msg.borrow().clone();
+    v_flex()
+        .gap_2()
+        .child(Select::new(&f.org))
+        .child(h_flex().gap_1().child(toggle("cfg-url", t!("conn.config_from_url").to_string(), 1)).child(toggle("cfg-paste", t!("conn.config_paste").to_string(), 2)).child(from_file))
+        .when(src == 1, |d| d.child(h_flex().gap_2().child(div().flex_1().child(Input::new(&f.org_url))).child(import_url)))
+        .when(src == 2, |d| d.child(v_flex().gap_2().items_end().child(div().w_full().child(Textarea::new(&f.org_paste))).child(import_paste)))
+        .children(msg.map(|m| {
+            let ok = m.is_ok();
+            div().text_sm().when(!ok, |d| d.text_color(gpui_kit::red())).child(m.unwrap_or_else(|e| e))
+        }))
+}
+
 /// Folder (macOS picker); `changed` runs after choosing.
 fn folder_field(id: &'static str, input: &Entity<InputState>, changed: impl Fn(&mut App) + 'static) -> impl IntoElement {
     let target = input.downgrade();
@@ -269,6 +372,10 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         dbt_card: cx.new(|cx| DbtStore::new(sf.as_ref().and_then(|s| s.dbt.clone()), cx)),
         org: cx.new(|cx| SelectState::new(orgs, Some(IndexPath::new(org_ix)), window, cx)),
         org_errs: errs.join("\n"),
+        org_src: Rc::new(Cell::new(0)),
+        org_url: cx.new(|cx| InputState::new(window, cx).placeholder("https://…/acme.toml")),
+        org_paste: cx.new(|cx| TextareaState::new(window, cx).rows(8).placeholder(t!("conn.config_paste_hint").to_string())),
+        org_msg: Rc::new(RefCell::new(None)),
     });
     // Folder/target changed: the card reloads its manifest.
     for input in [f.dbt_dir.clone(), f.dbt_target.clone(), f.dbt_aws.clone()] {
@@ -361,7 +468,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                     field()
                         .label(t!("conn.config").to_string())
                         .description(if f.org_errs.is_empty() { t!("conn.config_hint", dir = rb_core::org_config::org_configs_dir().display()).to_string() } else { f.org_errs.clone() })
-                        .child(Select::new(&f.org)),
+                        .child(config_field(&f)),
                 ),
             (0, false) => v_form()
                 .child(field().label(t!("conn.kind").to_string()).child(kind))

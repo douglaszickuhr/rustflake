@@ -45,6 +45,110 @@ pub fn detail_text(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// What a piece of a pretty-printed JSON line is, for colouring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonTok {
+    Key,
+    Str,
+    Num,
+    /// `true`, `false`, `null`
+    Lit,
+}
+
+/// Coloured pieces of one line of pretty JSON (as `detail_text` makes it: no string spans lines).
+/// Punctuation and spaces are left out. A string followed by `:` is a key.
+pub fn json_line_spans(line: &str) -> Vec<(std::ops::Range<usize>, JsonTok)> {
+    let b = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i = (i + 1).min(b.len());
+                let key = line[i..].trim_start().starts_with(':');
+                out.push((start..i, if key { JsonTok::Key } else { JsonTok::Str }));
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = i;
+                while i < b.len() && matches!(b[i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+                    i += 1;
+                }
+                out.push((start..i, JsonTok::Num));
+            }
+            b't' | b'f' | b'n' => {
+                let start = i;
+                while i < b.len() && b[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                out.push((start..i, JsonTok::Lit));
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Block structure of pretty JSON, by line: where each `{`/`[` line closes, and each line's parent.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct JsonOutline {
+    /// For a line that opens a block: the line that closes it.
+    pub close: Vec<Option<usize>>,
+    /// The line whose block contains this one.
+    pub parent: Vec<Option<usize>>,
+}
+
+pub fn json_outline(lines: &[&str]) -> JsonOutline {
+    let mut out = JsonOutline { close: vec![None; lines.len()], parent: vec![None; lines.len()] };
+    let mut open: Vec<usize> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim();
+        if (t.starts_with('}') || t.starts_with(']'))
+            && let Some(o) = open.pop()
+        {
+            out.close[o] = Some(i);
+        }
+        out.parent[i] = open.last().copied();
+        if t.ends_with('{') || t.ends_with('[') {
+            open.push(i);
+        }
+    }
+    out
+}
+
+/// Lines to show: with a query, the matching lines and the blocks around them (case-insensitive);
+/// without one, everything except the inside of folded blocks. A folded line is shown, its close isn't.
+pub fn json_visible(lines: &[&str], o: &JsonOutline, folded: &std::collections::HashSet<usize>, query: &str) -> Vec<usize> {
+    let q = query.trim().to_lowercase();
+    if !q.is_empty() {
+        let mut keep = vec![false; lines.len()];
+        for (i, l) in lines.iter().enumerate() {
+            if l.to_lowercase().contains(&q) {
+                let mut at = Some(i);
+                while let Some(k) = at.filter(|k| !keep[*k]) {
+                    keep[k] = true;
+                    at = o.parent[k];
+                }
+            }
+        }
+        return (0..lines.len()).filter(|i| keep[*i]).collect();
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        out.push(i);
+        i = match (folded.contains(&i), o.close[i]) {
+            (true, Some(c)) => c + 1,
+            _ => i + 1,
+        };
+    }
+    out
+}
+
 fn is_textual(ty: &Type) -> bool {
     matches!(*ty, Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::JSON | Type::JSONB | Type::XML) || matches!(ty.kind(), Kind::Enum(_))
 }
@@ -268,6 +372,29 @@ fn array_dim(elem: &Type, r: &[u8], dims: &[usize], pos: &mut usize, out: &mut S
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn json_outline_folds_and_filters() {
+        let pretty = "{\n  \"a\": {\n    \"x\": 1\n  },\n  \"b\": [\n    \"find me\"\n  ]\n}";
+        let lines: Vec<&str> = pretty.lines().collect();
+        let o = super::json_outline(&lines);
+        assert_eq!(o.close, [Some(7), Some(3), None, None, Some(6), None, None, None]);
+        assert_eq!(o.parent[2], Some(1));
+        let none = std::collections::HashSet::new();
+        assert_eq!(super::json_visible(&lines, &o, &none, ""), (0..8).collect::<Vec<_>>());
+        let folded: std::collections::HashSet<usize> = [1].into();
+        assert_eq!(super::json_visible(&lines, &o, &folded, ""), [0, 1, 4, 5, 6, 7], "\"a\" folded hides its body and its close");
+        assert_eq!(super::json_visible(&lines, &o, &none, "FIND"), [0, 4, 5], "the match and the blocks it sits in");
+    }
+
+    #[test]
+    fn json_lines_are_split_into_keys_strings_numbers_and_literals() {
+        let line = r#"    "na\"me": "chat_sent", "n": -2.5e3, "ok": true, "x": null"#;
+        let got: Vec<(&str, super::JsonTok)> = super::json_line_spans(line).into_iter().map(|(r, t)| (&line[r], t)).collect();
+        use super::JsonTok::*;
+        assert_eq!(got, [(r#""na\"me""#, Key), (r#""chat_sent""#, Str), (r#""n""#, Key), ("-2.5e3", Num), (r#""ok""#, Key), ("true", Lit), (r#""x""#, Key), ("null", Lit)]);
+        assert_eq!(super::json_line_spans(r#"  "unterminated"#).len(), 1, "a cut-off string doesn't panic");
+    }
+
     use super::*;
 
     #[test]

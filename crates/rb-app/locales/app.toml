@@ -2482,3 +2482,99 @@ es = "Mín / máx de %{col}"
 en = "mark a column to count by several"
 pt = "marcar coluna para contar por várias"
 es = "marcar columna para contar por varias"
+
+[hover.not_null]
+en = "not null"
+pt = "não nulo"
+es = "no nulo"
+
+[hover.values_loading]
+en = "loading sample values… hover again in a moment"
+pt = "carregando valores de exemplo… passe o mouse de novo em instantes"
+es = "cargando valores de ejemplo… vuelve a pasar el ratón en un momento"
+
+[hover.no_values]
+en = "no values (empty or all null)"
+pt = "sem valores (vazia ou tudo nulo)"
+es = "sin valores (vacía o todo nulo)"
+
+[hover.columns]
+en = "%{n} columns"
+pt = "%{n} colunas"
+es = "%{n} columnas"
+
+[hover.from_sample]
+en = "most common in a random 1% sample"
+pt = "mais comuns numa amostra aleatória de 1%"
+es = "más comunes en una muestra aleatoria del 1%"
+
+[hover.from_first]
+en = "most common in the first %{n} rows"
+pt = "mais comuns nas primeiras %{n} linhas"
+es = "más comunes en las primeras %{n} filas"
+
+[grid.copy]
+en = "Copy"
+pt = "Copiar"
+es = "Copiar"
+
+[grid.copied]
+en = "Copied"
+pt = "Copiado"
+es = "Copiado"
+
+[grid.chars]
+en = "%{n} characters"
+pt = "%{n} caracteres"
+es = "%{n} caracteres"
+
+[grid.search_value]
+en = "Search in the value"
+pt = "Buscar no valor"
+es = "Buscar en el valor"
+
+
+[grid.match_of]
+en = "%{i} of %{n} · ↵ next, ⇧↵ previous"
+pt = "%{i} de %{n} · ↵ próximo, ⇧↵ anterior"
+es = "%{i} de %{n} · ↵ siguiente, ⇧↵ anterior"
+
+[grid.no_match]
+en = "Not found"
+pt = "Não encontrado"
+es = "No encontrado"
+
+[conn.config_from_url]
+en = "From URL"
+pt = "De URL"
+es = "Desde URL"
+
+[conn.config_paste]
+en = "Paste"
+pt = "Colar"
+es = "Pegar"
+
+[conn.config_from_file]
+en = "From file…"
+pt = "De arquivo…"
+es = "Desde archivo…"
+
+[conn.config_import]
+en = "Import"
+pt = "Importar"
+es = "Importar"
+
+[conn.config_paste_hint]
+en = "Paste the configuration (TOML) here"
+pt = "Cole a configuração (TOML) aqui"
+es = "Pega la configuración (TOML) aquí"
+
+[conn.config_downloading]
+en = "Downloading…"
+pt = "Baixando…"
+es = "Descargando…"
+
+[conn.config_installed]
+en = "Installed “%{name}” and selected it."
+pt = "“%{name}” instalada e selecionada."
+es = "“%{name}” instalada y seleccionada."

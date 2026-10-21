@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use crate::dialect::Dialect;
 use crate::lexer::{TokKind, Token, ident_text, is_unterminated, tokenize};
-use crate::metadata::{MetaCache, MetaRequest};
+use crate::metadata::{ColumnMeta, MetaCache, MetaRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CandidateKind {
@@ -195,13 +195,13 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
         let qual = cache.dialect.fold(&src[q.start..q.end]);
         let key = cache.schema_key(&qual);
         if let Some(r) = refs.iter().find(|r| r.alias.as_deref() == Some(qual.as_str())) {
-            push_columns(&mut out, cache, r);
+            push_columns(&mut out, src, &stmt, cache, r);
         } else if cache.schemas.contains(&key) {
             push_objects(&mut out, cache, &key);
         } else if cache.dialect == Dialect::Snowflake && cache.databases.contains(&qual) {
             push_db_schemas(&mut out, cache, &qual);
         } else if let Some(r) = refs.iter().find(|r| r.table == qual) {
-            push_columns(&mut out, cache, r);
+            push_columns(&mut out, src, &stmt, cache, r);
         }
     } else if let Some(w) = before.last().filter(|t| t.kind == TokKind::Word)
         && TABLE_CONTEXT.contains(&ident_text(&src[w.start..w.end]).as_str())
@@ -225,7 +225,7 @@ pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
         }
     } else {
         for r in &refs {
-            push_columns(&mut out, cache, r);
+            push_columns(&mut out, src, &stmt, cache, r);
         }
         let extra = match cache.dialect {
             Dialect::Postgres => PG_KEYWORDS,
@@ -272,17 +272,177 @@ pub fn relation_at(src: &str, cursor: usize, cache: &MetaCache) -> Option<(Range
     known(&schema, &table).then(|| (toks[a].start..toks[b].end, schema, table))
 }
 
+/// What the editor hover shows: a table/view, or a column of one of the statement's tables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HoverTarget {
+    Table {
+        range: Range<usize>,
+        schema: String,
+        table: String,
+    },
+    Column {
+        range: Range<usize>,
+        schema: String,
+        table: String,
+        column: ColumnMeta,
+    },
+    /// Column lists the cache doesn't have yet: request them and ask again.
+    Missing(Vec<MetaRequest>),
+}
+
+/// Table or column under the cursor. A column resolves through the statement's FROM/JOIN tables
+/// (by alias or name when qualified); ambiguous or unknown names give None rather than a guess.
+pub fn hover_at(src: &str, cursor: usize, cache: &MetaCache) -> Option<HoverTarget> {
+    if let Some((range, schema, table)) = relation_at(src, cursor, cache) {
+        return Some(HoverTarget::Table { range, schema, table });
+    }
+    let toks = tokenize(src);
+    let is_name = |t: &Token| matches!(t.kind, TokKind::Word | TokKind::QuotedIdent);
+    let i = toks.iter().position(|t| is_name(t) && t.start <= cursor && cursor < t.end)?;
+    let begin = toks[..i].iter().rposition(|t| t.kind == TokKind::Semicolon).map_or(0, |k| k + 1);
+    let end = toks[i..].iter().position(|t| t.kind == TokKind::Semicolon).map_or(toks.len(), |k| i + k);
+    let stmt: Vec<Token> = toks[begin..end].iter().copied().filter(|t| t.kind != TokKind::Comment).collect();
+    // CTE names (`x as (`) aren't tables: their columns come from the real tables below them.
+    let ctes: Vec<String> = stmt
+        .windows(3)
+        .filter(|w| is_name(&w[0]) && ident_text(&src[w[1].start..w[1].end]) == "as" && &src[w[2].start..w[2].end] == "(")
+        .map(|w| cache.dialect.fold(&src[w[0].start..w[0].end]))
+        .collect();
+    let refs: Vec<TableRef> = table_refs(src, &stmt, cache.dialect).into_iter().filter(|r| r.schema.is_some() || !ctes.contains(&r.table)).collect();
+    let tok = toks[i];
+    let name = cache.dialect.fold(&src[tok.start..tok.end]);
+    // `q.col`: only the table with that alias (or name).
+    let dot = |k: usize| toks[k].kind == TokKind::Punct && &src[toks[k].start..toks[k].end] == "." && toks[k].end == tok.start;
+    let qual = (i >= 2 && dot(i - 1) && is_name(&toks[i - 2]) && toks[i - 2].end == toks[i - 1].start).then(|| cache.dialect.fold(&src[toks[i - 2].start..toks[i - 2].end]));
+    let named = |q: &String| refs.iter().filter(|r| r.alias.as_ref() == Some(q) || (r.alias.is_none() && &r.table == q)).collect::<Vec<_>>();
+    // A qualifier that names no real table (a subquery or CTE alias) searches all of them, like no qualifier.
+    let scoped: Vec<&TableRef> = match qual.as_ref().map(named) {
+        Some(t) if !t.is_empty() => t,
+        _ => refs.iter().collect(),
+    };
+    let (mut found, mut missing) = (Vec::new(), Vec::new());
+    for r in scoped {
+        let schema = r.schema.as_deref().map(|s| cache.schema_key(s)).unwrap_or_else(|| resolve_schema(cache, &r.table));
+        match cache.columns.get(&(schema.clone(), r.table.clone())) {
+            Some(cols) => found.extend(cols.iter().filter(|c| c.name == name).map(|c| (schema.clone(), r.table.clone(), c.clone()))),
+            None => missing.push(MetaRequest::Columns(schema, r.table.clone())),
+        }
+    }
+    match (found.len(), missing.is_empty()) {
+        (1, true) => found.pop().map(|(schema, table, column)| HoverTarget::Column { range: tok.start..tok.end, schema, table, column }),
+        (0 | 1, false) => Some(HoverTarget::Missing(missing)),
+        _ => None,
+    }
+}
+
 fn resolve_schema(cache: &MetaCache, table: &str) -> String {
     cache.search_path.iter().find(|s| cache.objects.get(*s).is_some_and(|o| o.contains_relation(table))).or(cache.search_path.first()).cloned().unwrap_or_else(|| "public".into())
 }
 
-fn push_columns(out: &mut Completion, cache: &MetaCache, r: &TableRef) {
-    let schema = r.schema.as_deref().map(|s| cache.schema_key(s)).unwrap_or_else(|| resolve_schema(cache, &r.table));
-    match cache.columns.get(&(schema.clone(), r.table.clone())) {
-        Some(cols) => {
-            out.candidates.extend(cols.iter().map(|c| Candidate { label: c.name.clone(), insert: cache.dialect.quote(&c.name), kind: CandidateKind::Column, detail: Some(c.type_name.clone()) }))
+/// Body of CTE `name` in the statement: the tokens between `name as (` and its closing `)`.
+fn cte_body<'a>(src: &str, stmt: &'a [Token], name: &str, d: Dialect) -> Option<&'a [Token]> {
+    let at = stmt.windows(3).position(|w| {
+        matches!(w[0].kind, TokKind::Word | TokKind::QuotedIdent) && d.fold(&src[w[0].start..w[0].end]) == name && ident_text(&src[w[1].start..w[1].end]) == "as" && &src[w[2].start..w[2].end] == "("
+    })?;
+    let mut depth = 0;
+    for (k, t) in stmt.iter().enumerate().skip(at + 2) {
+        if t.kind == TokKind::Punct {
+            match &src[t.start..t.end] {
+                "(" => depth += 1,
+                ")" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&stmt[at + 3..k]);
+                    }
+                }
+                _ => {}
+            }
         }
-        None => out.missing.push(MetaRequest::Columns(schema, r.table.clone())),
+    }
+    // Still being typed: everything after the `(`.
+    Some(&stmt[at + 3..])
+}
+
+fn bare_column(name: String, type_name: String) -> ColumnMeta {
+    ColumnMeta { cast_type: type_name.clone(), name, type_name, nullable: true, default: None, is_pk: false, generated: false }
+}
+
+/// Columns of a FROM entry: a real table from the cache (or the request for it), or a CTE's select list.
+fn ref_columns(src: &str, stmt: &[Token], cache: &MetaCache, r: &TableRef, depth: u8) -> Result<Vec<ColumnMeta>, Vec<MetaRequest>> {
+    if r.schema.is_none()
+        && depth < 4
+        && let Some(body) = cte_body(src, stmt, &r.table, cache.dialect)
+    {
+        return cte_columns(src, stmt, body, cache, depth + 1);
+    }
+    let schema = r.schema.as_deref().map(|s| cache.schema_key(s)).unwrap_or_else(|| resolve_schema(cache, &r.table));
+    cache.columns.get(&(schema.clone(), r.table.clone())).cloned().ok_or_else(|| vec![MetaRequest::Columns(schema, r.table.clone())])
+}
+
+/// What a CTE returns: its select list, with `*` / `t.*` expanded from the tables in its FROM.
+/// Expressions without an alias are left out (their name is the database's choice).
+fn cte_columns(src: &str, stmt: &[Token], body: &[Token], cache: &MetaCache, depth: u8) -> Result<Vec<ColumnMeta>, Vec<MetaRequest>> {
+    use sqlparser::ast::{Expr, SelectItem, SetExpr, Statement};
+    let (Some(first), Some(last)) = (body.first(), body.last()) else { return Ok(Vec::new()) };
+    let d = cache.dialect;
+    let fold = |i: &sqlparser::ast::Ident| if i.quote_style.is_some() { i.value.clone() } else { d.fold(&i.value) };
+    let mut stmts = sqlparser::parser::Parser::parse_sql(crate::query_edit::parser_dialect(d).as_ref(), &src[first.start..last.end]).map_err(|_| Vec::new())?;
+    let Some(Statement::Query(q)) = stmts.pop() else { return Ok(Vec::new()) };
+    let mut set = q.body.as_ref();
+    // `a union b`: the names come from the first select.
+    while let SetExpr::SetOperation { left, .. } = set {
+        set = left;
+    }
+    let SetExpr::Select(sel) = set else { return Ok(Vec::new()) };
+    let refs = table_refs(src, body, d);
+    let mut by_ref = Vec::new();
+    let mut missing = Vec::new();
+    for r in &refs {
+        match ref_columns(src, stmt, cache, r, depth) {
+            Ok(cols) => by_ref.push((r, cols)),
+            Err(m) => missing.extend(m),
+        }
+    }
+    let type_of = |name: &str| by_ref.iter().flat_map(|(_, c)| c).find(|c| c.name == name).map(|c| c.type_name.clone()).unwrap_or_default();
+    let mut out: Vec<ColumnMeta> = Vec::new();
+    for item in &sel.projection {
+        let found: Vec<ColumnMeta> = match item {
+            SelectItem::Wildcard(_) => by_ref.iter().flat_map(|(_, c)| c.clone()).collect(),
+            SelectItem::QualifiedWildcard(kind, _) => {
+                let q = kind.to_string();
+                let q = d.fold(q.trim_end_matches(".*").rsplit('.').next().unwrap_or_default());
+                by_ref.iter().filter(|(r, _)| r.alias.as_ref() == Some(&q) || (r.alias.is_none() && r.table == q)).flat_map(|(_, c)| c.clone()).collect()
+            }
+            SelectItem::UnnamedExpr(Expr::Identifier(i)) => vec![bare_column(fold(i), type_of(&fold(i)))],
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(p)) => p.last().map(|i| bare_column(fold(i), type_of(&fold(i)))).into_iter().collect(),
+            SelectItem::ExprWithAlias { expr, alias } => {
+                let ty = match expr {
+                    Expr::Identifier(i) => type_of(&fold(i)),
+                    Expr::CompoundIdentifier(p) => p.last().map(|i| type_of(&fold(i))).unwrap_or_default(),
+                    _ => String::new(),
+                };
+                vec![bare_column(fold(alias), ty)]
+            }
+            _ => Vec::new(),
+        };
+        for c in found {
+            if !out.iter().any(|o| o.name == c.name) {
+                out.push(c);
+            }
+        }
+    }
+    if out.is_empty() && !missing.is_empty() { Err(missing) } else { Ok(out) }
+}
+
+fn push_columns(out: &mut Completion, src: &str, stmt: &[Token], cache: &MetaCache, r: &TableRef) {
+    match ref_columns(src, stmt, cache, r, 0) {
+        Ok(cols) => out.candidates.extend(cols.into_iter().map(|c| Candidate {
+            insert: cache.dialect.quote(&c.name),
+            label: c.name,
+            kind: CandidateKind::Column,
+            detail: Some(c.type_name).filter(|t| !t.is_empty()),
+        })),
+        Err(m) => out.missing.extend(m),
     }
 }
 
@@ -404,6 +564,74 @@ mod tests {
 
     fn labels(c: &Completion) -> Vec<&str> {
         c.candidates.iter().map(|x| x.label.as_str()).collect()
+    }
+
+    fn hovered(src: &str, at: &str, cache: &MetaCache) -> Option<HoverTarget> {
+        hover_at(src, src.find(at).unwrap() + 1, cache)
+    }
+
+    #[test]
+    fn hover_finds_the_table_and_the_column_through_aliases() {
+        let mut c = cache();
+        c.columns.insert(("public".into(), "orders".into()), vec![col("id", "integer"), col("total", "numeric")]);
+        let src = "select u.email, o.id, total from users u join orders o on o.id = u.id";
+        assert!(matches!(hovered(src, "email", &c), Some(HoverTarget::Column { table, column, .. }) if table == "users" && column.name == "email"));
+        assert!(matches!(hovered(src, "id, total", &c), Some(HoverTarget::Column { table, .. }) if table == "orders"), "o.id is the orders one");
+        assert!(matches!(hovered(src, "total", &c), Some(HoverTarget::Column { table, .. }) if table == "orders"), "unqualified, only orders has it");
+        assert!(matches!(hovered(src, "orders", &c), Some(HoverTarget::Table { table, .. }) if table == "orders"));
+        assert_eq!(hovered("select id from users join orders on true", "id ", &c), None, "id is in both: no guess");
+        assert_eq!(hovered(src, "select", &c), None, "keywords are nothing");
+    }
+
+    #[test]
+    fn hover_resolves_snowflake_three_part_names() {
+        let mut c = MetaCache { dialect: Dialect::Snowflake, search_path: vec!["ANALYTICS.PUBLIC".into()], ..Default::default() };
+        c.columns.insert(("MARTS_PROD.MART_AWS".into(), "FCT_AWS_COST_USAGE_DAILY".into()), vec![col("USAGE_DATE", "DATE")]);
+        let src = "select * from MARTS_PROD.MART_AWS.FCT_AWS_COST_USAGE_DAILY where usage_date = '2026-";
+        let hit = hovered(src, "usage_date", &c);
+        assert!(matches!(hit, Some(HoverTarget::Column { ref schema, ref column, .. }) if schema == "MARTS_PROD.MART_AWS" && column.name == "USAGE_DATE"), "{hit:?}");
+        assert!(matches!(hovered(src, "FCT_AWS", &c), Some(HoverTarget::Table { .. })));
+    }
+
+    #[test]
+    fn hover_sees_through_ctes_and_subqueries() {
+        let mut c = MetaCache { dialect: Dialect::Snowflake, search_path: vec!["ANALYTICS.PUBLIC".into()], ..Default::default() };
+        let k = |t: &str| ("MARTS_PROD.MART_AWS".to_string(), t.to_string());
+        c.columns.insert(k("FCT"), vec![col("USAGE_ACCOUNT_ID", "TEXT"), col("USAGE_DATE", "DATE"), col("COST", "NUMBER")]);
+        c.columns.insert(k("DIM"), vec![col("ACCOUNT_ID", "TEXT"), col("ACCOUNT_NAME", "TEXT"), col("COST", "NUMBER")]);
+        let at = |src: &str, at: &str| match hover_at(src, src.find(at).unwrap() + 1, &c) {
+            Some(HoverTarget::Column { table, column, .. }) => format!("{table}.{}", column.name),
+            other => format!("{other:?}"),
+        };
+        let q = "select *, USAGE_ACCOUNT_ID from MARTS_PROD.MART_AWS.FCT u left join MARTS_PROD.MART_AWS.DIM a on u.USAGE_ACCOUNT_ID = a.ACCOUNT_ID";
+        assert_eq!(at(q, "USAGE_ACCOUNT_ID from"), "FCT.USAGE_ACCOUNT_ID");
+        let off = q.find("a.ACCOUNT_ID").unwrap() + 3;
+        assert!(matches!(hover_at(q, off, &c), Some(HoverTarget::Column { ref table, .. }) if table == "DIM"), "a.ACCOUNT_ID is the dimension's");
+        assert_eq!(at("select u.COST from MARTS_PROD.MART_AWS.FCT u join MARTS_PROD.MART_AWS.DIM a on true", "COST"), "FCT.COST");
+        assert_eq!(at("select COST from MARTS_PROD.MART_AWS.FCT u join MARTS_PROD.MART_AWS.DIM a on true", "COST"), "None", "in both: no guess");
+        assert_eq!(at("with x as (select USAGE_DATE from MARTS_PROD.MART_AWS.FCT) select USAGE_DATE from x", "USAGE_DATE from x"), "FCT.USAGE_DATE");
+        assert_eq!(at("select s.ACCOUNT_NAME from (select ACCOUNT_NAME from MARTS_PROD.MART_AWS.DIM) s", "ACCOUNT_NAME from ("), "DIM.ACCOUNT_NAME");
+    }
+
+    #[test]
+    fn completes_cte_columns_with_star_expanded() {
+        let mut c = MetaCache { dialect: Dialect::Snowflake, search_path: vec!["ANALYTICS.PUBLIC".into()], ..Default::default() };
+        let k = |t: &str| ("MARTS_PROD.MART_AWS".to_string(), t.to_string());
+        c.columns.insert(k("FCT"), vec![col("USAGE_ACCOUNT_ID", "TEXT"), col("USAGE_DATE", "DATE")]);
+        c.columns.insert(k("DIM"), vec![col("ACCOUNT_ID", "TEXT"), col("ACCOUNT_NAME", "TEXT")]);
+        let src = "with x as (\nselect *, USAGE_ACCOUNT_ID, a.ACCOUNT_NAME as name, upper(ACCOUNT_ID)\nfrom MARTS_PROD.MART_AWS.FCT u\nleft join MARTS_PROD.MART_AWS.DIM a on u.USAGE_ACCOUNT_ID = a.ACCOUNT_ID\nwhere u.USAGE_DATE = '2026-10-15' and ACCOUNT_NAME\nlimit 100)\nselect *, x. from x;";
+        let comp = complete(src, src.find("x. from").unwrap() + 2, &c);
+        assert_eq!(labels(&comp), ["USAGE_ACCOUNT_ID", "USAGE_DATE", "ACCOUNT_ID", "ACCOUNT_NAME", "NAME"], "{:?}", comp.missing);
+        assert!(!comp.missing.iter().any(|m| matches!(m, MetaRequest::Columns(..))), "no table called X is requested: {:?}", comp.missing);
+        // Only some columns, one CTE on top of another.
+        let src = "with a as (select USAGE_DATE as d from MARTS_PROD.MART_AWS.FCT), b as (select d from a) select b. from b";
+        assert_eq!(labels(&complete(src, src.len() - 7, &c)), ["D"]);
+    }
+
+    #[test]
+    fn hover_asks_for_columns_it_does_not_have() {
+        let src = "select total from orders";
+        assert_eq!(hovered(src, "total", &cache()), Some(HoverTarget::Missing(vec![MetaRequest::Columns("public".into(), "orders".into())])));
     }
 
     #[test]

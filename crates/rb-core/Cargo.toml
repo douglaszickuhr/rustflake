@@ -19,6 +19,8 @@ sqlparser = "0.63"
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 regex = "1"
+# Already in the build (Snowflake connector); fetches configurations by URL.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 snowflake-connector-rs = { version = "=1.1.0", default-features = false, features = ["key-pair-auth", "external-browser-sso"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
 tokio-postgres = "0.7.18"

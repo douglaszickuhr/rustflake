@@ -20,7 +20,7 @@ pub enum Filter {
     NotNull,
 }
 
-fn parser_dialect(d: Dialect) -> Box<dyn SqlDialect> {
+pub(crate) fn parser_dialect(d: Dialect) -> Box<dyn SqlDialect> {
     match d {
         Dialect::Postgres => Box::new(PostgreSqlDialect {}),
         Dialect::Snowflake => Box::new(SnowflakeDialect {}),
