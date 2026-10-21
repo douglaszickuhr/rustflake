@@ -14,7 +14,7 @@ fn fq(db: &str, schema: &str, table: &str) -> String {
 /// Always the INFORMATION_SCHEMA of the table's database (may not be the session's).
 pub fn facts_sql(db: &str, schema: &str, table: &str) -> String {
     format!(
-        "select table_type, row_count, bytes, created, last_altered, comment from {}.information_schema.tables where table_schema = {} and table_name = {}",
+        "select table_type, row_count, bytes, created, last_altered, comment, is_iceberg, is_dynamic from {}.information_schema.tables where table_schema = {} and table_name = {}",
         quote_always(db),
         sql_str(schema),
         sql_str(table)
@@ -29,6 +29,8 @@ pub struct Facts {
     pub created: Option<String>,
     pub last_altered: Option<String>,
     pub comment: Option<String>,
+    pub iceberg: bool,
+    pub dynamic: bool,
 }
 
 pub fn parse_facts(names: &[String], rows: &Rows) -> Option<Facts> {
@@ -40,7 +42,102 @@ pub fn parse_facts(names: &[String], rows: &Rows) -> Option<Facts> {
         created: r.text("created"),
         last_altered: r.text("last_altered"),
         comment: r.text("comment"),
+        iceberg: r.text("is_iceberg").as_deref() == Some("YES"),
+        dynamic: r.text("is_dynamic").as_deref() == Some("YES"),
     })
+}
+
+/// Where an Iceberg table's data lives (`SHOW ICEBERG TABLES`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct IcebergInfo {
+    pub catalog: Option<String>,
+    pub external_volume: Option<String>,
+    pub base_location: Option<String>,
+    /// `iceberg_table_type`: `MANAGED` (Snowflake is the catalog) or `UNMANAGED` (an external catalog).
+    pub managed: Option<bool>,
+}
+
+/// `LIKE` is a pattern (`_` matches any character): the parser keeps only the exact name.
+pub fn iceberg_sql(db: &str, schema: &str, table: &str) -> String {
+    format!("show iceberg tables like {} in schema {}", sql_str(table), qualify(&[db, schema]))
+}
+
+pub fn parse_iceberg(names: &[String], rows: &Rows, table: &str) -> Option<IcebergInfo> {
+    let r = named(names, rows).find(|r| r.text("name").as_deref() == Some(table))?;
+    // Snowflake writes placeholders like `<invalid>` where a field doesn't apply (a table whose
+    // external catalog vends the storage access has no volume): treat them as absent.
+    let real = |c: &str| r.text(c).filter(|v| !v.trim().is_empty() && !(v.starts_with('<') && v.ends_with('>')));
+    Some(IcebergInfo {
+        catalog: real("catalog_name"),
+        external_volume: real("external_volume_name"),
+        base_location: real("base_location"),
+        managed: real("iceberg_table_type").map(|t| t.eq_ignore_ascii_case("MANAGED")),
+    })
+}
+
+/// Refresh status of a dynamic table (`INFORMATION_SCHEMA.DYNAMIC_TABLES()`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DynamicInfo {
+    /// None when the lag is `DOWNSTREAM` (refreshed only when something downstream needs it).
+    pub target_lag_sec: Option<u64>,
+    pub mean_lag_sec: Option<u64>,
+    pub max_lag_sec: Option<u64>,
+    /// Share of time the data was within the target lag, 0..1.
+    pub within_target: Option<f64>,
+    /// When the data was last made current (timestamp text).
+    pub latest_data: Option<String>,
+    pub last_state: Option<String>,
+    pub last_message: Option<String>,
+    /// `ACTIVE`, `SUSPENDED`…
+    pub scheduling: Option<String>,
+    /// Snowflake's advice on how to refresh it cheaper (texts).
+    pub recommendations: Vec<String>,
+}
+
+pub fn dynamic_sql(db: &str, schema: &str, table: &str) -> String {
+    format!("select * from table({}.information_schema.dynamic_tables(name => {}))", quote_always(db), sql_str(&qualify(&[db, schema, table])))
+}
+
+pub fn parse_dynamic(names: &[String], rows: &Rows) -> Option<DynamicInfo> {
+    let r = named(names, rows).next()?;
+    let secs = |c: &str| r.text(c).and_then(|v| v.parse::<f64>().ok()).map(|v| v as u64);
+    let json = |c: &str| r.text(c).and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok());
+    Some(DynamicInfo {
+        target_lag_sec: (r.text("target_lag_type").as_deref() != Some("DOWNSTREAM")).then(|| secs("target_lag_sec")).flatten(),
+        mean_lag_sec: secs("mean_lag_sec"),
+        max_lag_sec: secs("maximum_lag_sec"),
+        within_target: r.text("time_within_target_lag_ratio").and_then(|v| v.parse().ok()),
+        latest_data: r.text("latest_data_timestamp"),
+        last_state: r.text("last_completed_refresh_state"),
+        last_message: r.text("last_completed_refresh_state_message"),
+        // `{"state": "ACTIVE"}` (JSON) or plain text.
+        scheduling: json("scheduling_state").and_then(|v| v["state"].as_str().map(String::from)).or_else(|| r.text("scheduling_state")),
+        recommendations: json("recommendations").and_then(|v| v["recommendations"].as_array().map(|a| a.iter().filter_map(|x| x["info"].as_str().map(String::from)).collect())).unwrap_or_default(),
+    })
+}
+
+/// How a dynamic table is doing, for the badge colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynState {
+    OnTime,
+    /// The data is older than the target lag.
+    Behind,
+    Failed,
+    Suspended,
+}
+
+/// `now` and `latest` in Unix seconds.
+pub fn dynamic_state(d: &DynamicInfo, now: i64, latest: Option<i64>) -> DynState {
+    if matches!(d.last_state.as_deref(), Some("FAILED" | "UPSTREAM_FAILED")) {
+        return DynState::Failed;
+    }
+    if d.scheduling.as_deref().is_some_and(|s| s != "ACTIVE") {
+        return DynState::Suspended;
+    }
+    match (d.target_lag_sec, latest) {
+        (Some(target), Some(at)) if now - at > target as i64 => DynState::Behind,
+        _ => DynState::OnTime,
+    }
 }
 
 pub fn columns_sql(db: &str, schema: &str, table: &str) -> String {
@@ -317,6 +414,60 @@ pub fn parse_column_lineage(names: &[String], rows: &Rows) -> Vec<LinNode> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn dynamic_tables_read_lag_state_and_advice() {
+        let (n, r) = t(
+            &[
+                "TARGET_LAG_SEC",
+                "TARGET_LAG_TYPE",
+                "MEAN_LAG_SEC",
+                "MAXIMUM_LAG_SEC",
+                "TIME_WITHIN_TARGET_LAG_RATIO",
+                "LATEST_DATA_TIMESTAMP",
+                "LAST_COMPLETED_REFRESH_STATE",
+                "SCHEDULING_STATE",
+                "RECOMMENDATIONS",
+            ],
+            &[&[
+                Some("3600"),
+                Some("USER_DEFINED"),
+                Some("1648"),
+                Some("4303"),
+                Some("0.998"),
+                Some("2026-10-21 15:54:10.755000+00:00"),
+                Some("SUCCEEDED"),
+                Some("{\n  \"state\": \"ACTIVE\"\n}"),
+                Some(r#"{"recommendations":[{"code":"X","info":"Do Y"}]}"#),
+            ]],
+        );
+        let d = parse_dynamic(&n, &r).unwrap();
+        assert_eq!((d.target_lag_sec, d.mean_lag_sec, d.scheduling.as_deref(), d.recommendations.as_slice()), (Some(3600), Some(1648), Some("ACTIVE"), &["Do Y".to_string()][..]));
+        assert_eq!(dynamic_state(&d, 10_000, Some(9_000)), DynState::OnTime);
+        assert_eq!(dynamic_state(&d, 10_000, Some(5_000)), DynState::Behind, "data older than the 1 h target");
+        let failed = DynamicInfo { last_state: Some("UPSTREAM_FAILED".into()), ..d.clone() };
+        assert_eq!(dynamic_state(&failed, 10_000, Some(9_000)), DynState::Failed);
+        let paused = DynamicInfo { scheduling: Some("SUSPENDED".into()), ..d.clone() };
+        assert_eq!(dynamic_state(&paused, 10_000, Some(9_000)), DynState::Suspended);
+        let (n, r) = t(&["TARGET_LAG_SEC", "TARGET_LAG_TYPE"], &[&[Some("0"), Some("DOWNSTREAM")]]);
+        assert_eq!(parse_dynamic(&n, &r).unwrap().target_lag_sec, None, "DOWNSTREAM has no lag to be behind");
+    }
+
+    #[test]
+    fn iceberg_keeps_only_the_exact_name_of_the_like_pattern() {
+        let (n, r) = t(
+            &["name", "catalog_name", "external_volume_name", "base_location", "iceberg_table_type"],
+            &[&[Some("AXB"), Some("C1"), None, None, None], &[Some("A_B"), Some("SNOWFLAKE"), Some("VOL"), Some("raw/a_b"), Some("MANAGED")]],
+        );
+        let i = parse_iceberg(&n, &r, "A_B").unwrap();
+        assert_eq!((i.catalog.as_deref(), i.external_volume.as_deref(), i.base_location.as_deref(), i.managed), (Some("SNOWFLAKE"), Some("VOL"), Some("raw/a_b"), Some(true)));
+        // An external catalog's table: Snowflake's `<invalid>` placeholder is no volume at all.
+        let (n, r) = t(&["name", "catalog_name", "external_volume_name", "iceberg_table_type"], &[&[Some("S"), Some("ATLAN_CATALOG_INTEGRATION"), Some("<invalid>"), Some("UNMANAGED")]]);
+        let ext = parse_iceberg(&n, &r, "S").unwrap();
+        assert_eq!((ext.external_volume, ext.managed), (None, Some(false)));
+        assert!(iceberg_sql("RAW", "ATLAN ICEBERG", "o'b").ends_with("like 'o''b' in schema \"RAW\".\"ATLAN ICEBERG\""), "{}", iceberg_sql("RAW", "ATLAN ICEBERG", "o'b"));
+    }
+
     use super::*;
     use std::collections::HashMap;
 

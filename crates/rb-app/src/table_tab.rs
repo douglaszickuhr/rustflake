@@ -90,6 +90,12 @@ pub(crate) struct DefRaw {
     pub(crate) pending: u8,
 }
 
+/// What the header badge of an Iceberg or dynamic table needs.
+pub(crate) enum KindExtra {
+    Iceberg(rb_core::table_info::IcebergInfo),
+    Dynamic(rb_core::table_info::DynamicInfo),
+}
+
 /// Model unique_id and its compiled SQL with when it was generated.
 pub(crate) type Compiled = (String, Load<(String, Option<std::time::SystemTime>)>);
 
@@ -123,6 +129,8 @@ pub struct TableTab {
     /// Created the first time the Lineage section opens.
     pub(crate) lineage: Option<Entity<crate::lineage_view::LineageView>>,
     pub(crate) facts: Option<Load<Facts>>,
+    /// Iceberg or dynamic table: what its header badge shows (loaded only for those).
+    pub(crate) kind_extra: Option<Load<KindExtra>>,
     pub(crate) def_raw: Option<Load<DefRaw>>,
     pub(crate) selected_col: Option<String>,
     pub(crate) col_lineage: HashMap<String, Load<Vec<LinNode>>>,
@@ -248,6 +256,7 @@ impl TableTab {
             open_table,
             lineage: None,
             facts: None,
+            kind_extra: None,
             def_raw: None,
             selected_col: None,
             col_lineage: HashMap::new(),

@@ -40,11 +40,14 @@ impl Indexer {
         // The first load waits for the database list (the per-database fallback and the filter depend on
         // it); the tick may arrive earlier and is skipped in `refresh`.
         let sub = cx.observe(&meta, |ix, meta, cx| {
-            if ix.index.is_none() && ix.error.is_none() && !meta.read(cx).cache.databases.is_empty() {
+            // A saved index counts as nothing to wait for: its age makes the tick refresh it.
+            if ix.index.as_ref().is_none_or(|i| i.refreshed.is_none_or(|t| t.elapsed() > STALE)) && !ix.running && ix.error.is_none() && !meta.read(cx).cache.databases.is_empty() {
                 ix.refresh(cx);
             }
         });
-        Indexer { index: None, running: false, error: None, conn, session: None, meta, _tick: tick, _meta: sub }
+        // Last run's index: search works at once; the refresh below replaces it.
+        let index = rb_core::quick_open::load_index(&conn.cfg.id);
+        Indexer { index, running: false, error: None, conn, session: None, meta, _tick: tick, _meta: sub }
     }
 
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
@@ -82,6 +85,14 @@ impl Indexer {
                             let d = diff(old, &new);
                             ix.meta.update(cx, |m, cx| m.apply_index_diff(d, cx));
                         }
+                        // Kept for the next launch (off the UI thread).
+                        let (id, saved) = (ix.conn.cfg.id.clone(), new.clone());
+                        cx.background_spawn(async move {
+                            if let Err(e) = rb_core::quick_open::save_index(&id, &saved) {
+                                tracing::warn!("quick-open index not saved: {e}");
+                            }
+                        })
+                        .detach();
                         ix.index = Some(new);
                         ix.error = None;
                     }

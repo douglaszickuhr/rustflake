@@ -10,10 +10,12 @@ use crate::session::Session;
 use crate::snowflake::{Rows, named};
 
 const MAX_HITS: usize = 50;
+/// Sessions listing databases at the same time when the account is too big for one `SHOW`.
+const LANES: usize = 8;
 /// Row cap of a `SHOW`; when it is hit, the listing may be truncated.
 const SHOW_LIMIT: usize = 10_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum HitKind {
     Database,
     Schema,
@@ -22,7 +24,7 @@ pub enum HitKind {
 }
 
 /// A found object. `matview` only applies with `View`: decides the tree group.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Hit {
     pub kind: HitKind,
     pub matview: bool,
@@ -75,16 +77,35 @@ pub fn like_pattern(text: &str) -> String {
     format!("%{}%", text.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_"))
 }
 
+/// `DB.SCHEMA.NAME` (the parts that exist), as typed in SQL.
+fn full_name(h: &Hit) -> String {
+    match h.kind {
+        HitKind::Database => h.name.clone(),
+        HitKind::Schema => h.database.iter().chain([&h.name]).cloned().collect::<Vec<_>>().join("."),
+        _ => h.database.iter().chain(&h.schema).chain([&h.name]).cloned().collect::<Vec<_>>().join("."),
+    }
+}
+
+/// The hit is exactly what was typed (its name, or with dots its full or trailing path).
+pub fn is_exact(h: &Hit, text: &str) -> bool {
+    let q = text.replace('"', "").to_uppercase();
+    let n = if q.contains('.') { full_name(h) } else { h.name.clone() }.to_uppercase();
+    n == q || (q.contains('.') && n.ends_with(&format!(".{q}")))
+}
+
 /// Only those containing the text (case-insensitive); exact, prefix, contains; shorter first.
+/// Text with dots (`RAW.ATLAN_ICEBERG.SCHEMA`, quotes allowed) is matched against the full path, and
+/// a whole trailing path (`ATLAN_ICEBERG.SCHEMA`) counts as exact.
 pub fn rank(hits: Vec<Hit>, text: &str) -> Vec<Hit> {
-    let q = text.to_uppercase();
+    let q = text.replace('"', "").to_uppercase();
+    let dotted = q.contains('.');
     let mut scored: Vec<(u8, usize, Hit)> = hits
         .into_iter()
         .filter_map(|h| {
-            let n = h.name.to_uppercase();
-            let tier = if n == q {
+            let n = if dotted { full_name(&h) } else { h.name.clone() }.to_uppercase();
+            let tier = if n == q || (dotted && n.ends_with(&format!(".{q}"))) {
                 0
-            } else if n.starts_with(&q) {
+            } else if n.starts_with(&q) || (dotted && n.contains(&format!(".{q}"))) {
                 1
             } else if n.contains(&q) {
                 2
@@ -193,7 +214,10 @@ limit 200";
 
 /// Postgres: live catalog search (local, milliseconds).
 pub async fn pg_search(s: &Session, text: &str) -> Result<Vec<Hit>, DbError> {
-    let rows = s.query_text(PG_SEARCH, &[&like_pattern(text)]).await?;
+    // `schema.table`: the catalog only knows names, so it looks for the last part and `rank` checks the path.
+    let name = text.replace('"', "");
+    let name = name.rsplit('.').next().unwrap_or_default();
+    let rows = s.query_text(PG_SEARCH, &[&like_pattern(name)]).await?;
     let hits = rows
         .into_iter()
         .filter_map(|r| {
@@ -208,30 +232,98 @@ pub async fn pg_search(s: &Session, text: &str) -> Result<Vec<Hit>, DbError> {
     Ok(rank(hits, text))
 }
 
+/// The index as saved between runs (one file per connection).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedIndex {
+    saved_at: i64,
+    schemas: Vec<Hit>,
+    objects: Vec<Hit>,
+    fallback_dbs: Option<Vec<String>>,
+}
+
+pub fn index_path(conn_id: &str) -> std::path::PathBuf {
+    crate::config::app_dir().join("index").join(format!("{conn_id}.json"))
+}
+
+/// Saves the index so the next launch can search right away (blocking: call it off the UI thread).
+pub fn save_index(conn_id: &str, idx: &SfIndex) -> std::io::Result<()> {
+    let saved = SavedIndex { saved_at: crate::user_view::now(), schemas: idx.schemas.clone(), objects: idx.objects.clone(), fallback_dbs: idx.fallback_dbs.clone() };
+    let path = index_path(conn_id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(&saved).map_err(std::io::Error::other)?)?;
+    std::fs::rename(tmp, path)
+}
+
+/// The index saved by a previous run, aged as old as it is (so it gets refreshed). None if absent or unreadable.
+pub fn load_index(conn_id: &str) -> Option<SfIndex> {
+    let saved: SavedIndex = serde_json::from_slice(&std::fs::read(index_path(conn_id)).ok()?).ok()?;
+    let age = std::time::Duration::from_secs((crate::user_view::now() - saved.saved_at).max(0) as u64);
+    Some(SfIndex { objects: saved.objects, schemas: saved.schemas, refreshed: Instant::now().checked_sub(age), fallback_dbs: saved.fallback_dbs })
+}
+
+/// `DB.SCHEMA[.NAME]` typed in full: asks Snowflake for just that (fast) instead of waiting for the
+/// index. Other text gives an empty list. Unquoted parts match like Snowflake (case-insensitive).
+pub async fn sf_lookup(s: &Session, text: &str) -> Result<Vec<Hit>, DbError> {
+    let clean = text.replace('"', "");
+    let parts: Vec<&str> = clean.split('.').map(str::trim).collect();
+    if parts.iter().any(|p| p.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+    match parts.as_slice() {
+        [db, schema] => {
+            let (n, rows) = s.query_named(&format!("show terse schemas like {} in database {}", crate::lexer::sql_str(schema), quote_always(&db.to_uppercase()))).await?;
+            Ok(parse_sf_schemas(&n, &rows).into_iter().filter(|h| same(&h.name, schema)).collect())
+        }
+        [db, schema, name] => {
+            let q = format!("show terse objects like {} in schema {}.{}", crate::lexer::sql_str(name), quote_always(&db.to_uppercase()), quote_always(&schema.to_uppercase()));
+            let (n, rows) = s.query_named(&q).await?;
+            Ok(parse_sf_objects(&n, &rows).into_iter().filter(|h| same(&h.name, name)).collect())
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
 /// Snowflake: schemas and objects of the account. List truncated at the `SHOW` cap → redo per database.
 pub async fn sf_snapshot(s: &Session, dbs: &[String]) -> Result<SfIndex, DbError> {
+    let started = Instant::now();
     let other = s.sibling();
     let (sch, objs) = tokio::join!(s.query_named("show terse schemas in account"), other.as_ref().unwrap_or(s).query_named("show terse objects in account"));
     let (n, rows) = sch?;
     let schemas = parse_sf_schemas(&n, &rows);
     let (n, rows) = objs?;
+    tracing::info!("index: account-wide schemas + objects in {:?} ({} objects)", started.elapsed(), rows.len());
     if rows.len() < SHOW_LIMIT {
         return Ok(SfIndex { objects: parse_sf_objects(&n, &rows), schemas, refreshed: Some(Instant::now()), fallback_dbs: None });
     }
     // ponytail: no `FROM` pagination; a database with more than 10k objects ends up truncated.
-    let mut objects = Vec::new();
-    for db in dbs {
-        // A database that fails (removed midway, share without access) does not take down the whole index.
-        match s.query_named(&format!("show terse objects in database {}", quote_always(db))).await {
-            Ok((n, rows)) => {
-                if rows.len() >= SHOW_LIMIT {
-                    tracing::warn!(db, "more than 10k objects: index truncated");
+    // Databases split over `LANES` sessions on the same login, each listing its share in turn.
+    let lanes: Vec<Option<Session>> = (0..LANES).map(|i| if i == 0 { None } else { s.sibling() }).collect();
+    let work = lanes.iter().enumerate().map(|(i, lane)| {
+        let session = lane.as_ref().unwrap_or(s);
+        let mine: Vec<&String> = dbs.iter().skip(i).step_by(LANES).collect();
+        async move {
+            let mut out = Vec::new();
+            for db in mine {
+                // A database that fails (removed midway, share without access) does not take down the whole index.
+                match session.query_named(&format!("show terse objects in database {}", quote_always(db))).await {
+                    Ok((n, rows)) => {
+                        if rows.len() >= SHOW_LIMIT {
+                            tracing::warn!(db, "more than 10k objects: index truncated");
+                        }
+                        out.extend(parse_sf_objects(&n, &rows));
+                    }
+                    Err(e) => tracing::warn!(db, "quick-open index: {e}"),
                 }
-                objects.extend(parse_sf_objects(&n, &rows));
             }
-            Err(e) => tracing::warn!(db, "quick-open index: {e}"),
+            out
         }
-    }
+    });
+    let objects: Vec<Hit> = futures::future::join_all(work).await.into_iter().flatten().collect();
+    tracing::info!("index: {} databases over {LANES} sessions → {} objects, total {:?}", dbs.len(), objects.len(), started.elapsed());
     Ok(SfIndex { objects, schemas, refreshed: Some(Instant::now()), fallback_dbs: Some(dbs.to_vec()) })
 }
 
@@ -254,6 +346,28 @@ mod tests {
         let hits = vec![t("D", "S", "XORDERS"), t("D", "S", "ORDERS_OLD"), t("D", "S", "ORDERS"), t("D", "S", "ORD"), t("D", "S", "CUSTOMERS")];
         let names: Vec<_> = rank(hits, "orders").into_iter().map(|h| h.name).collect();
         assert_eq!(names, ["ORDERS", "ORDERS_OLD", "XORDERS"]);
+    }
+
+    #[test]
+    fn full_paths_find_the_exact_object_first() {
+        let schema = Hit { kind: HitKind::Schema, matview: false, database: Some("RAW".into()), schema: None, name: "ATLAN_ICEBERG".into() };
+        let hits = vec![t("RAW", "ATLAN_ICEBERG", "SCHEMA_HISTORY"), t("RAW", "OTHER", "SCHEMA"), t("RAW", "ATLAN_ICEBERG", "SCHEMA"), schema.clone()];
+        let names = |q: &str| rank(hits.clone(), q).into_iter().map(|h| full_name(&h)).collect::<Vec<_>>();
+        assert_eq!(names("RAW.ATLAN_ICEBERG.SCHEMA"), ["RAW.ATLAN_ICEBERG.SCHEMA", "RAW.ATLAN_ICEBERG.SCHEMA_HISTORY"]);
+        assert_eq!(names(r#""raw"."atlan_iceberg"."schema""#)[0], "RAW.ATLAN_ICEBERG.SCHEMA", "quotes and case don't matter");
+        assert_eq!(names("atlan_iceberg.schema")[0], "RAW.ATLAN_ICEBERG.SCHEMA", "a trailing path is exact too");
+        assert_eq!(names("raw.atlan_iceberg")[0], "RAW.ATLAN_ICEBERG", "the schema itself");
+        assert_eq!(names("schema").len(), 3, "without dots, only names count (the schema ATLAN_ICEBERG is out)");
+        let best = rank(hits.clone(), "RAW.ATLAN_ICEBERG.SCHEMA");
+        assert!(is_exact(&best[0], "RAW.ATLAN_ICEBERG.SCHEMA") && !is_exact(&best[1], "RAW.ATLAN_ICEBERG.SCHEMA"));
+    }
+
+    #[test]
+    fn saved_index_round_trips_and_ages() {
+        let idx = SfIndex { objects: vec![t("RAW", "S", "T")], schemas: vec![], refreshed: Some(Instant::now()), fallback_dbs: Some(vec!["RAW".into()]) };
+        let saved = SavedIndex { saved_at: crate::user_view::now() - 600, schemas: idx.schemas.clone(), objects: idx.objects.clone(), fallback_dbs: idx.fallback_dbs.clone() };
+        let back: SavedIndex = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!((back.objects, back.fallback_dbs), (idx.objects, idx.fallback_dbs));
     }
 
     #[test]

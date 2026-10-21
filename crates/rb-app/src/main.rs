@@ -54,6 +54,7 @@ gpui_kit::actions!(
         QuickOpen,
         QuickPrev,
         QuickNext,
+        QuickPick,
         TabKey,
         FormatSql,
         ShowHistory,
@@ -197,6 +198,9 @@ fn main() {
             // The field uses ↑↓ to move the cursor; the deeper binding wins.
             KeyBinding::new("up", QuickPrev, Some("QuickOpen > Input")),
             KeyBinding::new("down", QuickNext, Some("QuickOpen > Input")),
+            // Enter as our own action, like ↑↓: the field's Enter is an event delivered later and also
+            // reaches the dialog's Confirm, which can close it before the pick runs.
+            KeyBinding::new("enter", QuickPick, Some("QuickOpen > Input")),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
 

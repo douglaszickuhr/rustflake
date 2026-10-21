@@ -14,7 +14,7 @@ use rb_core::quick_open::{Hit, HitKind, pg_search, search_index};
 
 use crate::indexer::Indexer;
 use crate::meta::MetaStore;
-use crate::{QuickNext, QuickPrev};
+use crate::{QuickNext, QuickPick, QuickPrev};
 
 type OnPick = Rc<dyn Fn(Hit, &mut Window, &mut App)>;
 type OnTab = Rc<dyn Fn(usize, &mut Window, &mut App)>;
@@ -63,10 +63,10 @@ pub struct QuickOpen {
 impl QuickOpen {
     fn new(meta: Entity<MetaStore>, indexer: Option<Entity<Indexer>>, on_pick: OnPick, tabs: Vec<OpenTab>, on_tab: OnTab, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("quick.placeholder").to_string()));
-        let mut subs = vec![cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, window, cx| match ev {
-            InputEvent::Change => this.search(cx),
-            InputEvent::PressEnter { .. } => this.pick(this.selected, window, cx),
-            _ => {}
+        let mut subs = vec![cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, _, cx| {
+            if matches!(ev, InputEvent::Change) {
+                this.search(cx);
+            }
         })];
         // Index arrived or was updated: redo the search with the same text. Only when it actually changes
         // (the indexer also signals when a snapshot starts), so the selection does not jump back to the top for nothing.
@@ -117,6 +117,7 @@ impl QuickOpen {
                 match &ix.index {
                     Some(idx) => {
                         self.hits = search_index(idx, &self.meta.read(cx).cache, &text);
+                        self.select_exact(&text);
                         self.status = if self.hits.is_empty() && self.tab_hits.is_empty() { t!("quick.no_results").to_string().into() } else { "".into() };
                     }
                     None => {
@@ -125,6 +126,26 @@ impl QuickOpen {
                             Some(e) => t!("quick.index_failed", error = e).to_string().into(),
                             None => t!("quick.indexing").to_string().into(),
                         };
+                        // A full path (`DB.SCHEMA[.NAME]`) doesn't need the index: ask Snowflake for just that.
+                        if text.contains('.') {
+                            let s = self.meta.read(cx).session.clone();
+                            let s = s.sibling().map(std::sync::Arc::new).unwrap_or(s);
+                            self._search = Some(cx.spawn(async move |this, cx| {
+                                cx.background_executor().timer(Duration::from_millis(250)).await;
+                                let res = rb_core::quick_open::sf_lookup(&s, &text).await;
+                                this.update(cx, |q, cx| {
+                                    if let Ok(hits) = res
+                                        && !hits.is_empty()
+                                    {
+                                        q.hits = hits;
+                                        q.status = "".into();
+                                        q.select_exact(&text);
+                                        cx.notify();
+                                    }
+                                })
+                                .ok();
+                            }));
+                        }
                     }
                 }
             }
@@ -140,6 +161,7 @@ impl QuickOpen {
                             Ok(hits) => {
                                 q.status = if hits.is_empty() && q.tab_hits.is_empty() { t!("quick.no_results").to_string().into() } else { "".into() };
                                 q.hits = hits;
+                                q.select_exact(&text);
                             }
                             Err(e) => q.status = e.to_string().into(),
                         }
@@ -150,6 +172,15 @@ impl QuickOpen {
             }
         }
         cx.notify();
+    }
+
+    /// An object that is exactly what was typed goes first, ahead of open tabs that merely mention it
+    /// (their script text matches a full path too): Enter opens it.
+    fn select_exact(&mut self, text: &str) {
+        if self.hits.first().is_some_and(|h| rb_core::quick_open::is_exact(h, text)) {
+            self.selected = self.tab_hits.len();
+            self.scroll.scroll_to_item(self.selected);
+        }
     }
 
     fn pick(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -264,6 +295,7 @@ impl Render for QuickOpen {
             .gap_2()
             .on_action(cx.listener(|q, _: &QuickPrev, _, cx| q.step(false, cx)))
             .on_action(cx.listener(|q, _: &QuickNext, _, cx| q.step(true, cx)))
+            .on_action(cx.listener(|q, _: &QuickPick, window, cx| q.pick(q.selected, window, cx)))
             .child(Input::new(&self.input))
             // The rows are direct children of the scrollable container: `scroll_to_item` counts by them.
             .child(div().id("qo-list").flex().flex_col().max_h(px(420.)).overflow_y_scroll().track_scroll(&self.scroll).children(rows))

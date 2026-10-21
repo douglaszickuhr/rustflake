@@ -2593,3 +2593,88 @@ es = "De dónde viene %{col}"
 en = "loading tags and classification…"
 pt = "carregando tags e classificação…"
 es = "cargando etiquetas y clasificación…"
+
+[tv.iceberg]
+en = "Iceberg"
+pt = "Iceberg"
+es = "Iceberg"
+
+[tv.dynamic]
+en = "Dynamic"
+pt = "Dinâmica"
+es = "Dinámica"
+
+[tv.dyn_lag]
+en = "Dynamic · lag %{lag}"
+pt = "Dinâmica · lag %{lag}"
+es = "Dinámica · lag %{lag}"
+
+[tv.dyn_downstream]
+en = "Dynamic · downstream"
+pt = "Dinâmica · downstream"
+es = "Dinámica · downstream"
+
+[tv.dyn_on_time]
+en = "Refreshing on time"
+pt = "Atualizando no prazo"
+es = "Actualizándose a tiempo"
+
+[tv.dyn_behind]
+en = "Behind its target lag: the data is older than it should be"
+pt = "Atrasada: os dados estão mais velhos do que o lag alvo"
+es = "Atrasada: los datos son más antiguos que el lag objetivo"
+
+[tv.dyn_failed]
+en = "The last refresh failed"
+pt = "A última atualização falhou"
+es = "La última actualización falló"
+
+[tv.dyn_suspended]
+en = "Suspended: not refreshing"
+pt = "Suspensa: não está atualizando"
+es = "Suspendida: no se actualiza"
+
+[tv.dyn_data_as_of]
+en = "Data as of %{at} (%{ago})"
+pt = "Dados de %{at} (%{ago})"
+es = "Datos de %{at} (%{ago})"
+
+[tv.dyn_lags]
+en = "Average lag %{mean}, max %{max}; within target %{pct}% of the time"
+pt = "Lag médio %{mean}, máx %{max}; dentro do alvo %{pct}% do tempo"
+es = "Lag medio %{mean}, máx %{max}; dentro del objetivo %{pct}% del tiempo"
+
+[tv.dyn_advice]
+en = "Snowflake suggests:"
+pt = "O Snowflake sugere:"
+es = "Snowflake sugiere:"
+
+[tv.ice_catalog]
+en = "Catalog: %{v}"
+pt = "Catálogo: %{v}"
+es = "Catálogo: %{v}"
+
+[tv.ice_volume]
+en = "External volume: %{v}"
+pt = "Volume externo: %{v}"
+es = "Volumen externo: %{v}"
+
+[tv.ice_location]
+en = "Location: %{v}"
+pt = "Local: %{v}"
+es = "Ubicación: %{v}"
+
+[tv.kind_no_details]
+en = "No details returned"
+pt = "Sem detalhes"
+es = "Sin detalles"
+
+[tv.ice_managed]
+en = "Managed by Snowflake"
+pt = "Gerenciada pelo Snowflake"
+es = "Gestionada por Snowflake"
+
+[tv.ice_external]
+en = "Managed by an external catalog (%{catalog})"
+pt = "Gerenciada por um catálogo externo (%{catalog})"
+es = "Gestionada por un catálogo externo (%{catalog})"

@@ -36,6 +36,15 @@ fn ago(ts: &str) -> Option<String> {
 }
 
 /// Plain text hover, for `.tooltip(...)`.
+/// Lag as people say it: "1 h", "15 min", "40 s".
+fn lag_label(secs: u64) -> String {
+    match secs {
+        s if s >= 3600 && s % 3600 == 0 => format!("{} h", s / 3600),
+        s if s >= 60 && s % 60 == 0 => format!("{} min", s / 60),
+        s => crate::admin_tab::human_ms(s * 1000),
+    }
+}
+
 fn tip(text: String) -> impl Fn(&mut Window, &mut App) -> AnyView {
     move |w, cx| Tooltip::new(text.clone()).build(w, cx)
 }
@@ -89,14 +98,98 @@ impl TableTab {
                 let (n, r) = s.query_named(&table_info::facts_sql(&db, &schema, &table)).await?;
                 Ok(table_info::parse_facts(&n, &r).unwrap_or_default())
             },
-            |t, res, _| t.facts = Some(res.map_or_else(|e| Load::Failed(e.to_string()), Load::Ready)),
+            |t, res, cx| {
+                if let Ok(f) = &res
+                    && (f.iceberg || f.dynamic)
+                {
+                    t.load_kind_extra(f.dynamic, cx);
+                }
+                t.facts = Some(res.map_or_else(|e| Load::Failed(e.to_string()), Load::Ready));
+            },
         );
+    }
+
+    /// Details for the Iceberg / dynamic badge, after the facts say which kind it is.
+    fn load_kind_extra(&mut self, dynamic: bool, cx: &mut Context<Self>) {
+        self.kind_extra = Some(Load::Loading);
+        let (db, schema) = self.db_schema();
+        let table = self.table.clone();
+        self.spawn_query(
+            cx,
+            async move |s| {
+                if dynamic {
+                    let (n, r) = s.query_named(&table_info::dynamic_sql(&db, &schema, &table)).await?;
+                    Ok(table_info::parse_dynamic(&n, &r).map(crate::table_tab::KindExtra::Dynamic))
+                } else {
+                    let (n, r) = s.query_named(&table_info::iceberg_sql(&db, &schema, &table)).await?;
+                    Ok(table_info::parse_iceberg(&n, &r, &table).map(crate::table_tab::KindExtra::Iceberg))
+                }
+            },
+            |t, res, _| {
+                t.kind_extra = match res {
+                    Ok(Some(x)) => Some(Load::Ready(x)),
+                    Ok(None) => Some(Load::Failed(t!("tv.kind_no_details").to_string())),
+                    Err(e) => Some(Load::Failed(e.to_string())),
+                }
+            },
+        );
+    }
+
+    /// "Iceberg" / "Dynamic · lag 1 h" pill next to the name, coloured by the refresh state; details on hover.
+    fn kind_badge(&self, cx: &App) -> Option<AnyElement> {
+        let Some(Load::Ready(f)) = &self.facts else { return None };
+        if !f.iceberg && !f.dynamic {
+            return None;
+        }
+        let extra = self.kind_extra.as_ref();
+        let (tone, label, lines): (crate::ui::Tone, String, Vec<String>) = match extra {
+            Some(Load::Ready(crate::table_tab::KindExtra::Dynamic(d))) => {
+                let latest = d.latest_data.as_deref().and_then(user_view::parse_ts);
+                let state = table_info::dynamic_state(d, user_view::now(), latest);
+                let (tone, what) = match state {
+                    table_info::DynState::OnTime => (crate::ui::Tone::Success, t!("tv.dyn_on_time")),
+                    table_info::DynState::Behind => (crate::ui::Tone::Warning, t!("tv.dyn_behind")),
+                    table_info::DynState::Failed => (crate::ui::Tone::Danger, t!("tv.dyn_failed")),
+                    table_info::DynState::Suspended => (crate::ui::Tone::Neutral, t!("tv.dyn_suspended")),
+                };
+                let label = match d.target_lag_sec {
+                    Some(s) => t!("tv.dyn_lag", lag = lag_label(s)).to_string(),
+                    None => t!("tv.dyn_downstream").to_string(),
+                };
+                let mut lines = vec![what.to_string()];
+                lines.extend(d.last_message.clone().filter(|_| state == table_info::DynState::Failed));
+                lines.extend(latest.map(|at| t!("tv.dyn_data_as_of", at = crate::ui::local_time(at), ago = crate::ui::ago(at)).to_string()));
+                if let (Some(mean), Some(max)) = (d.mean_lag_sec, d.max_lag_sec) {
+                    let pct = d.within_target.map(|r| format!("{:.0}", r * 100.)).unwrap_or_else(|| "?".into());
+                    lines.push(t!("tv.dyn_lags", mean = lag_label(mean), max = lag_label(max), pct = pct).to_string());
+                }
+                if !d.recommendations.is_empty() {
+                    lines.push(String::new());
+                    lines.push(t!("tv.dyn_advice").to_string());
+                    lines.extend(d.recommendations.iter().take(3).map(|r| format!("• {r}")));
+                }
+                (tone, label, lines)
+            }
+            Some(Load::Ready(crate::table_tab::KindExtra::Iceberg(i))) => {
+                let mut lines = Vec::new();
+                lines.extend(i.managed.map(|m| if m { t!("tv.ice_managed").to_string() } else { t!("tv.ice_external", catalog = i.catalog.clone().unwrap_or_default()).to_string() }));
+                lines.extend(i.catalog.as_ref().filter(|_| i.managed != Some(false)).map(|v| t!("tv.ice_catalog", v = v).to_string()));
+                lines.extend(i.external_volume.as_ref().map(|v| t!("tv.ice_volume", v = v).to_string()));
+                lines.extend(i.base_location.as_ref().map(|v| t!("tv.ice_location", v = v).to_string()));
+                (crate::ui::Tone::Info, t!("tv.iceberg").to_string(), lines)
+            }
+            Some(Load::Failed(e)) => (crate::ui::Tone::Neutral, if f.dynamic { t!("tv.dynamic") } else { t!("tv.iceberg") }.to_string(), vec![e.clone()]),
+            _ => (crate::ui::Tone::Neutral, if f.dynamic { t!("tv.dynamic") } else { t!("tv.iceberg") }.to_string(), vec![t!("tree.loading").to_string()]),
+        };
+        let text = lines.join("\n");
+        Some(div().id("tv-kind-badge").when(!text.is_empty(), |d| d.tooltip(tip(text))).child(crate::ui::badge(tone, cx).child(label)).into_any_element())
     }
 
     /// ⌘R: fetches again everything already shown (header facts, definition, data, lineage, the open
     /// custom tab). Sections never opened stay unloaded; dbt reads local files and has its own Compile.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         self.facts = None;
+        self.kind_extra = None;
         self.ensure_facts(cx);
         if self.def_raw.take().is_some() {
             self.col_lineage.clear();
@@ -286,6 +379,7 @@ impl TableTab {
                 .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(full.clone())))
                 .child(format!("{db}.{schema}"))
         });
+        top = top.children(self.kind_badge(cx));
         if let Some(n) = &node {
             let badge = match &n.materialized {
                 Some(m) => format!("{} · {m}", n.resource_type),
@@ -1191,4 +1285,12 @@ fn class_badge(level: Option<u8>, masked: bool, org: &rb_core::org_config::OrgCo
         .child(format!("C{l}"))
         .when(masked, |d| d.child(Icon::new(IconName::Lock).xsmall()))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lags_read_like_people_say_them() {
+        assert_eq!((super::lag_label(3600), super::lag_label(7200), super::lag_label(900), super::lag_label(40)), ("1 h".into(), "2 h".into(), "15 min".into(), "40.0 s".into()));
+    }
 }
