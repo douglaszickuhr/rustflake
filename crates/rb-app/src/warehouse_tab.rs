@@ -248,7 +248,7 @@ impl WarehouseTab {
                     .child(div().flex_1().text_sm().child(t!("wh.title").to_string()))
                     .child(Button::new("wh-reload").label("↻").ghost().small().tooltip(t!("admin.reload").to_string()).on_click(cx.listener(|t, _, _, cx| t.reload(cx)))),
             )
-            .child(Input::new(&self.filter));
+            .child(Input::new(&self.filter).small().cleanable(true));
         let items: Vec<WarehouseInfo> = match &self.list {
             Load::Ready(l) => l.iter().filter(|w| q.is_empty() || w.name.to_lowercase().contains(&q)).cloned().collect(),
             Load::Loading => return col.child(div().text_sm().text_color(theme.muted_foreground).child(t!("tree.loading").to_string())),

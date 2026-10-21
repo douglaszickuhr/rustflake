@@ -24,6 +24,9 @@ pub struct OpenTab {
     pub ix: usize,
     pub title: String,
     pub body: Option<String>,
+    /// Its connection: the logo shows the kind, the name is on hover.
+    pub snowflake: bool,
+    pub conn: String,
 }
 
 /// Matching tabs: (index, title, detail). Empty text = all; otherwise the title or a line of the
@@ -241,9 +244,12 @@ impl Render for QuickOpen {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let skip = self.tab_hits.len();
-        let tab_rows = self.tab_hits.iter().enumerate().map(|(i, (_, title, detail))| {
+        let tab_rows = self.tab_hits.iter().enumerate().map(|(i, (ix, title, detail))| {
+            let tab = self.tabs.iter().find(|t| t.ix == *ix);
+            let (snowflake, conn) = tab.map_or((false, String::new()), |t| (t.snowflake, t.conn.clone()));
             h_flex()
                 .id(("qo-tab", i))
+                .when(!conn.is_empty(), |d| d.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(conn.clone()).build(w, cx)))
                 .gap_2()
                 .px_2()
                 .py_1()
@@ -251,8 +257,9 @@ impl Render for QuickOpen {
                 .cursor_pointer()
                 .when(i == self.selected, |d| d.bg(theme.secondary))
                 .hover(|d| d.bg(theme.secondary_hover))
-                .child(Icon::new(IconName::File).small().text_color(theme.muted_foreground))
-                .child(div().flex_shrink_0().child(title.clone()))
+                .child(crate::workspace::kind_logo(snowflake).small().flex_shrink_0())
+                // The name gives way first ("…"), so "Open tab" always fits.
+                .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title.clone()))
                 .child(
                     div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(detail.clone()),
                 )
@@ -336,7 +343,7 @@ mod tests {
 
     #[test]
     fn open_tabs_match_by_title_or_script_text() {
-        let tab = |ix, title: &str, body: Option<&str>| OpenTab { ix, title: title.into(), body: body.map(Into::into) };
+        let tab = |ix, title: &str, body: Option<&str>| OpenTab { ix, title: title.into(), body: body.map(Into::into), snowflake: true, conn: "Prod".into() };
         let tabs = vec![tab(0, "Prod · daily checks", Some("select 1;\n  update ORDERS set x = 1;")), tab(1, "Prod · USERS", None)];
         assert_eq!(match_tabs(&tabs, "").len(), 2, "empty: all");
         assert_eq!(match_tabs(&tabs, "DAILY"), vec![(0, "Prod · daily checks".into(), String::new())]);

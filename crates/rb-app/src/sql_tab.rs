@@ -680,6 +680,8 @@ impl SqlTab {
 
 impl Render for SqlTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Anything to show below the editor yet (a run, an error, a plan)?
+        let ran = self.running || !self.messages.is_empty() || self.error.is_some() || self.plan.is_some();
         let grid = self.active_grid().map(|g| g.read(cx).delegate());
         let rows = grid.map_or(0, |g| g.loaded_rows());
         let more = grid.is_some_and(|g| g.rs.as_ref().is_some_and(|r| r.more));
@@ -800,29 +802,36 @@ impl Render for SqlTab {
                     window.dispatch_action(Box::new(IndentInline), cx);
                 }
             }))
-            .child(
+            // Until something runs there's nothing to show below: the code gets the whole height
+            // (an empty result pane took half the screen, e.g. a procedure's code opened from the tree).
+            .child(if ran {
                 v_resizable("sql-split")
                     .child(resizable_panel().size(px(280.)).child(Editor::new(&self.editor).h_full()))
-                    .child(resizable_panel().child(v_flex().size_full().children(tabs).child(content))),
-            )
-            .child(
-                h_flex()
-                    .px_2()
-                    .py_1()
-                    .gap_3()
-                    .text_sm()
-                    .when(spinning, |d| d.child(Spinner::new().small()))
-                    .when(matches!(self.active, Pane::Result(_)), |d| {
-                        d.child(grid::mode_toggle(self.text_mode, |t: &mut Self, v| t.text_mode = v, cx))
-                            .child(t!("grid.rows", n = format!("{rows}{}", if more || truncated { "+" } else { "" })).to_string())
-                    })
-                    .when(truncated, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("results.first_rows_only").to_string())))
-                    .child(self.status.clone())
-                    .when_some(grid_error, |d, e| d.child(e))
-                    .child(div().flex_1())
-                    .when_some(query_id, |d, id| d.child(query_id_button("footer-qid", id)))
-                    .when(self.running, |d| d.child(Button::new("cancel").label(crate::ui::keys(&format!("{} ⌘.", t!("common.cancel")))).ghost().on_click(cx.listener(|t, _, _, _| t.cancel())))),
-            )
+                    .child(resizable_panel().child(v_flex().size_full().children(tabs).child(content)))
+                    .into_any_element()
+            } else {
+                div().flex_1().min_h_0().child(Editor::new(&self.editor).h_full()).into_any_element()
+            })
+            .when(ran, |d| {
+                d.child(
+                    h_flex()
+                        .px_2()
+                        .py_1()
+                        .gap_3()
+                        .text_sm()
+                        .when(spinning, |d| d.child(Spinner::new().small()))
+                        .when(matches!(self.active, Pane::Result(_)), |d| {
+                            d.child(grid::mode_toggle(self.text_mode, |t: &mut Self, v| t.text_mode = v, cx))
+                                .child(t!("grid.rows", n = format!("{rows}{}", if more || truncated { "+" } else { "" })).to_string())
+                        })
+                        .when(truncated, |d| d.child(div().text_color(cx.theme().muted_foreground).child(t!("results.first_rows_only").to_string())))
+                        .child(self.status.clone())
+                        .when_some(grid_error, |d, e| d.child(e))
+                        .child(div().flex_1())
+                        .when_some(query_id, |d, id| d.child(query_id_button("footer-qid", id)))
+                        .when(self.running, |d| d.child(Button::new("cancel").label(crate::ui::keys(&format!("{} ⌘.", t!("common.cancel")))).ghost().on_click(cx.listener(|t, _, _, _| t.cancel())))),
+                )
+            })
     }
 }
 

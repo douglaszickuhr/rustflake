@@ -2078,10 +2078,6 @@ en = "GitHub: %{repo} · branch %{branch}"
 pt = "GitHub: %{repo} · branch %{branch}"
 es = "GitHub: %{repo} · rama %{branch}"
 
-[tv.matched_by_name_tip]
-en = "The dbt manifest was built for another target: it points at %{relation}. Matched to this table by name."
-pt = "O manifest do dbt é de outro target: aponta para %{relation}. Associado a esta tabela pelo nome."
-es = "El manifest de dbt es de otro target: apunta a %{relation}. Asociado a esta tabla por nombre."
 
 [tv.copy_name]
 en = "%{name} · click to copy"
@@ -2103,10 +2099,6 @@ en = "%{n} bytes"
 pt = "%{n} bytes"
 es = "%{n} bytes"
 
-[tv.matched_by_name]
-en = "matched by name (manifest from another target)"
-pt = "casado pelo nome (manifest de outro target)"
-es = "emparejado por nombre (manifest de otro target)"
 
 [ws.connecting_to]
 en = "connecting to %{name}…"
@@ -2678,3 +2670,95 @@ es = "Gestionada por Snowflake"
 en = "Managed by an external catalog (%{catalog})"
 pt = "Gerenciada por um catálogo externo (%{catalog})"
 es = "Gestionada por un catálogo externo (%{catalog})"
+
+
+[tv.code_search]
+en = "Search in the code"
+pt = "Buscar no código"
+es = "Buscar en el código"
+
+[tree.procedures]
+en = "Procedures"
+pt = "Procedures"
+es = "Procedimientos"
+
+[tree.tasks]
+en = "Tasks"
+pt = "Tasks"
+es = "Tareas"
+
+[task.not_found]
+en = "Task not found (dropped, or no permission to see it)"
+pt = "Task não encontrada (removida, ou sem permissão para vê-la)"
+es = "Tarea no encontrada (eliminada, o sin permiso para verla)"
+
+[task.suspended]
+en = "Suspended"
+pt = "Suspensa"
+es = "Suspendida"
+
+[task.started]
+en = "Running on schedule"
+pt = "Rodando no agendamento"
+es = "Ejecutándose según lo programado"
+
+[task.last_failed]
+en = "Last run failed"
+pt = "A última execução falhou"
+es = "La última ejecución falló"
+
+[task.serverless]
+en = "serverless"
+pt = "serverless"
+es = "serverless"
+
+[task.warehouse]
+en = "on %{w}"
+pt = "no %{w}"
+es = "en %{w}"
+
+[task.when]
+en = "when %{c}"
+pt = "quando %{c}"
+es = "cuando %{c}"
+
+[task.last_run]
+en = "last run %{ago}"
+pt = "última execução %{ago}"
+es = "última ejecución %{ago}"
+
+[task.runs]
+en = "Runs"
+pt = "Execuções"
+es = "Ejecuciones"
+
+[task.definition]
+en = "Definition"
+pt = "Definição"
+es = "Definición"
+
+[task.graph]
+en = "Graph"
+pt = "Grafo"
+es = "Grafo"
+
+[task.no_runs]
+en = "No runs in the last %{days} days."
+pt = "Nenhuma execução nos últimos %{days} dias."
+es = "Sin ejecuciones en los últimos %{days} días."
+
+
+[task.data_flow]
+en = "Data flow"
+pt = "Fluxo de dados"
+es = "Flujo de datos"
+
+[task.no_flow]
+en = "No tables recorded for its recent successful runs (Snowflake's access history is up to ~3 h behind)."
+pt = "Nenhuma tabela registrada nas últimas execuções bem-sucedidas (o access history do Snowflake atrasa até ~3 h)."
+es = "No hay tablas registradas en sus últimas ejecuciones correctas (el access history de Snowflake va hasta ~3 h atrasado)."
+
+[task.flow_note]
+en = "From its last %{n} successful runs · Snowflake's access history is up to ~3 h behind"
+pt = "Das últimas %{n} execuções bem-sucedidas · o access history do Snowflake atrasa até ~3 h"
+es = "De sus últimas %{n} ejecuciones correctas · el access history de Snowflake va hasta ~3 h atrasado"

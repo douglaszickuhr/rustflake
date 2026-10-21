@@ -22,6 +22,7 @@ mod settings;
 mod sql_tab;
 mod table_sections;
 mod table_tab;
+mod task_tab;
 mod ui;
 mod warehouse_tab;
 mod workspace;

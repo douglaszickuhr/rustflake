@@ -556,7 +556,14 @@ mod tests {
         let mut c = MetaCache { search_path: vec!["public".into()], schemas: vec!["public".into(), "Sales".into()], ..Default::default() };
         c.objects.insert(
             "public".into(),
-            SchemaObjects { tables: vec!["Order Items".into(), "orders".into(), "users".into()], views: vec!["active_users".into()], matviews: vec![], functions: vec!["calc_total(integer)".into()] },
+            SchemaObjects {
+                tables: vec!["Order Items".into(), "orders".into(), "users".into()],
+                views: vec!["active_users".into()],
+                matviews: vec![],
+                functions: vec!["calc_total(integer)".into()],
+                procedures: vec![],
+                tasks: vec![],
+            },
         );
         c.columns.insert(("public".into(), "users".into()), vec![col("id", "integer"), col("email", "text")]);
         c

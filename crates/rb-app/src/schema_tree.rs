@@ -15,6 +15,7 @@ use rust_i18n::t;
 use crate::RefreshNode;
 use crate::lang::Lang;
 use crate::meta::MetaStore;
+use rb_core::table_info::Routine;
 
 const SEP: &str = "\u{1f}";
 
@@ -46,6 +47,8 @@ pub enum Kind {
     View,
     MatView,
     Function,
+    Procedure,
+    Task,
     Columns,
     Column,
     PkColumn,
@@ -65,6 +68,8 @@ impl Kind {
             Kind::View => IconName::Eye,
             Kind::MatView => IconName::Sheet,
             Kind::Function => IconName::SquareFunction,
+            Kind::Procedure => IconName::SquareTerminal,
+            Kind::Task => IconName::Clock,
             Kind::Columns => IconName::Columns3,
             Kind::Column => IconName::Hash,
             Kind::PkColumn => IconName::KeyRound,
@@ -88,6 +93,9 @@ fn describe(node: &str, c: &MetaCache) -> (Kind, Option<String>) {
             _ => Kind::Table,
         },
         ["f", ..] => Kind::Function,
+        ["p", ..] => Kind::Procedure,
+        // A task shows its state (started / suspended) in gray.
+        ["k", s, name] => return (Kind::Task, c.objects.get(*s).and_then(|o| o.tasks.iter().find(|(n, _)| n == name)).map(|(_, st)| st.clone())),
         ["cg", ..] => Kind::Columns,
         ["c", s, rel, col] => {
             let meta = c.columns.get(&(s.to_string(), rel.to_string())).and_then(|cols| cols.iter().find(|x| x.name == *col));
@@ -101,6 +109,8 @@ fn describe(node: &str, c: &MetaCache) -> (Kind, Option<String>) {
 }
 
 pub type OpenTable = Rc<dyn Fn(String, String, &mut Window, &mut App)>;
+/// Double click on a function or procedure: (kind, schema key, `NAME(ARGS)`).
+pub type OpenRoutine = Rc<dyn Fn(Routine, String, String, &mut Window, &mut App)>;
 
 pub struct SchemaTree {
     meta: Entity<MetaStore>,
@@ -109,11 +119,13 @@ pub struct SchemaTree {
     /// Node to select as soon as it appears (quick search); ancestors may still be loading.
     pending_reveal: Option<SharedString>,
     on_open_table: OpenTable,
+    on_open_routine: OpenRoutine,
+    on_open_task: crate::task_tab::OpenTask,
     _subs: Vec<Subscription>,
 }
 
 impl SchemaTree {
-    pub fn new(meta: Entity<MetaStore>, on_open_table: OpenTable, cx: &mut Context<Self>) -> Self {
+    pub fn new(meta: Entity<MetaStore>, on_open_table: OpenTable, on_open_routine: OpenRoutine, on_open_task: crate::task_tab::OpenTask, cx: &mut Context<Self>) -> Self {
         let state = cx.new(|cx| TreeState::new(cx));
         let subs = vec![
             // Labels ("Tables (n)", "loading…") live in the items: new language, new items.
@@ -121,7 +133,7 @@ impl SchemaTree {
             cx.observe(&meta, |this, _, cx| this.rebuild(cx)),
             cx.subscribe(&state, |this, _, ev: &TreeEvent, cx| this.on_tree_event(ev, cx)),
         ];
-        let mut this = SchemaTree { meta, state, expanded: HashSet::new(), pending_reveal: None, on_open_table, _subs: subs };
+        let mut this = SchemaTree { meta, state, expanded: HashSet::new(), pending_reveal: None, on_open_table, on_open_routine, on_open_task, _subs: subs };
         this.rebuild(cx);
         this
     }
@@ -197,7 +209,7 @@ impl SchemaTree {
                 m.cache.loaded_dbs.remove(*db);
                 m.request(MetaRequest::Schemas(db.to_string()), cx);
             }
-            ["s", schema, ..] | ["g", schema, ..] | ["f", schema, ..] => {
+            ["s", schema, ..] | ["g", schema, ..] | ["f", schema, ..] | ["p", schema, ..] | ["k", schema, ..] => {
                 m.cache.invalidate_schema(schema);
                 m.request(MetaRequest::Objects(schema.to_string()), cx);
             }
@@ -248,6 +260,19 @@ fn schema_item(c: &MetaCache, s: &str, label: &str, expanded: &HashSet<SharedStr
                     .expanded(open(&fid))
                     .children(o.functions.iter().map(|f| TreeItem::new(id(&["f", s, f]), f.clone()))),
             ]
+            .into_iter()
+            // Procedures are listed on Snowflake only.
+            .chain((c.dialect == rb_core::dialect::Dialect::Snowflake).then(|| {
+                let pid = id(&["g", s, "procedures"]);
+                TreeItem::new(pid.clone(), format!("{} ({})", t!("tree.procedures"), o.procedures.len()))
+                    .expanded(open(&pid))
+                    .children(o.procedures.iter().map(|p| TreeItem::new(id(&["p", s, p]), p.clone())))
+            }))
+            .chain((c.dialect == rb_core::dialect::Dialect::Snowflake).then(|| {
+                let kid = id(&["g", s, "tasks"]);
+                TreeItem::new(kid.clone(), format!("{} ({})", t!("tree.tasks"), o.tasks.len())).expanded(open(&kid)).children(o.tasks.iter().map(|(n, _)| TreeItem::new(id(&["k", s, n]), n.clone())))
+            }))
+            .collect()
         }
     };
     TreeItem::new(sid.clone(), label.to_string()).expanded(open(&sid)).children(children)
@@ -284,6 +309,8 @@ fn relation(c: &MetaCache, schema: &str, rel: &str, expanded: &HashSet<SharedStr
 impl Render for SchemaTree {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let open = self.on_open_table.clone();
+        let open_routine = self.on_open_routine.clone();
+        let open_task = self.on_open_task.clone();
         let meta = self.meta.clone();
         div()
             .key_context("SchemaTree")
@@ -294,6 +321,8 @@ impl Render for SchemaTree {
             .child(tree(&self.state, move |ix, entry, selected, _window, cx| {
                 let node = entry.item().id.clone();
                 let open = open.clone();
+                let open_routine = open_routine.clone();
+                let open_task = open_task.clone();
                 let (kind, detail) = describe(&node, &meta.read(cx).cache);
                 let theme = cx.theme();
                 let icon_color = if kind == Kind::PkColumn { theme.warning } else { theme.muted_foreground };
@@ -323,10 +352,16 @@ impl Render for SchemaTree {
                     })
                     .on_click(move |ev, window, cx| {
                         let parts: Vec<&str> = node.split(SEP).collect();
-                        if ev.click_count() == 2
-                            && let ["r", schema, rel] = parts.as_slice()
-                        {
-                            open(schema.to_string(), rel.to_string(), window, cx);
+                        if ev.click_count() != 2 {
+                            return;
+                        }
+                        // Tables and views open their tab; functions and procedures their code in a script.
+                        match parts.as_slice() {
+                            ["r", schema, rel] => open(schema.to_string(), rel.to_string(), window, cx),
+                            ["f", schema, sig] => open_routine(Routine::Function, schema.to_string(), sig.to_string(), window, cx),
+                            ["p", schema, sig] => open_routine(Routine::Procedure, schema.to_string(), sig.to_string(), window, cx),
+                            ["k", schema, name] => open_task(schema.to_string(), name.to_string(), window, cx),
+                            _ => {}
                         }
                     })
             }))
@@ -344,7 +379,10 @@ mod tests {
 
     fn cache() -> MetaCache {
         let mut c = MetaCache::default();
-        c.objects.insert("public".into(), SchemaObjects { tables: vec!["t".into()], views: vec!["v".into()], matviews: vec!["m".into()], functions: vec!["f()".into()] });
+        c.objects.insert(
+            "public".into(),
+            SchemaObjects { tables: vec!["t".into()], views: vec!["v".into()], matviews: vec!["m".into()], functions: vec!["f()".into()], procedures: vec!["p(VARCHAR)".into()], tasks: vec![] },
+        );
         let col = |name: &str, pk: bool| ColumnMeta { name: name.into(), type_name: "integer".into(), cast_type: "integer".into(), nullable: !pk, default: None, is_pk: pk, generated: false };
         c.columns.insert(("public".into(), "t".into()), vec![col("id", true), col("n", false)]);
         c

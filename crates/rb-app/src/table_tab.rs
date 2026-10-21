@@ -109,6 +109,8 @@ pub struct TableTab {
     filter: Entity<InputState>,
     /// Definition: search over everything shown, and the sort (column, ascending).
     pub(crate) def_search: Entity<InputState>,
+    /// dbt code: search field at the top left (like the other tabs), driving the editor's matches.
+    pub(crate) code_search: Entity<InputState>,
     /// Data only queries when first shown (it's no longer the opening section).
     pub(crate) data_started: bool,
     pub(crate) def_sort: (DefSort, bool),
@@ -172,6 +174,7 @@ impl TableTab {
     ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("table.filter_placeholder").to_string()));
         let def_search = cx.new(|cx| InputState::new(window, cx).placeholder(t!("tv.def_search").to_string()));
+        let code_search = cx.new(|cx| InputState::new(window, cx).placeholder(t!("tv.code_search").to_string()));
         let grid = cx.new(|cx| TableState::new(ResultGrid::new(true), window, cx).cell_selectable(true));
 
         let weak = cx.entity().downgrade();
@@ -195,6 +198,7 @@ impl TableTab {
             cx.observe_global_in::<Lang>(window, |this, window, cx| {
                 this.filter.update(cx, |s, cx| s.set_placeholder(t!("table.filter_placeholder").to_string(), window, cx));
                 this.def_search.update(cx, |s, cx| s.set_placeholder(t!("tv.def_search").to_string(), window, cx));
+                this.code_search.update(cx, |s, cx| s.set_placeholder(t!("tv.code_search").to_string(), window, cx));
             }),
             cx.subscribe_in(&def_search, window, |_, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Change) {
@@ -230,6 +234,12 @@ impl TableTab {
             })
             .collect();
         let mut subs = subs;
+        // Typing jumps to the first match; ↵ / ⇧↵ to the next / previous one.
+        subs.push(cx.subscribe_in(&code_search, window, |this, _, ev: &InputEvent, _, cx| match ev {
+            InputEvent::Change => this.apply_code_search(cx),
+            InputEvent::PressEnter { shift, .. } => this.step_code_search(!*shift, cx),
+            _ => {}
+        }));
         subs.extend(custom.iter().filter_map(|c| c.grid.as_ref()).map(|g| cx.observe(g, |_, _, cx| cx.notify())));
         let mut this = TableTab {
             focus: cx.focus_handle(),
@@ -240,6 +250,7 @@ impl TableTab {
             session: None,
             filter,
             def_search,
+            code_search,
             // Column order as in the table: #1 first.
             def_sort: (DefSort::Position, true),
             grid,
@@ -636,7 +647,7 @@ impl TableTab {
                 h_flex()
                     .p_2()
                     .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.filter)))
+                    .child(div().flex_1().child(Input::new(&self.filter).small().cleanable(true)))
                     .child(Button::new("reload").label(t!("table.reload").to_string()).ghost().tooltip(crate::ui::keys("⌘R")).on_click(cx.listener(|t, _, _, cx| t.load(cx))))
                     .when(editable, |d| {
                         d.child(Button::new("add-row").label(format!("+ {}", t!("table.row"))).ghost().on_click(cx.listener(|t, _, _, cx| t.with_edits(cx, |e, _| e.add_row()))))

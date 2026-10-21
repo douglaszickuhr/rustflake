@@ -209,6 +209,29 @@ impl TableTab {
         cx.notify();
     }
 
+    /// The dbt code's search field changed: highlight the matches and go to the first.
+    pub(crate) fn apply_code_search(&mut self, cx: &mut Context<Self>) {
+        let q = self.code_search.read(cx).value().trim().to_string();
+        if let Some((e, _)) = &self.sql_view {
+            e.update(cx, |e, cx| {
+                if q.is_empty() {
+                    e.close_search(cx);
+                } else {
+                    e.set_search_query(q, true, cx);
+                    e.next_search_match(cx);
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn step_code_search(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if let Some((e, _)) = &self.sql_view {
+            e.update(cx, |e, cx| if forward { e.next_search_match(cx) } else { e.previous_search_match(cx) });
+        }
+        cx.notify();
+    }
+
     /// Columns first (the list shows as soon as they arrive); tags and masking policies then load
     /// in parallel, each on its own session, and fill in the classification when they land.
     pub(crate) fn ensure_definition(&mut self, cx: &mut Context<Self>) {
@@ -357,11 +380,7 @@ impl TableTab {
         let theme = cx.theme().clone();
         let (db, schema) = self.db_schema();
         let project = self.project(cx);
-        let matched = project.as_deref().and_then(|p| self.node_match(p)).map(|(n, exact)| (n.clone(), exact));
-        let (node, by_name) = match matched {
-            Some((n, exact)) => (Some(n), !exact),
-            None => (None, false),
-        };
+        let node = project.as_deref().and_then(|p| self.node_match(p)).map(|(n, _)| n.clone());
         // Same qualifier as the grid: quotes for lowercase/spaced names.
         let fq = rb_core::dialect::Dialect::Snowflake.qualified(&self.schema, &self.table);
         let open_query = self.open_query.clone();
@@ -381,45 +400,9 @@ impl TableTab {
         });
         top = top.children(self.kind_badge(cx));
         if let Some(n) = &node {
-            let badge = match &n.materialized {
-                Some(m) => format!("{} · {m}", n.resource_type),
-                None => n.resource_type.clone(),
-            };
-            let node_tip = format!("{}\n{}", n.unique_id, n.file);
-            let relation = n.relation.clone().unwrap_or_default();
-            top = top
-                .child(
-                    // Outlined pill with the node type's dot (same colors as lineage): the filled cyan tag was hard to read.
-                    h_flex()
-                        .id("tv-dbt-badge")
-                        .h(px(22.))
-                        .px_2()
-                        .gap_1p5()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(theme.border)
-                        .text_xs()
-                        .tooltip(tip(node_tip))
-                        .child(div().size(px(7.)).rounded_full().bg(kind_dot(&n.resource_type, &theme)))
-                        .child(format!("dbt {badge}")),
-                )
-                .when(by_name, |d| {
-                    d.child(
-                        div()
-                            .id("tv-by-name")
-                            .text_xs()
-                            .text_color(theme.warning)
-                            .tooltip(tip(t!("tv.matched_by_name_tip", relation = relation).to_string()))
-                            .child(t!("tv.matched_by_name").to_string()),
-                    )
-                })
-                .when_some(n.owner.clone(), |d, o| d.child(div().text_sm().text_color(theme.muted_foreground).child(format!("{} {o}", t!("tv.owner")))))
-                .children(
-                    n.tags
-                        .iter()
-                        .enumerate()
-                        .map(|(i, tg)| div().id(("tv-dbt-tag", i)).tooltip(tip(t!("tv.dbt_tag").to_string())).child(crate::ui::badge(crate::ui::Tone::Neutral, cx).child(tg.clone()))),
-                );
+            top = top.when_some(n.owner.clone(), |d, o| d.child(div().text_sm().text_color(theme.muted_foreground).child(format!("{} {o}", t!("tv.owner"))))).children(
+                n.tags.iter().enumerate().map(|(i, tg)| div().id(("tv-dbt-tag", i)).tooltip(tip(t!("tv.dbt_tag").to_string())).child(crate::ui::badge(crate::ui::Tone::Neutral, cx).child(tg.clone()))),
+            );
         }
         let facts = match &self.facts {
             Some(Load::Ready(f)) => {
@@ -1014,7 +997,12 @@ impl TableTab {
         let editor = match &self.sql_view {
             Some((e, k)) if *k == key => e.clone(),
             _ => {
-                let e = cx.new(|cx| EditorState::new(window, cx).language("sql").default_value(code));
+                // No floating find box: the search field at the top left drives it (⌘F focuses that field).
+                let e = cx.new(|cx| EditorState::new(window, cx).language("sql").searchable(false).default_value(code));
+                let q = self.code_search.read(cx).value().trim().to_string();
+                if !q.is_empty() {
+                    e.update(cx, |e, cx| e.set_search_query(q, true, cx));
+                }
                 self.sql_view = Some((e.clone(), key));
                 e
             }
@@ -1068,6 +1056,8 @@ impl TableTab {
                 .into_any_element();
         }
         let right = v_flex()
+            // ⌘F inside the code (the editor passes it up, having no find box): to the search field.
+            .on_action(cx.listener(|t, _: &gpui_kit::component::input::Search, window, cx| t.code_search.update(cx, |s, cx| s.focus(window, cx))))
             .flex_1()
             .min_w_0()
             .h_full()
@@ -1078,6 +1068,11 @@ impl TableTab {
                     .py_2()
                     .border_b_1()
                     .border_color(theme.border)
+                    // Search first, at the top left like the other tabs; the count of matches next to it.
+                    .child(div().w(px(240.)).flex_shrink_0().child(Input::new(&self.code_search).small().cleanable(true)))
+                    .when(!self.code_search.read(cx).value().trim().is_empty(), |d| {
+                        d.child(div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(editor.read(cx).search_session().matcher.label()))
+                    })
                     .child(div().flex_1().min_w_0().text_xs().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).overflow_hidden().text_ellipsis().child(node.file.clone()))
                     // How to look at the file: one segmented control (Source | Compiled | Blame)…
                     .child({

@@ -13,6 +13,10 @@ pub struct SchemaObjects {
     pub matviews: Vec<String>,
     /// `name(arguments)`.
     pub functions: Vec<String>,
+    /// Stored procedures, `name(arguments)` (Snowflake).
+    pub procedures: Vec<String>,
+    /// Tasks: (name, `started` / `suspended`) (Snowflake).
+    pub tasks: Vec<(String, String)>,
 }
 
 impl SchemaObjects {
@@ -228,12 +232,17 @@ pub async fn search_path(s: &Session) -> Result<Vec<String>, DbError> {
 pub async fn objects(s: &Session, schema: &str) -> Result<SchemaObjects, DbError> {
     if s.dialect() == Dialect::Snowflake {
         let q = Dialect::Snowflake.qualified_schema(schema);
-        let other = s.sibling();
-        let (q_objs, q_funcs) = (format!("show objects in schema {q}"), format!("show user functions in schema {q}"));
-        let (objs, funcs) = tokio::join!(s.query_named(&q_objs), other.as_ref().unwrap_or(s).query_named(&q_funcs));
+        let (s2, s3, s4) = (s.sibling(), s.sibling(), s.sibling());
+        let (q_objs, q_funcs, q_procs, q_tasks) =
+            (format!("show objects in schema {q}"), format!("show user functions in schema {q}"), format!("show user procedures in schema {q}"), format!("show tasks in schema {q}"));
+        let (objs, funcs, procs, tasks) =
+            tokio::join!(s.query_named(&q_objs), s2.as_ref().unwrap_or(s).query_named(&q_funcs), s3.as_ref().unwrap_or(s).query_named(&q_procs), s4.as_ref().unwrap_or(s).query_named(&q_tasks));
         let ((n, rows), (fnames, frows)) = (objs?, funcs?);
         let mut o = parse_objects(&n, &rows);
         o.functions = parse_functions(&fnames, &frows);
+        // Same `arguments` shape as functions; a role that can't list them just gets none.
+        o.procedures = procs.map(|(n, r)| parse_functions(&n, &r)).unwrap_or_default();
+        o.tasks = tasks.map(|(n, r)| crate::task::parse_tasks(&n, &r).into_iter().map(|t| (t.name, t.state)).collect()).unwrap_or_default();
         return Ok(o);
     }
     let mut o = SchemaObjects::default();

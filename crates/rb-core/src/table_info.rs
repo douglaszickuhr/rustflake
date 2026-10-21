@@ -47,6 +47,30 @@ pub fn parse_facts(names: &[String], rows: &Rows) -> Option<Facts> {
     })
 }
 
+/// Function or procedure, for `GET_DDL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Routine {
+    Function,
+    Procedure,
+}
+
+/// `NAME(VARCHAR, NUMBER)` as `SHOW` lists it → `GET_DDL` of it, fully qualified.
+pub fn routine_ddl_sql(kind: Routine, db: &str, schema: &str, signature: &str) -> String {
+    let (name, args) = signature.split_once('(').map_or((signature, ")"), |(n, a)| (n, a));
+    let what = match kind {
+        Routine::Function => "function",
+        Routine::Procedure => "procedure",
+    };
+    format!("select get_ddl('{what}', {})", sql_str(&format!("{}.{}({args}", qualify(&[db, schema]), quote_always(name))))
+}
+
+/// A `CALL` with the argument types as placeholders, to fill in (commented: it isn't runnable yet).
+pub fn call_template(db: &str, schema: &str, signature: &str) -> String {
+    let (name, args) = signature.split_once('(').map_or((signature, ""), |(n, a)| (n, a.trim_end_matches(')')));
+    let holes: Vec<String> = args.split(',').map(str::trim).filter(|a| !a.is_empty()).map(|a| format!("/* {a} */")).collect();
+    format!("-- CALL {}.{}({});", qualify(&[db, schema]), quote_always(name), holes.join(", "))
+}
+
 /// Where an Iceberg table's data lives (`SHOW ICEBERG TABLES`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct IcebergInfo {
@@ -414,6 +438,14 @@ pub fn parse_column_lineage(names: &[String], rows: &Rows) -> Vec<LinNode> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn routines_get_ddl_and_a_call_template_from_their_signature() {
+        assert_eq!(routine_ddl_sql(Routine::Procedure, "DB", "S", "LOAD(VARCHAR, NUMBER)"), r#"select get_ddl('procedure', '"DB"."S"."LOAD"(VARCHAR, NUMBER)')"#);
+        assert_eq!(routine_ddl_sql(Routine::Function, "DB", "S", "F()"), r#"select get_ddl('function', '"DB"."S"."F"()')"#);
+        assert_eq!(call_template("DB", "S", "LOAD(VARCHAR, NUMBER)"), r#"-- CALL "DB"."S"."LOAD"(/* VARCHAR */, /* NUMBER */);"#);
+        assert_eq!(call_template("DB", "S", "NOW()"), r#"-- CALL "DB"."S"."NOW"();"#);
+    }
 
     #[test]
     fn dynamic_tables_read_lag_state_and_advice() {

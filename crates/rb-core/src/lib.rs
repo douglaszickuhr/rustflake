@@ -24,6 +24,7 @@ pub mod split;
 pub mod ssh;
 pub mod table;
 pub mod table_info;
+pub mod task;
 pub mod unlocks;
 pub mod user_view;
 pub mod warehouse;

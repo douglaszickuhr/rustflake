@@ -577,7 +577,7 @@ impl AdminTab {
                     .child(div().flex_1())
                     .child(Button::new("adm-reload").label("↻").ghost().small().tooltip(t!("admin.reload").to_string()).on_click(cx.listener(|t, _, _, cx| t.reload(cx)))),
             )
-            .child(Input::new(&self.filter))
+            .child(Input::new(&self.filter).small().cleanable(true))
             .child(
                 h_flex()
                     .justify_between()
@@ -1090,7 +1090,7 @@ impl AdminTab {
             t.unused_only = *c;
             cx.notify();
         })));
-        let head = v_flex().gap_3().child(self.render_access_facts(name, &direct, &eff, loading, cx)).child(Input::new(&self.roles_search)).child(chips);
+        let head = v_flex().gap_3().child(self.render_access_facts(name, &direct, &eff, loading, cx)).child(Input::new(&self.roles_search).small().cleanable(true)).child(chips);
 
         // List.
         let mut list = v_flex().gap_4().flex_grow(1.).flex_basis(px(420.)).min_w_0();
