@@ -211,6 +211,14 @@ impl Chunks for sf::ResultCursor {
 
 /// One Snowflake session per app connection, shared by tree and tabs. If it expires,
 /// `renew` does a new login (with SSO, the browser opens again).
+impl SfShared {
+    /// Raw result description (format, chunks) for measurements; see `sf::raw`.
+    pub(crate) async fn raw_query(&self, sql: String) -> Result<sf::raw::RawResult, DbError> {
+        let session = self.session.lock().await.clone();
+        session.raw_query(sql).await.map_err(sf_err)
+    }
+}
+
 pub(crate) struct SfShared {
     client: sf::Client,
     session: AsyncMutex<Arc<sf::Session>>,

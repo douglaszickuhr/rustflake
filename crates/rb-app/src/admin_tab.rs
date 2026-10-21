@@ -225,79 +225,92 @@ impl AdminTab {
                     return;
                 }
             };
-            // Each list appears as soon as it arrives: doesn't wait for the other.
-            let users = admin::users(&s).await;
-            tracing::info!("admin: SHOW USERS in {:?} ({:?} rows)", t0.elapsed(), users.as_ref().map(Vec::len));
-            this.update(cx, |tab, cx| {
-                if tab.generation != generation {
-                    return;
-                }
-                tab.session = Some(s.clone());
-                tab.users = match users {
-                    Ok(u) => Load::Ready(u),
-                    Err(e) => Load::Failed(explain(&e, "admin.hint_grants")),
-                };
-                // What was open before the ↻ loads again.
-                tab.ensure_loaded(cx);
-                if let Some(t) = tab.pending.take() {
-                    tab.stack.clear();
-                    tab.open(t, cx);
-                }
-                cx.notify();
-            })
-            .ok();
-            let roles = admin::roles(&s).await;
-            let db_names = rb_core::metadata::databases(&s).await.unwrap_or_default();
-            tracing::info!("admin: SHOW ROLES in {:?} ({:?} rows)", t0.elapsed(), roles.as_ref().map(Vec::len));
-            this.update(cx, |tab, cx| {
-                if tab.generation != generation {
-                    return;
-                }
-                tab.roles = match roles {
-                    Ok(r) => Load::Ready(r),
-                    Err(e) => Load::Failed(explain(&e, "admin.hint_grants")),
-                };
-                tab.db_names = db_names;
-                cx.notify();
-            })
-            .ok();
-            // Own session (same login): the actor is serial and clicks shouldn't wait for ACCOUNT_USAGE.
-            let graph = match engine.connect(&conn.cfg, conn.creds.clone()).await {
-                Ok(gs) => match admin::role_graph(&gs).await {
-                    // Databases are a complement: if it fails, access roles stay under "unknown database".
-                    Ok(g) => Ok((g, admin::role_databases(&gs).await.unwrap_or_default())),
-                    Err(e) => Err(e),
-                },
-                Err(e) => Err(e),
+            // All three at once, each list shown as soon as it arrives (users, roles, role graph).
+            let (this1, this2, this3) = (this.clone(), this.clone(), this.clone());
+            let (mut cx1, mut cx2, mut cx3) = (cx.clone(), cx.clone(), cx.clone());
+            let users_part = async {
+                let users = admin::users(&s).await;
+                tracing::info!("admin: SHOW USERS in {:?} ({:?} rows)", t0.elapsed(), users.as_ref().map(Vec::len));
+                this1
+                    .update(&mut cx1, |tab, cx| {
+                        if tab.generation != generation {
+                            return;
+                        }
+                        tab.session = Some(s.clone());
+                        tab.users = match users {
+                            Ok(u) => Load::Ready(u),
+                            Err(e) => Load::Failed(explain(&e, "admin.hint_grants")),
+                        };
+                        // What was open before the ↻ loads again.
+                        tab.ensure_loaded(cx);
+                        if let Some(t) = tab.pending.take() {
+                            tab.stack.clear();
+                            tab.open(t, cx);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
             };
-            tracing::info!("admin: role graph in {:?} ({:?} roles)", t0.elapsed(), graph.as_ref().map(|(g, _)| g.len()));
-            this.update(cx, |tab, cx| {
-                if tab.generation != generation {
-                    return;
-                }
-                match graph {
-                    Ok((g, dbs)) => {
-                        let g = Arc::new(g);
-                        tab.databases = Arc::new(dbs);
-                        // Whoever was waiting for the graph resolves now, locally.
-                        for v in tab.user_roles.values_mut() {
-                            if let Load::Ready((d, eff @ Load::Loading)) = v {
-                                *eff = Load::Ready(admin::effective_from_graph(d, &g));
+            let roles_part = async {
+                let (rs, ds) = (s.sibling(), s.sibling());
+                let (roles, db_names) = futures::join!(admin::roles(rs.as_ref().unwrap_or(&s)), rb_core::metadata::databases(ds.as_ref().unwrap_or(&s)));
+                let db_names = db_names.unwrap_or_default();
+                tracing::info!("admin: SHOW ROLES in {:?} ({:?} rows)", t0.elapsed(), roles.as_ref().map(Vec::len));
+                this2
+                    .update(&mut cx2, |tab, cx| {
+                        if tab.generation != generation {
+                            return;
+                        }
+                        tab.roles = match roles {
+                            Ok(r) => Load::Ready(r),
+                            Err(e) => Load::Failed(explain(&e, "admin.hint_grants")),
+                        };
+                        tab.db_names = db_names;
+                        cx.notify();
+                    })
+                    .ok();
+            };
+            let graph_part = async {
+                // Own session (same login): the actor is serial and clicks shouldn't wait for ACCOUNT_USAGE.
+                let graph = match engine.connect(&conn.cfg, conn.creds.clone()).await {
+                    Ok(gs) => match admin::role_graph(&gs).await {
+                        // Databases are a complement: if it fails, access roles stay under "unknown database".
+                        Ok(g) => Ok((g, admin::role_databases(&gs).await.unwrap_or_default())),
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                };
+                tracing::info!("admin: role graph in {:?} ({:?} roles)", t0.elapsed(), graph.as_ref().map(|(g, _)| g.len()));
+                this3
+                    .update(&mut cx3, |tab, cx| {
+                        if tab.generation != generation {
+                            return;
+                        }
+                        match graph {
+                            Ok((g, dbs)) => {
+                                let g = Arc::new(g);
+                                tab.databases = Arc::new(dbs);
+                                // Whoever was waiting for the graph resolves now, locally.
+                                for v in tab.user_roles.values_mut() {
+                                    if let Load::Ready((d, eff @ Load::Loading)) = v {
+                                        *eff = Load::Ready(admin::effective_from_graph(d, &g));
+                                    }
+                                }
+                                tab.graph = Load::Ready(g);
+                            }
+                            Err(e) => {
+                                tracing::info!("admin: no role graph ({e}); inheritance via SHOW per role");
+                                tab.graph = Load::Failed(e.to_string());
+                                // Whoever was waiting for the graph restarts via the slow path.
+                                tab.user_roles.retain(|_, v| !matches!(v, Load::Ready((_, Load::Loading))));
+                                tab.ensure_loaded(cx);
                             }
                         }
-                        tab.graph = Load::Ready(g);
-                    }
-                    Err(e) => {
-                        tracing::info!("admin: no role graph ({e}); inheritance via SHOW per role");
-                        tab.graph = Load::Failed(e.to_string());
-                        // Whoever was waiting for the graph restarts via the slow path.
-                        tab.user_roles.retain(|_, v| !matches!(v, Load::Ready((_, Load::Loading))));
-                        tab.ensure_loaded(cx);
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
+                        cx.notify();
+                    })
+                    .ok();
+            };
+            futures::join!(users_part, roles_part, graph_part);
         })
         .detach();
     }

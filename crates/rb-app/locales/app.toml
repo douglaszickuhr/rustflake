@@ -2578,3 +2578,18 @@ es = "Descargando…"
 en = "Installed “%{name}” and selected it."
 pt = "“%{name}” instalada e selecionada."
 es = "“%{name}” instalada y seleccionada."
+
+[hover.more]
+en = "+%{n} more — see the table's Definition tab"
+pt = "+%{n} — veja a aba Definição da tabela"
+es = "+%{n} más — ver la pestaña Definición de la tabla"
+
+[tv.lineage_of]
+en = "Where %{col} comes from"
+pt = "De onde vem %{col}"
+es = "De dónde viene %{col}"
+
+[tv.tags_loading]
+en = "loading tags and classification…"
+pt = "carregando tags e classificação…"
+es = "cargando etiquetas y clasificación…"

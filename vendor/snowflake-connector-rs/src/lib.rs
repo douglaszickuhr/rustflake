@@ -69,6 +69,10 @@ mod client;
 mod config;
 pub mod decode;
 pub mod error;
+#[doc(hidden)]
+pub mod metrics;
+#[doc(hidden)]
+pub mod raw;
 mod result_cursor;
 mod result_table;
 mod rowset;

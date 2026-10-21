@@ -46,9 +46,13 @@ impl MetaStore {
         cx.spawn(async move |this, cx| {
             let res = async {
                 let sf = s.dialect() == Dialect::Snowflake;
-                let dbs = if sf { metadata::databases(&s).await? } else { Vec::new() };
-                let schemas = if sf { None } else { Some(metadata::schemas(&s).await?) };
-                Ok::<_, rb_core::DbError>((schemas, dbs, metadata::context(&s).await?))
+                if sf {
+                    // Databases and context at the same time (a second session on the same login).
+                    let other = s.sibling();
+                    let (dbs, ctx) = futures::join!(metadata::databases(&s), metadata::context(other.as_ref().unwrap_or(&s)));
+                    return Ok::<_, rb_core::DbError>((None, dbs?, ctx?));
+                }
+                Ok::<_, rb_core::DbError>((Some(metadata::schemas(&s).await?), Vec::new(), metadata::context(&s).await?))
             }
             .await;
             this.update(cx, |m, cx| {
@@ -105,7 +109,9 @@ impl MetaStore {
         if !self.inflight.insert(req.clone()) {
             return;
         }
-        let s = self.session.clone();
+        // Snowflake: each request on its own session (same login), so expanding a schema doesn't
+        // wait behind another's columns. Postgres has one connection: they queue.
+        let s = self.session.sibling().map(Arc::new).unwrap_or_else(|| self.session.clone());
         cx.spawn(async move |this, cx| {
             let res = match &req {
                 MetaRequest::Objects(schema) => metadata::objects(&s, schema).await.map(Loaded::Objects),

@@ -158,6 +158,7 @@ mod tests {
             row_types,
             chunk_headers: None,
             qrmk: None,
+            row_set_base64: None,
             chunks,
             query_result_format: Some("json".to_string()),
         }

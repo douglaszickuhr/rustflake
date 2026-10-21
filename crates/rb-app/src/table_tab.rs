@@ -86,6 +86,8 @@ pub(crate) struct DefRaw {
     pub(crate) other_tags: HashMap<String, Vec<rb_core::table_info::ColTag>>,
     /// Tags or policies didn't load (shown in the summary instead of "nothing classified").
     pub(crate) tag_error: Option<String>,
+    /// Tags/policies queries still running (they load after the columns).
+    pub(crate) pending: u8,
 }
 
 /// Model unique_id and its compiled SQL with when it was generated.
@@ -230,7 +232,8 @@ impl TableTab {
             session: None,
             filter,
             def_search,
-            def_sort: Default::default(),
+            // Column order as in the table: #1 first.
+            def_sort: (DefSort::Position, true),
             grid,
             target: None,
             sort: None,

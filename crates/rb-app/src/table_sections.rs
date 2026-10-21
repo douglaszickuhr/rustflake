@@ -116,6 +116,8 @@ impl TableTab {
         cx.notify();
     }
 
+    /// Columns first (the list shows as soon as they arrive); tags and masking policies then load
+    /// in parallel, each on its own session, and fill in the classification when they land.
     pub(crate) fn ensure_definition(&mut self, cx: &mut Context<Self>) {
         if self.def_raw.is_some() {
             return;
@@ -123,32 +125,71 @@ impl TableTab {
         self.def_raw = Some(Load::Loading);
         let (db, schema) = self.db_schema();
         let table = self.table.clone();
-        let org = self.conn.org.clone();
+        let (d, sc, tb) = (db.clone(), schema.clone(), table.clone());
         self.spawn_query(
             cx,
             async move |s| {
-                let (n, r) = s.query_named(&table_info::columns_sql(&db, &schema, &table)).await?;
-                let cols = table_info::parse_columns(&n, &r);
-                // Tags and policies are extras: without permission, the columns table stays and the
-                // summary says classification didn't load (instead of looking like "nothing classified").
-                let mut err = None;
-                let (tags, others) = match s.query_named(&table_info::tags_sql(&db, &schema, &table)).await {
-                    Ok((n, r)) => (table_info::parse_class_tags(&org, &n, &r), table_info::parse_all_tags(&n, &r)),
-                    Err(e) => {
-                        err = Some(e.to_string());
-                        (HashMap::new(), HashMap::new())
-                    }
-                };
-                let masks = match s.query_named(&table_info::policies_sql(&db, &schema, &table)).await {
-                    Ok((n, r)) => table_info::parse_masking(&n, &r),
-                    Err(e) => {
-                        err.get_or_insert(e.to_string());
-                        HashMap::new()
-                    }
-                };
-                Ok(crate::table_tab::DefRaw { cols, class_tags: tags, masking: masks, other_tags: others, tag_error: err })
+                let t0 = std::time::Instant::now();
+                let (n, r) = s.query_named(&table_info::columns_sql(&d, &sc, &tb)).await?;
+                tracing::info!("definition {tb}: columns in {:?}", t0.elapsed());
+                Ok(table_info::parse_columns(&n, &r))
             },
-            |t, res, _| t.def_raw = Some(res.map_or_else(|e| Load::Failed(e.to_string()), Load::Ready)),
+            move |t, res, cx| match res {
+                Ok(cols) => {
+                    let raw = crate::table_tab::DefRaw { cols, class_tags: HashMap::new(), masking: HashMap::new(), other_tags: HashMap::new(), tag_error: None, pending: 2 };
+                    t.def_raw = Some(Load::Ready(raw));
+                    t.load_def_extras(db, schema, table, cx);
+                }
+                Err(e) => t.def_raw = Some(Load::Failed(e.to_string())),
+            },
+        );
+    }
+
+    /// Tags and policies are extras: without permission the columns stay, and the summary says
+    /// classification didn't load (instead of looking like "nothing classified").
+    fn load_def_extras(&mut self, db: String, schema: String, table: String, cx: &mut Context<Self>) {
+        fn landed(t: &mut TableTab, apply: impl FnOnce(&mut crate::table_tab::DefRaw)) {
+            if let Some(Load::Ready(raw)) = &mut t.def_raw {
+                apply(raw);
+                raw.pending = raw.pending.saturating_sub(1);
+            }
+        }
+        let org = self.conn.org.clone();
+        let (d, sc, tb) = (db.clone(), schema.clone(), table.clone());
+        self.spawn_query(
+            cx,
+            async move |s| {
+                let t0 = std::time::Instant::now();
+                let out = s.query_named(&table_info::tags_sql(&d, &sc, &tb)).await;
+                tracing::info!("definition {tb}: tags in {:?}", t0.elapsed());
+                out
+            },
+            move |t, res, _| {
+                landed(t, |raw| match res {
+                    Ok((n, r)) => {
+                        raw.class_tags = table_info::parse_class_tags(&org, &n, &r);
+                        raw.other_tags = table_info::parse_all_tags(&n, &r);
+                    }
+                    Err(e) => raw.tag_error = Some(e.to_string()),
+                })
+            },
+        );
+        self.spawn_query(
+            cx,
+            async move |s| {
+                let t0 = std::time::Instant::now();
+                let out = s.query_named(&table_info::policies_sql(&db, &schema, &table)).await;
+                tracing::info!("definition {table}: policies in {:?}", t0.elapsed());
+                out
+            },
+            move |t, res, _| {
+                landed(t, |raw| match res {
+                    Ok((n, r)) => raw.masking = table_info::parse_masking(&n, &r),
+                    Err(e) => {
+                        raw.tag_error.get_or_insert(e.to_string());
+                    }
+                })
+            },
         );
     }
 
@@ -160,6 +201,12 @@ impl TableTab {
             return;
         }
         self.selected_col = Some(col.clone());
+        self.ensure_col_lineage(col, cx);
+        cx.notify();
+    }
+
+    /// Starts loading where `col` comes from (once; the panel and the hover card share it).
+    pub(crate) fn ensure_col_lineage(&mut self, col: String, cx: &mut Context<Self>) {
         if !self.col_lineage.contains_key(&col) {
             self.col_lineage.insert(col.clone(), Load::Loading);
             let (db, schema) = self.db_schema();
@@ -175,8 +222,8 @@ impl TableTab {
                     t.col_lineage.insert(col, res.map_or_else(|e| Load::Failed(e.to_string()), Load::Ready));
                 },
             );
+            cx.notify();
         }
-        cx.notify();
     }
 
     fn go(&mut self, s: Section, cx: &mut Context<Self>) {
@@ -364,7 +411,7 @@ impl TableTab {
     /// Board 7: columns with description (dbt or comment), classification, masking and tests.
     pub(crate) fn render_definition(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let crate::table_tab::DefRaw { cols, class_tags: tags, masking: masks, other_tags: others, tag_error: tag_err } = match &self.def_raw {
+        let crate::table_tab::DefRaw { cols, class_tags: tags, masking: masks, other_tags: others, tag_error: tag_err, pending } = match &self.def_raw {
             Some(Load::Ready(r)) => r.clone(),
             Some(Load::Failed(m)) => return div().p_4().text_color(theme.danger).child(m.clone()).into_any_element(),
             _ => return div().p_4().text_color(theme.muted_foreground).child(t!("tree.loading").to_string()).into_any_element(),
@@ -470,7 +517,19 @@ impl TableTab {
                     .when(selected, |d| d.bg(theme.secondary))
                     .hover(|d| d.bg(theme.secondary_hover))
                     .child(div().w(px(44.)).flex_shrink_0().text_right().font_family(mono.clone()).text_color(theme.muted_foreground).child(r.col.position.to_string()))
-                    .child(div().w(px(200.)).flex_shrink_0().font_family(mono.clone()).overflow_hidden().text_ellipsis().child(name.clone()))
+                    .child({
+                        // Hover the name: where the column comes from, drawn (stays open to click a source).
+                        let (tab, col) = (cx.entity(), name.clone());
+                        div()
+                            .id(("def-name", i))
+                            .w(px(200.))
+                            .flex_shrink_0()
+                            .font_family(mono.clone())
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(name.clone())
+                            .hoverable_tooltip(move |_, cx| cx.new(|cx| crate::col_lineage_card::ColLineageCard::new(tab.clone(), col.clone(), cx)).into())
+                    })
                     .child(div().w(px(130.)).flex_shrink_0().font_family(mono.clone()).text_color(theme.muted_foreground).overflow_hidden().text_ellipsis().child(r.col.kind.clone()))
                     .child(div().flex_1().min_w(px(200.)).overflow_hidden().child(desc))
                     .when(has_class, |d| d.child(div().w(px(64.)).flex_shrink_0().child(class_badge(r.level, r.masked_by.is_some(), &self.conn.org, cx))))
@@ -487,7 +546,9 @@ impl TableTab {
             .text_sm()
             .text_color(theme.muted_foreground)
             .child(t!("tv.sum_columns", n = sm.columns).to_string())
-            .when(has_class, |d| d.child("·").child(t!("tv.sum_classified", n = sm.classified).to_string()))
+            // Until tags land, "0 classified" would be wrong: say they're loading instead.
+            .when(has_class && pending == 0, |d| d.child("·").child(t!("tv.sum_classified", n = sm.classified).to_string()))
+            .when(pending > 0, |d| d.child("·").child(t!("tv.tags_loading").to_string()))
             .child("·")
             .child(t!("tv.sum_tests", n = sm.tests).to_string())
             .when(sm.undocumented > 0, |d| d.child("·").child(div().text_color(theme.warning).child(t!("tv.sum_undocumented", n = sm.undocumented).to_string())))

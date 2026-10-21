@@ -1,6 +1,7 @@
 mod admin_tab;
 mod appearance;
 mod cell_detail;
+mod col_lineage_card;
 mod completion;
 mod conn_dialog;
 mod db_filter;

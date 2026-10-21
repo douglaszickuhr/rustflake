@@ -191,9 +191,10 @@ impl WarehouseTab {
             cx.spawn(async move |this, cx| {
                 let res = async {
                     let s = engine.connect(&conn.cfg, conn.creds.clone()).await?;
-                    let g = admin::role_graph(&s).await?;
-                    let u = warehouse::all_user_grants(&s).await?;
-                    Ok::<_, rb_core::DbError>((Arc::new(g), Arc::new(u)))
+                    // Both ACCOUNT_USAGE reads at once (a second session on the same login).
+                    let other = s.sibling();
+                    let (g, u) = futures::join!(admin::role_graph(&s), warehouse::all_user_grants(other.as_ref().unwrap_or(&s)));
+                    Ok::<_, rb_core::DbError>((Arc::new(g?), Arc::new(u?)))
                 }
                 .await;
                 this.update(cx, |t, cx| {

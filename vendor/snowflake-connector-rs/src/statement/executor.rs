@@ -110,6 +110,39 @@ impl StatementExecutor {
         self.finish_response(response, &control)
     }
 
+    /// Submits and waits like [`Self::execute`], but returns Snowflake's response as is, whatever
+    /// its result format (used by `raw::raw_query` to measure Arrow before supporting it).
+    pub(crate) async fn execute_raw(
+        self,
+        parts: StatementParts,
+        control: Arc<QueryControl>,
+    ) -> Result<WireQueryResponse> {
+        let deadline = QueryResponseDeadline::new(self.query_response_timeout);
+        let prepared = self
+            .api
+            .prepare_submit(&parts, control.query_request_id())?;
+        let mut response = self.api.send_prepared_submit(prepared, deadline).await?;
+        let code = response.code.as_deref();
+        if code == Some(QUERY_IN_PROGRESS_ASYNC_CODE) || code == Some(QUERY_IN_PROGRESS_CODE) {
+            let data = response
+                .data
+                .take()
+                .ok_or_else(|| Error::from(ProtocolError::missing_field("data")))?;
+            let url = data
+                .get_result_url
+                .ok_or_else(|| Error::from(ProtocolError::no_polling_url()))?;
+            response = self
+                .api
+                .poll_async_results(&url, deadline, Arc::clone(&data.query_id))
+                .await
+                .map_err(Error::from)?;
+        }
+        if !response.success {
+            return Err(ServerError::new(response.code, response.message, None).into());
+        }
+        Ok(response)
+    }
+
     fn finish_response(
         self,
         response: WireQueryResponse,
@@ -347,6 +380,7 @@ mod tests {
             row_types: Some(vec![text_row_type("X")]),
             chunk_headers: None,
             qrmk: None,
+            row_set_base64: None,
             chunks: None,
             query_result_format: Some("json".to_string()),
         }
@@ -699,6 +733,7 @@ mod tests {
             row_types: Some(vec![text_row_type("X")]),
             chunk_headers: None,
             qrmk: None,
+            row_set_base64: None,
             chunks: None,
             query_result_format: Some("json".to_string()),
         };
@@ -744,6 +779,7 @@ mod tests {
             row_types: Some(vec![text_row_type("X")]),
             chunk_headers: None,
             qrmk: None,
+            row_set_base64: None,
             chunks: None,
             query_result_format: Some("json".to_string()),
         };
@@ -784,6 +820,7 @@ mod tests {
             row_types: Some(vec![text_row_type("X")]),
             chunk_headers: None,
             qrmk: None,
+            row_set_base64: None,
             chunks: None,
             query_result_format: Some("json".to_string()),
         };

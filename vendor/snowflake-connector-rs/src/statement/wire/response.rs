@@ -49,6 +49,8 @@ pub(crate) struct WireQueryData {
     pub(crate) qrmk: Option<String>,
     pub(crate) chunks: Option<Vec<WireChunk>>,
     pub(crate) query_result_format: Option<String>,
+    /// First part of an Arrow result (base64 IPC stream); only read by `raw::raw_query`.
+    pub(crate) row_set_base64: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +79,8 @@ struct BorrowedWireQueryData<'a> {
     qrmk: Option<String>,
     chunks: Option<Vec<WireChunk>>,
     query_result_format: Option<String>,
+    #[serde(rename = "rowsetBase64")]
+    row_set_base64: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +117,7 @@ pub(crate) fn parse_query_response(body: Bytes) -> Result<WireQueryResponse, Pro
                 qrmk: d.qrmk,
                 chunks: d.chunks,
                 query_result_format: d.query_result_format,
+                row_set_base64: d.row_set_base64,
             })
         })
         .transpose()?;

@@ -293,6 +293,20 @@ impl Session {
         self.dialect
     }
 
+    /// Snowflake's raw result description of `sql` (format, chunk URLs and sizes), without decoding
+    /// rows: for measurements (`tests/sf_fetch_timing.rs`). None on Postgres.
+    #[doc(hidden)]
+    pub async fn sf_raw_query(&self, sql: String) -> Option<Result<snowflake_connector_rs::raw::RawResult, DbError>> {
+        let shared = self._snowflake.clone()?;
+        Some(self.rt.spawn(async move { shared.raw_query(sql).await }).await.map_err(|e| DbError::Connection(e.to_string())).and_then(|r| r))
+    }
+
+    /// Another session on the same Snowflake login, to run a query alongside this one (a session
+    /// runs its commands one at a time). None on Postgres: one connection, one query at a time.
+    pub fn sibling(&self) -> Option<Session> {
+        self._snowflake.clone().map(|shared| Session::open_snowflake(shared, self.rt.clone()))
+    }
+
     /// Do the two sessions use the same Snowflake session (a single login)?
     #[doc(hidden)]
     pub fn shares_snowflake_with(&self, other: &Session) -> bool {

@@ -15,7 +15,7 @@ use rb_core::decode::one_line;
 use rb_core::dialect::Dialect;
 use rb_core::explain::short_count;
 use rb_core::metadata::ColumnMeta;
-use rb_core::table_info;
+use rb_core::table_info::{self, LinNode};
 use rb_core::user_view;
 use rust_i18n::t;
 
@@ -30,8 +30,8 @@ const SAMPLE_ROWS: usize = 5000;
 const SHOWN_VALUES: usize = 8;
 
 type Rows = Vec<Vec<Option<String>>>;
-/// Rows and which of the queries gave them (0 = the first).
-type Answer = Result<(usize, Rows), String>;
+/// Which of the queries answered (0 = the first), its column names and rows.
+type Answer = Result<(usize, Vec<String>, Rows), String>;
 /// First query text → its answer (None while running), for the whole session.
 type Fetched = Rc<RefCell<HashMap<String, Option<Answer>>>>;
 
@@ -71,8 +71,8 @@ fn column_markdown(c: &ColumnMeta, table: &str, values: Option<&Answer>) -> Stri
     md += &match values {
         None => format!("_{}_", t!("hover.values_loading")),
         Some(Err(e)) => format!("_{}_", one_line(e, 120)),
-        Some(Ok((_, rows))) if rows.is_empty() => format!("_{}_", t!("hover.no_values")),
-        Some(Ok((which, rows))) => {
+        Some(Ok((_, _, rows))) if rows.is_empty() => format!("_{}_", t!("hover.no_values")),
+        Some(Ok((which, _, rows))) => {
             let lines: Vec<String> = rows
                 .iter()
                 .map(|r| {
@@ -88,13 +88,32 @@ fn column_markdown(c: &ColumnMeta, table: &str, values: Option<&Answer>) -> Stri
     md
 }
 
+/// Where a column comes from (`GET_LINEAGE`, as the Definition tab's "Comes from"): nearest source
+/// first, each hop one level deeper. Empty when there's nothing to show.
+const MAX_LINEAGE: usize = 8;
+fn lineage_markdown(nodes: &[LinNode]) -> String {
+    if nodes.is_empty() {
+        return String::new();
+    }
+    let mut near: Vec<&LinNode> = nodes.iter().collect();
+    near.sort_by_key(|n| n.distance);
+    let mut md = format!("\n\n**{}**\n", t!("tv.comes_from"));
+    for n in near.iter().take(MAX_LINEAGE) {
+        let depth = n.distance.saturating_sub(1) as usize;
+        md += &format!("\n{}- ← `{}.{}.{}`.{}", "  ".repeat(depth), n.db, n.schema, n.object, n.column);
+    }
+    if near.len() > MAX_LINEAGE {
+        md += &format!("\n\n_{}_", t!("hover.more", n = near.len() - MAX_LINEAGE));
+    }
+    md
+}
+
 fn table_markdown(schema: &str, table: &str, facts: Option<&Answer>, n_cols: Option<usize>) -> String {
     let mut md = format!("**{table}** · {schema}");
     let mut parts = Vec::new();
     match facts {
-        Some(Ok((_, rows))) => {
-            let names: Vec<String> = ["table_type", "row_count", "bytes", "created", "last_altered", "comment"].map(String::from).into();
-            if let Some(f) = table_info::parse_facts(&names, rows) {
+        Some(Ok((_, names, rows))) => {
+            if let Some(f) = table_info::parse_facts(names, rows) {
                 parts.push(f.kind.to_lowercase());
                 parts.extend(f.rows.map(|r| t!("tv.rows", n = short_count(r as f64)).to_string()));
                 parts.extend(f.bytes.map(|b| format!("{}B", short_count(b as f64))));
@@ -128,11 +147,11 @@ fn start_fetch(fetched: &Fetched, conn: &ConnTarget, queries: &[String], cx: &mu
     cx.spawn(async move |_| {
         let answer = async {
             let s = engine.connect(&conn.cfg, conn.creds.clone()).await?;
-            let mut last = (0, Vec::new());
+            let mut last = (0, Vec::new(), Vec::new());
             for (i, sql) in queries.iter().enumerate() {
-                let (_, rows) = s.query_named(sql).await?;
-                last = (i, rows);
-                if enough(&last.1, i + 1 == queries.len()) {
+                let (names, rows) = s.query_named(sql).await?;
+                last = (i, names, rows);
+                if enough(&last.2, i + 1 == queries.len()) {
                     break;
                 }
             }
@@ -172,6 +191,13 @@ impl HoverProvider for SqlHover {
             }
             let Some(target) = target else { return Ok(None) };
             let dialect = cx.update(|cx| meta.read(cx).cache.dialect);
+            // Snowflake columns also ask where they come from, in parallel with the values.
+            let lineage: Vec<String> = match &target {
+                HoverTarget::Column { schema, table, column, .. } if dialect == Dialect::Snowflake => {
+                    schema.split_once('.').map(|(db, s)| table_info::column_lineage_sql(db, s, table, &column.name)).into_iter().collect()
+                }
+                _ => Vec::new(),
+            };
             let (range, sql) = match &target {
                 HoverTarget::Column { range, schema, table, column } => (range.clone(), value_queries(&dialect.quote(&column.name), &dialect.qualified(schema, table))),
                 HoverTarget::Table { range, schema, table } => {
@@ -181,26 +207,29 @@ impl HoverProvider for SqlHover {
                 }
                 HoverTarget::Missing(_) => return Ok(None),
             };
-            let mut result = None;
-            if let Some(key) = sql.first() {
-                let cached = fetched.borrow().get(key).cloned().flatten();
-                result = cached;
-                if result.is_none() {
-                    // Still resting on the name? (Moving away drops this task before any query.)
-                    cx.background_executor().timer(REST).await;
-                    cx.update(|cx| start_fetch(&fetched, &conn, &sql, cx));
-                    let started = Instant::now();
-                    while started.elapsed() < VALUES_WAIT {
-                        if let Some(Some(r)) = fetched.borrow().get(key) {
-                            result = Some(r.clone());
-                            break;
-                        }
-                        cx.background_executor().timer(Duration::from_millis(50)).await;
-                    }
+            let keys: Vec<&String> = sql.first().into_iter().chain(lineage.first()).collect();
+            let done = |k: &String| fetched.borrow().get(k).is_some_and(Option::is_some);
+            if !keys.iter().all(|k| done(k)) {
+                // Still resting on the name? (Moving away drops this task before any query.)
+                cx.background_executor().timer(REST).await;
+                cx.update(|cx| {
+                    start_fetch(&fetched, &conn, &sql, cx);
+                    start_fetch(&fetched, &conn, &lineage, cx);
+                });
+                let started = Instant::now();
+                while started.elapsed() < VALUES_WAIT && !keys.iter().all(|k| done(k)) {
+                    cx.background_executor().timer(Duration::from_millis(50)).await;
                 }
             }
+            let answer = |q: &[String]| q.first().and_then(|k| fetched.borrow().get(k).cloned().flatten());
+            let result = answer(&sql);
+            // No lineage (or no permission to read it): the section is left out, no error.
+            let nodes = match answer(&lineage) {
+                Some(Ok((_, names, rows))) => table_info::parse_column_lineage(&names, &rows).into_iter().filter(|n| !conn.org.lineage_ignored(&n.db, &n.schema, &n.object)).collect(),
+                _ => Vec::new(),
+            };
             let md = match &target {
-                HoverTarget::Column { table, column, .. } => column_markdown(column, table, result.as_ref()),
+                HoverTarget::Column { table, column, .. } => column_markdown(column, table, result.as_ref()) + &lineage_markdown(&nodes),
                 HoverTarget::Table { schema, table, .. } => {
                     let n_cols = cx.update(|cx| meta.read(cx).cache.columns.get(&(schema.clone(), table.clone())).map(Vec::len));
                     table_markdown(schema, table, result.as_ref(), n_cols)
@@ -230,10 +259,18 @@ mod tests {
     }
 
     #[test]
+    fn lineage_lists_the_nearest_source_first_one_level_per_hop() {
+        let n = |o: &str, d| rb_core::table_info::LinNode { db: "DB".into(), schema: "S".into(), object: o.into(), column: "C".into(), distance: d };
+        let md = super::lineage_markdown(&[n("RAW", 2), n("STG", 1)]);
+        assert!(md.contains("\n- ← `DB.S.STG`.C\n  - ← `DB.S.RAW`.C"), "{md}");
+        assert_eq!(super::lineage_markdown(&[]), "");
+    }
+
+    #[test]
     fn column_card_lists_values_with_counts_and_source() {
         let c = ColumnMeta { name: "USAGE_DATE".into(), type_name: "DATE".into(), cast_type: "DATE".into(), nullable: true, default: None, is_pk: false, generated: false };
         let rows = vec![vec![Some("2026-10-19".into()), Some("12".into())], vec![Some("2026-10-18".into()), Some("7".into())]];
-        let md = column_markdown(&c, "FCT_AWS", Some(&Ok((0, rows))));
+        let md = column_markdown(&c, "FCT_AWS", Some(&Ok((0, Vec::new(), rows))));
         assert!(md.starts_with("**USAGE_DATE** `DATE` · FCT_AWS"), "{md}");
         assert!(md.contains("`2026-10-19` ×12  \n`2026-10-18` ×7"), "{md}");
     }

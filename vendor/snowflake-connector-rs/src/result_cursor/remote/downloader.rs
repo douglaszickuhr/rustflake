@@ -65,8 +65,10 @@ impl RemotePartitionDownloader {
         let mut retries = 0;
         let column_count = schema.len();
         loop {
+            let started = std::time::Instant::now();
             match self.download_once(&request, column_count).await {
                 Ok(chunk) => {
+                    crate::metrics::record_download(started.elapsed(), chunk.body.len());
                     return parse_remote_chunk_result_table_async(
                         schema,
                         request.query_id,

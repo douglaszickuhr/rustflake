@@ -210,9 +210,11 @@ pub async fn pg_search(s: &Session, text: &str) -> Result<Vec<Hit>, DbError> {
 
 /// Snowflake: schemas and objects of the account. List truncated at the `SHOW` cap → redo per database.
 pub async fn sf_snapshot(s: &Session, dbs: &[String]) -> Result<SfIndex, DbError> {
-    let (n, rows) = s.query_named("show terse schemas in account").await?;
+    let other = s.sibling();
+    let (sch, objs) = tokio::join!(s.query_named("show terse schemas in account"), other.as_ref().unwrap_or(s).query_named("show terse objects in account"));
+    let (n, rows) = sch?;
     let schemas = parse_sf_schemas(&n, &rows);
-    let (n, rows) = s.query_named("show terse objects in account").await?;
+    let (n, rows) = objs?;
     if rows.len() < SHOW_LIMIT {
         return Ok(SfIndex { objects: parse_sf_objects(&n, &rows), schemas, refreshed: Some(Instant::now()), fallback_dbs: None });
     }

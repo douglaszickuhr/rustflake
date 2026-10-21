@@ -227,10 +227,13 @@ pub async fn search_path(s: &Session) -> Result<Vec<String>, DbError> {
 
 pub async fn objects(s: &Session, schema: &str) -> Result<SchemaObjects, DbError> {
     if s.dialect() == Dialect::Snowflake {
-        let (n, rows) = s.query_named(&format!("show objects in schema {}", Dialect::Snowflake.qualified_schema(schema))).await?;
+        let q = Dialect::Snowflake.qualified_schema(schema);
+        let other = s.sibling();
+        let (q_objs, q_funcs) = (format!("show objects in schema {q}"), format!("show user functions in schema {q}"));
+        let (objs, funcs) = tokio::join!(s.query_named(&q_objs), other.as_ref().unwrap_or(s).query_named(&q_funcs));
+        let ((n, rows), (fnames, frows)) = (objs?, funcs?);
         let mut o = parse_objects(&n, &rows);
-        let (n, rows) = s.query_named(&format!("show user functions in schema {}", Dialect::Snowflake.qualified_schema(schema))).await?;
-        o.functions = parse_functions(&n, &rows);
+        o.functions = parse_functions(&fnames, &frows);
         return Ok(o);
     }
     let mut o = SchemaObjects::default();

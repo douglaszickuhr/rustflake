@@ -440,12 +440,12 @@ pub async fn activity(s: &Session, u: &UserInfo) -> Result<Activity, DbError> {
     if let Some(l) = u.login_name.as_deref().filter(|l| *l != u.name) {
         names.push(l);
     }
-    let (n, r) = s.query_named(&login_activity_sql(&names)).await?;
-    let logins = parse_login_activity(&n, &r);
-    let (n, r) = s.query_named(&query_activity_sql(&names)).await?;
-    let queries = parse_query_activity(&n, &r);
-    let (n, r) = s.query_named(&usage_sql(&names)).await?;
-    Ok(Activity { logins, queries, usage: parse_usage(&n, &r) })
+    // Three ACCOUNT_USAGE scans, each seconds long: at the same time on Snowflake.
+    let (s2, s3) = (s.sibling(), s.sibling());
+    let (q1, q2, q3) = (login_activity_sql(&names), query_activity_sql(&names), usage_sql(&names));
+    let (logins, queries, usage) = tokio::join!(s.query_named(&q1), s2.as_ref().unwrap_or(s).query_named(&q2), s3.as_ref().unwrap_or(s).query_named(&q3));
+    let ((ln, lr), (qn, qr), (un, ur)) = (logins?, queries?, usage?);
+    Ok(Activity { logins: parse_login_activity(&ln, &lr), queries: parse_query_activity(&qn, &qr), usage: parse_usage(&un, &ur) })
 }
 
 #[cfg(test)]

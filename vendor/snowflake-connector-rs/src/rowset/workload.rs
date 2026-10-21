@@ -79,6 +79,14 @@ pub(crate) enum ParseWorkError<E> {
     Work(E),
 }
 
+/// Only the parsing itself (not the wait for a parse slot) counts in `metrics`.
+fn timed<T>(work: impl FnOnce() -> T) -> T {
+    let started = std::time::Instant::now();
+    let out = work();
+    crate::metrics::record_parse(started.elapsed());
+    out
+}
+
 pub(crate) async fn execute_parse_work<T, E, F>(
     workload: ParseWorkload,
     blocking_parse_limiter: Option<BlockingParseLimiter>,
@@ -97,7 +105,7 @@ where
 
         let result = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            work()
+            timed(work)
         })
         .await
         .map_err(ParseWorkError::Join)?;
@@ -109,7 +117,7 @@ where
     } else {
         Ok((
             ParseExecution::Inline,
-            work().map_err(ParseWorkError::Work)?,
+            timed(work).map_err(ParseWorkError::Work)?,
         ))
     }
 }
