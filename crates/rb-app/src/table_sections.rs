@@ -11,7 +11,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Selectable a
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::dbt::{DbtProject, Node, commit_url, file_url};
-use rb_core::explain::short_count;
+use rb_core::explain::{short_bytes, short_count};
 use rb_core::org_config::{LevelColor, TabKind};
 use rb_core::table_info::{self, DefSort, DescSource, LinNode};
 use rb_core::user_view;
@@ -416,7 +416,7 @@ impl TableTab {
                 let at = |ts: &Option<String>| ts.as_deref().and_then(user_view::parse_ts);
                 let mut v = vec![(kind, at(&f.created).map(|s| t!("tv.created_at", at = crate::ui::local_time(s)).to_string()))];
                 v.extend(f.rows.map(|r| (t!("tv.rows", n = short_count(r as f64)).to_string(), Some(t!("tv.rows", n = crate::ui::grouped(r)).to_string()))));
-                v.extend(f.bytes.map(|b| (format!("{}B", short_count(b as f64)), Some(t!("tv.bytes_exact", n = crate::ui::grouped(b)).to_string()))));
+                v.extend(f.bytes.map(|b| (short_bytes(b as f64), Some(t!("tv.bytes_exact", n = crate::ui::grouped(b)).to_string()))));
                 v.extend(at(&f.last_altered).map(|s| (t!("tv.changed", ago = crate::ui::ago(s)).to_string(), Some(crate::ui::local_time(s)))));
                 v
             }

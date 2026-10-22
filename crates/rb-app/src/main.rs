@@ -11,6 +11,7 @@ mod grid;
 mod history_popup;
 mod hover;
 mod indexer;
+mod ingest_tab;
 mod lang;
 mod lineage_view;
 mod meta;
@@ -79,7 +80,29 @@ impl Global for Db {}
 // Icons outside gpui-kit's default set; only these go into the binary.
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
-    [Database, Layers, Table, Sheet, SquareFunction, Columns3, Hash, KeyRound, ListTree, CircleUser, Funnel, Users, RotateCcwClock, Warehouse, SunMoon, Lock, Tag, CircleCheck]
+    [
+        Database,
+        Layers,
+        Table,
+        Sheet,
+        SquareFunction,
+        Columns3,
+        Hash,
+        KeyRound,
+        ListTree,
+        CircleUser,
+        Funnel,
+        Users,
+        RotateCcwClock,
+        Warehouse,
+        SunMoon,
+        Lock,
+        Tag,
+        CircleCheck,
+        Import,
+        FolderInput,
+        Clock
+    ]
 );
 
 struct AppAssets;

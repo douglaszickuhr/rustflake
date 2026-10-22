@@ -9,6 +9,7 @@ pub mod error;
 pub mod explain;
 pub mod format;
 pub mod history;
+pub mod ingest;
 pub mod lexer;
 pub mod lineage;
 pub mod masking;

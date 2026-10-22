@@ -49,6 +49,8 @@ pub enum Kind {
     Function,
     Procedure,
     Task,
+    Pipe,
+    Stage,
     Columns,
     Column,
     PkColumn,
@@ -70,6 +72,8 @@ impl Kind {
             Kind::Function => IconName::SquareFunction,
             Kind::Procedure => IconName::SquareTerminal,
             Kind::Task => IconName::Clock,
+            Kind::Pipe => IconName::Import,
+            Kind::Stage => IconName::FolderInput,
             Kind::Columns => IconName::Columns3,
             Kind::Column => IconName::Hash,
             Kind::PkColumn => IconName::KeyRound,
@@ -96,6 +100,8 @@ fn describe(node: &str, c: &MetaCache) -> (Kind, Option<String>) {
         ["p", ..] => Kind::Procedure,
         // A task shows its state (started / suspended) in gray.
         ["k", s, name] => return (Kind::Task, c.objects.get(*s).and_then(|o| o.tasks.iter().find(|(n, _)| n == name)).map(|(_, st)| st.clone())),
+        ["pp", ..] => Kind::Pipe,
+        ["st", ..] => Kind::Stage,
         ["cg", ..] => Kind::Columns,
         ["c", s, rel, col] => {
             let meta = c.columns.get(&(s.to_string(), rel.to_string())).and_then(|cols| cols.iter().find(|x| x.name == *col));
@@ -121,11 +127,19 @@ pub struct SchemaTree {
     on_open_table: OpenTable,
     on_open_routine: OpenRoutine,
     on_open_task: crate::task_tab::OpenTask,
+    on_open_ingest: crate::ingest_tab::OpenIngest,
     _subs: Vec<Subscription>,
 }
 
 impl SchemaTree {
-    pub fn new(meta: Entity<MetaStore>, on_open_table: OpenTable, on_open_routine: OpenRoutine, on_open_task: crate::task_tab::OpenTask, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        meta: Entity<MetaStore>,
+        on_open_table: OpenTable,
+        on_open_routine: OpenRoutine,
+        on_open_task: crate::task_tab::OpenTask,
+        on_open_ingest: crate::ingest_tab::OpenIngest,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let state = cx.new(|cx| TreeState::new(cx));
         let subs = vec![
             // Labels ("Tables (n)", "loading…") live in the items: new language, new items.
@@ -133,7 +147,7 @@ impl SchemaTree {
             cx.observe(&meta, |this, _, cx| this.rebuild(cx)),
             cx.subscribe(&state, |this, _, ev: &TreeEvent, cx| this.on_tree_event(ev, cx)),
         ];
-        let mut this = SchemaTree { meta, state, expanded: HashSet::new(), pending_reveal: None, on_open_table, on_open_routine, on_open_task, _subs: subs };
+        let mut this = SchemaTree { meta, state, expanded: HashSet::new(), pending_reveal: None, on_open_table, on_open_routine, on_open_task, on_open_ingest, _subs: subs };
         this.rebuild(cx);
         this
     }
@@ -209,7 +223,7 @@ impl SchemaTree {
                 m.cache.loaded_dbs.remove(*db);
                 m.request(MetaRequest::Schemas(db.to_string()), cx);
             }
-            ["s", schema, ..] | ["g", schema, ..] | ["f", schema, ..] | ["p", schema, ..] | ["k", schema, ..] => {
+            ["s", schema, ..] | ["g", schema, ..] | ["f", schema, ..] | ["p", schema, ..] | ["k", schema, ..] | ["pp", schema, ..] | ["st", schema, ..] => {
                 m.cache.invalidate_schema(schema);
                 m.request(MetaRequest::Objects(schema.to_string()), cx);
             }
@@ -272,6 +286,14 @@ fn schema_item(c: &MetaCache, s: &str, label: &str, expanded: &HashSet<SharedStr
                 let kid = id(&["g", s, "tasks"]);
                 TreeItem::new(kid.clone(), format!("{} ({})", t!("tree.tasks"), o.tasks.len())).expanded(open(&kid)).children(o.tasks.iter().map(|(n, _)| TreeItem::new(id(&["k", s, n]), n.clone())))
             }))
+            .chain((c.dialect == rb_core::dialect::Dialect::Snowflake).then(|| {
+                let gid = id(&["g", s, "pipes"]);
+                TreeItem::new(gid.clone(), format!("{} ({})", t!("tree.pipes"), o.pipes.len())).expanded(open(&gid)).children(o.pipes.iter().map(|n| TreeItem::new(id(&["pp", s, n]), n.clone())))
+            }))
+            .chain((c.dialect == rb_core::dialect::Dialect::Snowflake).then(|| {
+                let gid = id(&["g", s, "stages"]);
+                TreeItem::new(gid.clone(), format!("{} ({})", t!("tree.stages"), o.stages.len())).expanded(open(&gid)).children(o.stages.iter().map(|n| TreeItem::new(id(&["st", s, n]), n.clone())))
+            }))
             .collect()
         }
     };
@@ -311,6 +333,7 @@ impl Render for SchemaTree {
         let open = self.on_open_table.clone();
         let open_routine = self.on_open_routine.clone();
         let open_task = self.on_open_task.clone();
+        let open_ingest = self.on_open_ingest.clone();
         let meta = self.meta.clone();
         div()
             .key_context("SchemaTree")
@@ -323,6 +346,7 @@ impl Render for SchemaTree {
                 let open = open.clone();
                 let open_routine = open_routine.clone();
                 let open_task = open_task.clone();
+                let open_ingest = open_ingest.clone();
                 let (kind, detail) = describe(&node, &meta.read(cx).cache);
                 let theme = cx.theme();
                 let icon_color = if kind == Kind::PkColumn { theme.warning } else { theme.muted_foreground };
@@ -361,6 +385,8 @@ impl Render for SchemaTree {
                             ["f", schema, sig] => open_routine(Routine::Function, schema.to_string(), sig.to_string(), window, cx),
                             ["p", schema, sig] => open_routine(Routine::Procedure, schema.to_string(), sig.to_string(), window, cx),
                             ["k", schema, name] => open_task(schema.to_string(), name.to_string(), window, cx),
+                            ["pp", schema, name] => open_ingest(crate::ingest_tab::Ingest::Pipe, schema.to_string(), name.to_string(), window, cx),
+                            ["st", schema, name] => open_ingest(crate::ingest_tab::Ingest::Stage, schema.to_string(), name.to_string(), window, cx),
                             _ => {}
                         }
                     })
@@ -381,7 +407,16 @@ mod tests {
         let mut c = MetaCache::default();
         c.objects.insert(
             "public".into(),
-            SchemaObjects { tables: vec!["t".into()], views: vec!["v".into()], matviews: vec!["m".into()], functions: vec!["f()".into()], procedures: vec!["p(VARCHAR)".into()], tasks: vec![] },
+            SchemaObjects {
+                tables: vec!["t".into()],
+                views: vec!["v".into()],
+                matviews: vec!["m".into()],
+                functions: vec!["f()".into()],
+                procedures: vec!["p(VARCHAR)".into()],
+                tasks: vec![],
+                pipes: vec![],
+                stages: vec![],
+            },
         );
         let col = |name: &str, pk: bool| ColumnMeta { name: name.into(), type_name: "integer".into(), cast_type: "integer".into(), nullable: !pk, default: None, is_pk: pk, generated: false };
         c.columns.insert(("public".into(), "t".into()), vec![col("id", true), col("n", false)]);

@@ -291,7 +291,7 @@ impl TaskTab {
                         .gap_3()
                         .items_center()
                         .text_sm()
-                        .child(div().w(px(190.)).flex_shrink_0().font_family(theme.mono_font_family.clone()).child(at.map(crate::ui::local_time).unwrap_or_default()))
+                        .child(div().w(px(230.)).flex_shrink_0().whitespace_nowrap().font_family(theme.mono_font_family.clone()).child(at.map(crate::ui::local_time).unwrap_or_default()))
                         .child(div().w(px(110.)).flex_shrink_0().text_color(theme.muted_foreground).child(at.map(crate::ui::ago).unwrap_or_default()))
                         .child(div().w(px(120.)).flex_shrink_0().child(crate::ui::badge(tone, cx).child(r.state.to_lowercase())))
                         .child(div().w(px(80.)).flex_shrink_0().text_color(theme.muted_foreground).child(took))

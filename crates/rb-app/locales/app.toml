@@ -2762,3 +2762,93 @@ es = "No hay tablas registradas en sus últimas ejecuciones correctas (el access
 en = "From its last %{n} successful runs · Snowflake's access history is up to ~3 h behind"
 pt = "Das últimas %{n} execuções bem-sucedidas · o access history do Snowflake atrasa até ~3 h"
 es = "De sus últimas %{n} ejecuciones correctas · el access history de Snowflake va hasta ~3 h atrasado"
+
+[tree.pipes]
+en = "Pipes"
+pt = "Pipes"
+es = "Pipes"
+
+[tree.stages]
+en = "Stages"
+pt = "Stages"
+es = "Stages"
+
+[pipe.not_found]
+en = "Pipe not found (dropped, or the role can't see it)."
+pt = "Pipe não encontrado (removido, ou a role não o vê)."
+es = "Pipe no encontrado (eliminado, o el rol no lo ve)."
+
+[pipe.no_target]
+en = "Couldn't tell which table this pipe loads into."
+pt = "Não foi possível saber em qual tabela este pipe carrega."
+es = "No se pudo saber en qué tabla carga este pipe."
+
+[pipe.from]
+en = "From"
+pt = "De"
+es = "Desde"
+
+[pipe.into]
+en = "Into"
+pt = "Em"
+es = "En"
+
+[pipe.auto_ingest]
+en = "Auto-ingest"
+pt = "Auto-ingest"
+es = "Auto-ingest"
+
+[pipe.pending]
+en = "%{n} files pending"
+pt = "%{n} arquivos pendentes"
+es = "%{n} archivos pendientes"
+
+[pipe.last_ingested]
+en = "Last file %{ago}"
+pt = "Último arquivo %{ago}"
+es = "Último archivo %{ago}"
+
+[pipe.loads]
+en = "Loads"
+pt = "Cargas"
+es = "Cargas"
+
+[pipe.no_loads]
+en = "No loads in the last %{days} days."
+pt = "Nenhuma carga nos últimos %{days} dias."
+es = "Sin cargas en los últimos %{days} días."
+
+[stage.not_found]
+en = "Stage not found (dropped, or the role can't see it)."
+pt = "Stage não encontrado (removido, ou a role não o vê)."
+es = "Stage no encontrado (eliminado, o el rol no lo ve)."
+
+[stage.prefix]
+en = "Path prefix… (↵ to list)"
+pt = "Prefixo do caminho… (↵ para listar)"
+es = "Prefijo de la ruta… (↵ para listar)"
+
+[stage.integration]
+en = "Integration %{i}"
+pt = "Integração %{i}"
+es = "Integración %{i}"
+
+[stage.directory]
+en = "Directory table"
+pt = "Directory table"
+es = "Directory table"
+
+[stage.files]
+en = "%{shown} of %{total} files, newest first"
+pt = "%{shown} de %{total} arquivos, mais recentes primeiro"
+es = "%{shown} de %{total} archivos, más recientes primero"
+
+[stage.no_files]
+en = "No files."
+pt = "Nenhum arquivo."
+es = "Sin archivos."
+
+[stage.preview]
+en = "Preview"
+pt = "Visualizar"
+es = "Vista previa"

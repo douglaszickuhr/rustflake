@@ -17,6 +17,10 @@ pub struct SchemaObjects {
     pub procedures: Vec<String>,
     /// Tasks: (name, `started` / `suspended`) (Snowflake).
     pub tasks: Vec<(String, String)>,
+    /// Snowpipe pipes (Snowflake).
+    pub pipes: Vec<String>,
+    /// Stages (Snowflake).
+    pub stages: Vec<String>,
 }
 
 impl SchemaObjects {
@@ -232,17 +236,31 @@ pub async fn search_path(s: &Session) -> Result<Vec<String>, DbError> {
 pub async fn objects(s: &Session, schema: &str) -> Result<SchemaObjects, DbError> {
     if s.dialect() == Dialect::Snowflake {
         let q = Dialect::Snowflake.qualified_schema(schema);
-        let (s2, s3, s4) = (s.sibling(), s.sibling(), s.sibling());
-        let (q_objs, q_funcs, q_procs, q_tasks) =
-            (format!("show objects in schema {q}"), format!("show user functions in schema {q}"), format!("show user procedures in schema {q}"), format!("show tasks in schema {q}"));
-        let (objs, funcs, procs, tasks) =
-            tokio::join!(s.query_named(&q_objs), s2.as_ref().unwrap_or(s).query_named(&q_funcs), s3.as_ref().unwrap_or(s).query_named(&q_procs), s4.as_ref().unwrap_or(s).query_named(&q_tasks));
+        let (s2, s3, s4, s5, s6) = (s.sibling(), s.sibling(), s.sibling(), s.sibling(), s.sibling());
+        let (q_objs, q_funcs, q_procs, q_tasks, q_pipes, q_stages) = (
+            format!("show objects in schema {q}"),
+            format!("show user functions in schema {q}"),
+            format!("show user procedures in schema {q}"),
+            format!("show tasks in schema {q}"),
+            format!("show pipes in schema {q}"),
+            format!("show stages in schema {q}"),
+        );
+        let (objs, funcs, procs, tasks, pipes, stages) = tokio::join!(
+            s.query_named(&q_objs),
+            s2.as_ref().unwrap_or(s).query_named(&q_funcs),
+            s3.as_ref().unwrap_or(s).query_named(&q_procs),
+            s4.as_ref().unwrap_or(s).query_named(&q_tasks),
+            s5.as_ref().unwrap_or(s).query_named(&q_pipes),
+            s6.as_ref().unwrap_or(s).query_named(&q_stages)
+        );
         let ((n, rows), (fnames, frows)) = (objs?, funcs?);
         let mut o = parse_objects(&n, &rows);
         o.functions = parse_functions(&fnames, &frows);
         // Same `arguments` shape as functions; a role that can't list them just gets none.
         o.procedures = procs.map(|(n, r)| parse_functions(&n, &r)).unwrap_or_default();
         o.tasks = tasks.map(|(n, r)| crate::task::parse_tasks(&n, &r).into_iter().map(|t| (t.name, t.state)).collect()).unwrap_or_default();
+        o.pipes = pipes.map(|(n, r)| crate::ingest::parse_pipes(&n, &r).into_iter().map(|p| p.name).collect()).unwrap_or_default();
+        o.stages = stages.map(|(n, r)| crate::ingest::parse_stages(&n, &r).into_iter().map(|p| p.name).collect()).unwrap_or_default();
         return Ok(o);
     }
     let mut o = SchemaObjects::default();

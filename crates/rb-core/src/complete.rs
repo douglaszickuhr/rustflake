@@ -139,6 +139,8 @@ struct TableRef {
     schema: Option<String>,
     table: String,
     alias: Option<String>,
+    /// A subquery in FROM (`from (select …) q`): byte range of its body; `table` and `alias` are `q`.
+    sub: Option<(usize, usize)>,
 }
 
 pub fn complete(src: &str, cursor: usize, cache: &MetaCache) -> Completion {
@@ -308,7 +310,7 @@ pub fn hover_at(src: &str, cursor: usize, cache: &MetaCache) -> Option<HoverTarg
         .filter(|w| is_name(&w[0]) && ident_text(&src[w[1].start..w[1].end]) == "as" && &src[w[2].start..w[2].end] == "(")
         .map(|w| cache.dialect.fold(&src[w[0].start..w[0].end]))
         .collect();
-    let refs: Vec<TableRef> = table_refs(src, &stmt, cache.dialect).into_iter().filter(|r| r.schema.is_some() || !ctes.contains(&r.table)).collect();
+    let refs: Vec<TableRef> = table_refs(src, &stmt, cache.dialect).into_iter().filter(|r| r.sub.is_none() && (r.schema.is_some() || !ctes.contains(&r.table))).collect();
     let tok = toks[i];
     let name = cache.dialect.fold(&src[tok.start..tok.end]);
     // `q.col`: only the table with that alias (or name).
@@ -369,6 +371,13 @@ fn bare_column(name: String, type_name: String) -> ColumnMeta {
 
 /// Columns of a FROM entry: a real table from the cache (or the request for it), or a CTE's select list.
 fn ref_columns(src: &str, stmt: &[Token], cache: &MetaCache, r: &TableRef, depth: u8) -> Result<Vec<ColumnMeta>, Vec<MetaRequest>> {
+    if let Some((a, b)) = r.sub {
+        let (from, to) = (stmt.iter().position(|t| t.start >= a), stmt.iter().rposition(|t| t.end <= b));
+        return match (from, to, depth < 4) {
+            (Some(from), Some(to), true) if from <= to => cte_columns(src, stmt, &stmt[from..=to], cache, depth + 1),
+            _ => Ok(Vec::new()),
+        };
+    }
     if r.schema.is_none()
         && depth < 4
         && let Some(body) = cte_body(src, stmt, &r.table, cache.dialect)
@@ -507,7 +516,7 @@ fn table_refs(src: &str, toks: &[Token], d: Dialect) -> Vec<TableRef> {
             if NOT_ALIAS.contains(&first.as_str()) {
                 break;
             }
-            let mut r = TableRef { schema: None, table: toks.get(i).and_then(name).unwrap_or(first), alias: None };
+            let mut r = TableRef { schema: None, table: toks.get(i).and_then(name).unwrap_or(first), alias: None, sub: None };
             i += 1;
             if toks.get(i).is_some_and(|t| punct(t, "."))
                 && let Some(n) = toks.get(i + 1).and_then(name)
@@ -540,6 +549,28 @@ fn table_refs(src: &str, toks: &[Token], d: Dialect) -> Vec<TableRef> {
             }
         }
     }
+    // `from (select …) q` / `join (…) as q`: the alias stands for the subquery's select list.
+    for (k, t) in toks.iter().enumerate() {
+        let opens = punct(t, "(") && k > 0 && matches!(word(&toks[k - 1]).as_deref(), Some("from" | "join")) && matches!(toks.get(k + 1).and_then(word).as_deref(), Some("select" | "with"));
+        if !opens {
+            continue;
+        }
+        let mut depth = 0;
+        let Some(close) = toks[k..].iter().position(|t| {
+            depth += i32::from(punct(t, "(")) - i32::from(punct(t, ")"));
+            depth == 0
+        }) else {
+            continue;
+        };
+        let close = k + close;
+        let mut a = close + 1;
+        if toks.get(a).and_then(word).as_deref() == Some("as") {
+            a += 1;
+        }
+        if let Some(alias) = toks.get(a).and_then(|t| word(t).filter(|w| !NOT_ALIAS.contains(&w.as_str())).and(name(t))) {
+            out.push(TableRef { schema: None, table: alias.clone(), alias: Some(alias), sub: Some((toks[k + 1].start, toks[close - 1].end)) });
+        }
+    }
     out
 }
 
@@ -563,6 +594,8 @@ mod tests {
                 functions: vec!["calc_total(integer)".into()],
                 procedures: vec![],
                 tasks: vec![],
+                pipes: vec![],
+                stages: vec![],
             },
         );
         c.columns.insert(("public".into(), "users".into()), vec![col("id", "integer"), col("email", "text")]);
@@ -618,6 +651,18 @@ mod tests {
         assert_eq!(at("select COST from MARTS_PROD.MART_AWS.FCT u join MARTS_PROD.MART_AWS.DIM a on true", "COST"), "None", "in both: no guess");
         assert_eq!(at("with x as (select USAGE_DATE from MARTS_PROD.MART_AWS.FCT) select USAGE_DATE from x", "USAGE_DATE from x"), "FCT.USAGE_DATE");
         assert_eq!(at("select s.ACCOUNT_NAME from (select ACCOUNT_NAME from MARTS_PROD.MART_AWS.DIM) s", "ACCOUNT_NAME from ("), "DIM.ACCOUNT_NAME");
+    }
+
+    #[test]
+    fn completes_subquery_columns_through_its_alias() {
+        let mut c = MetaCache { dialect: Dialect::Snowflake, search_path: vec!["ANALYTICS.PUBLIC".into()], ..Default::default() };
+        c.columns.insert(("MARTS_PROD.MART_CLAUDE".into(), "CLAUDE_USAGE_REPORT".into()), vec![col("PRODUCT", "TEXT"), col("TOKENS", "NUMBER")]);
+        let src = "select PRODUCT, count(*), sum(q.) as n\nfrom (\nSELECT\n  *\nFROM\n  \"MARTS_PROD\".\"MART_CLAUDE\".\"CLAUDE_USAGE_REPORT\"\n) q\ngroup by 1\norder by 2 desc;";
+        let comp = complete(src, src.find("q.)").unwrap() + 2, &c);
+        assert_eq!(labels(&comp), ["PRODUCT", "TOKENS"], "{:?}", comp.missing);
+        assert!(!comp.missing.iter().any(|m| matches!(m, MetaRequest::Columns(_, t) if t == "Q")), "no table called Q is requested");
+        let src = "select x. from MARTS_PROD.MART_CLAUDE.CLAUDE_USAGE_REPORT r join (select PRODUCT as p from MARTS_PROD.MART_CLAUDE.CLAUDE_USAGE_REPORT) as x on true";
+        assert_eq!(labels(&complete(src, src.find("x. ").unwrap() + 2, &c)), ["P"]);
     }
 
     #[test]
@@ -834,9 +879,9 @@ mod tests {
         assert_eq!(
             refs,
             vec![
-                TableRef { schema: Some("public".into()), table: "users".into(), alias: Some("u".into()) },
-                TableRef { schema: None, table: "orders".into(), alias: Some("o".into()) },
-                TableRef { schema: Some("Sales".into()), table: "Deals".into(), alias: Some("d".into()) },
+                TableRef { schema: Some("public".into()), table: "users".into(), alias: Some("u".into()), sub: None },
+                TableRef { schema: None, table: "orders".into(), alias: Some("o".into()), sub: None },
+                TableRef { schema: Some("Sales".into()), table: "Deals".into(), alias: Some("d".into()), sub: None },
             ]
         );
     }

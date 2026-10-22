@@ -12,7 +12,7 @@ use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::admin::{self, RoleGraph};
-use rb_core::explain::short_count;
+use rb_core::explain::short_bytes;
 use rb_core::session::Session;
 use rb_core::warehouse::{self, Suspend, WarehouseInfo, WhGrant, WhUsage};
 
@@ -445,8 +445,8 @@ impl WarehouseTab {
         out = out
             .child(row(t!("wh.queued_queries").to_string(), format!("{} ({pct:.1}%)", u.queued)))
             .child(row(t!("wh.queue_avg_max").to_string(), format!("{} / {}", human_ms(u.avg_queue_ms as u64), human_ms(u.max_queue_ms as u64))))
-            .child(row(t!("plan.spilled_local").to_string(), format!("{}B", short_count(u.spilled_local as f64))))
-            .child(row(t!("plan.spilled_remote").to_string(), format!("{}B", short_count(u.spilled_remote as f64))))
+            .child(row(t!("plan.spilled_local").to_string(), short_bytes(u.spilled_local as f64)))
+            .child(row(t!("plan.spilled_remote").to_string(), short_bytes(u.spilled_remote as f64)))
             .when(warehouse::undersized(&u), |d| d.child(div().text_sm().text_color(theme.warning).child(t!("wh.undersized").to_string())));
 
         out = out.child(div().pt_2().text_sm().font_weight(FontWeight::SEMIBOLD).child(t!("wh.slowest").to_string()));

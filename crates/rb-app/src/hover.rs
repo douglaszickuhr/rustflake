@@ -13,7 +13,7 @@ use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 use rb_core::complete::{HoverTarget, hover_at};
 use rb_core::decode::one_line;
 use rb_core::dialect::Dialect;
-use rb_core::explain::short_count;
+use rb_core::explain::{short_bytes, short_count};
 use rb_core::metadata::ColumnMeta;
 use rb_core::table_info::{self, LinNode};
 use rb_core::user_view;
@@ -116,7 +116,7 @@ fn table_markdown(schema: &str, table: &str, facts: Option<&Answer>, n_cols: Opt
             if let Some(f) = table_info::parse_facts(names, rows) {
                 parts.push(f.kind.to_lowercase());
                 parts.extend(f.rows.map(|r| t!("tv.rows", n = short_count(r as f64)).to_string()));
-                parts.extend(f.bytes.map(|b| format!("{}B", short_count(b as f64))));
+                parts.extend(f.bytes.map(|b| short_bytes(b as f64)));
                 parts.extend(f.last_altered.as_deref().and_then(user_view::parse_ts).map(|s| t!("tv.changed", ago = crate::ui::ago(s)).to_string()));
                 if let Some(c) = f.comment.filter(|c| !c.is_empty()) {
                     md += &format!("\n\n{}", one_line(&c, 300));

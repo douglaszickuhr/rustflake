@@ -293,7 +293,7 @@ pub fn parse_sf_explain(json: &str) -> Result<Plan, DbError> {
                 detail.push(("partitions".into(), format!("{} / {}", short_count(a), short_count(t))));
             }
             if let Some(b) = bytes {
-                detail.push(("bytes".into(), short_count(b)));
+                detail.push(("bytes".into(), short_bytes(b)));
             }
             let node = PlanNode {
                 op: o.get("operation").and_then(Value::as_str).unwrap_or("?").into(),
@@ -475,8 +475,21 @@ pub fn edge_width(rows: Option<f64>) -> f32 {
     rows.map_or(1.0, |r| (1.0 + (r.max(0.0) + 1.0).log10()).min(8.0) as f32)
 }
 
+/// Bytes with the unit that keeps the number short: `691B`, `55.7MB`, `3.2GB` (powers of 1000).
+pub fn short_bytes(n: f64) -> String {
+    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let (mut v, mut u) = (n, 0);
+    while v >= 1000.0 && u < UNITS.len() - 1 {
+        v /= 1000.0;
+        u += 1;
+    }
+    if u == 0 { format!("{v:.0}B") } else { format!("{v:.1}{}", UNITS[u]) }
+}
+
 pub fn short_count(n: f64) -> String {
-    if n >= 1e6 {
+    if n >= 1e9 {
+        format!("{:.1}B", n / 1e9)
+    } else if n >= 1e6 {
         format!("{:.1}M", n / 1e6)
     } else if n >= 1e3 {
         format!("{:.0}k", n / 1e3)
@@ -707,5 +720,11 @@ mod tests {
         assert_eq!(hottest(&r), vec![1]);
         assert_eq!(node_at(&r, &[1]).unwrap().op, "hot");
         assert!(node_at(&r, &[5]).is_none());
+    }
+
+    #[test]
+    fn sizes_pick_their_unit() {
+        assert_eq!([0.0, 691.0, 55_700_000.0, 3_220_300_000.0, 2.5e12].map(short_bytes), ["0B", "691B", "55.7MB", "3.2GB", "2.5TB"]);
+        assert_eq!(short_count(3_220_300_000.0), "3.2B");
     }
 }

@@ -8,7 +8,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use rb_core::explain::{Placed, Plan, PlanNode, PlanNote, Profile, edge_width, hottest, layout, node_at, short_count, top_nodes};
+use rb_core::explain::{Placed, Plan, PlanNode, PlanNote, Profile, edge_width, hottest, layout, node_at, short_bytes, short_count, top_nodes};
 
 use crate::zoom::{PAD, fit_zoom, step_zoom, wheel_zoom, zoom_anchor};
 use crate::{PlanFit, PlanZoomIn, PlanZoomOut};
@@ -191,7 +191,7 @@ impl PlanView {
         if let Some(sp) = p.scan_progress {
             out = out.child(row(t!("plan.scan_progress").to_string(), format!("{:.2}%", sp * 100.0)));
         }
-        out = out.child(row(t!("plan.bytes_scanned").to_string(), format!("{}B", short_count(p.bytes_scanned))));
+        out = out.child(row(t!("plan.bytes_scanned").to_string(), short_bytes(p.bytes_scanned)));
         if let Some(c) = p.from_cache {
             out = out.child(row(t!("plan.from_cache").to_string(), format!("{:.2}%", c * 100.0)));
         }
@@ -199,13 +199,13 @@ impl PlanView {
             out = out.child(row(t!("plan.partitions_scanned").to_string(), short_count(p.partitions_scanned))).child(row(t!("plan.partitions_total").to_string(), short_count(p.partitions_total)));
         }
         if p.spilled_local > 0.0 {
-            out = out.child(row(t!("plan.spilled_local").to_string(), format!("{}B", short_count(p.spilled_local))));
+            out = out.child(row(t!("plan.spilled_local").to_string(), short_bytes(p.spilled_local)));
         }
         if p.spilled_remote > 0.0 {
-            out = out.child(row(t!("plan.spilled_remote").to_string(), format!("{}B", short_count(p.spilled_remote))));
+            out = out.child(row(t!("plan.spilled_remote").to_string(), short_bytes(p.spilled_remote)));
         }
         if p.network_bytes > 0.0 {
-            out = out.child(row(t!("plan.network").to_string(), format!("{}B", short_count(p.network_bytes))));
+            out = out.child(row(t!("plan.network").to_string(), short_bytes(p.network_bytes)));
         }
         out
     }
@@ -309,7 +309,7 @@ impl Render for PlanView {
             let figure = match (n.time_ms, n.cost) {
                 (Some(ms), _) => format!("{ms:.1} ms"),
                 (None, Some(c)) if self.plan.analyzed || c < 1e6 => format!("{} {}", t!("plan.cost"), short_count(c)),
-                (None, Some(b)) => format!("{}B", short_count(b)),
+                (None, Some(b)) => short_bytes(b),
                 (None, None) => String::new(),
             };
             let rows = rows_of(n).map(|r| format!(" · {} {}", short_count(r), t!("plan.rows"))).unwrap_or_default();

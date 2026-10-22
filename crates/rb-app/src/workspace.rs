@@ -59,6 +59,8 @@ pub enum TabView {
     Admin(Entity<AdminTab>),
     Warehouses(Entity<WarehouseTab>),
     Task(Entity<crate::task_tab::TaskTab>),
+    Pipe(Entity<crate::ingest_tab::PipeTab>),
+    Stage(Entity<crate::ingest_tab::StageTab>),
 }
 
 impl TabView {
@@ -69,6 +71,8 @@ impl TabView {
             TabView::Admin(t) => t.read(cx).title(),
             TabView::Warehouses(t) => t.read(cx).title(),
             TabView::Task(t) => t.read(cx).title(),
+            TabView::Pipe(t) => t.read(cx).title(),
+            TabView::Stage(t) => t.read(cx).title(),
         }
     }
 
@@ -79,6 +83,8 @@ impl TabView {
             TabView::Admin(t) => t.read(cx).conn_id().to_string(),
             TabView::Warehouses(t) => t.read(cx).conn_id().to_string(),
             TabView::Task(t) => t.read(cx).conn_id().to_string(),
+            TabView::Pipe(t) => t.read(cx).conn_id().to_string(),
+            TabView::Stage(t) => t.read(cx).conn_id().to_string(),
         }
     }
 }
@@ -322,7 +328,11 @@ impl Workspace {
                         let open_task: crate::task_tab::OpenTask = Rc::new(move |schema, name, window, cx| {
                             ws_weak.update(cx, |ws, cx| ws.open_task(&task_id, schema, name, window, cx)).ok();
                         });
-                        let tree = cx.new(|cx| SchemaTree::new(meta.clone(), open, open_routine, open_task, cx));
+                        let (ws_weak, ingest_id) = (cx.entity().downgrade(), id.clone());
+                        let open_ingest: crate::ingest_tab::OpenIngest = Rc::new(move |kind, schema, name, window, cx| {
+                            ws_weak.update(cx, |ws, cx| ws.open_ingest(&ingest_id, kind, schema, name, window, cx)).ok();
+                        });
+                        let tree = cx.new(|cx| SchemaTree::new(meta.clone(), open, open_routine, open_task, open_ingest, cx));
                         let indexer = conn.cfg.snowflake.is_some().then(|| cx.new(|cx| Indexer::new(conn.clone(), meta.clone(), cx)));
                         let dbt = conn.cfg.snowflake.as_ref().map(|sf| {
                             let cfg = sf.dbt.clone();
@@ -580,6 +590,37 @@ impl Workspace {
         self.select_tab(self.tabs.len() - 1, cx);
     }
 
+    /// A pipe's or stage's tab; an open one is just selected.
+    fn open_ingest(&mut self, conn_id: &str, kind: crate::ingest_tab::Ingest, schema: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(conn) = self.open_conn(conn_id).map(|o| o.conn.clone()) else { return };
+        self.main_focus.focus(window, cx);
+        let title: SharedString = format!("{schema}.{name}").into();
+        let same_kind = |t: &TabView| matches!((t, kind), (TabView::Pipe(_), crate::ingest_tab::Ingest::Pipe) | (TabView::Stage(_), crate::ingest_tab::Ingest::Stage));
+        if let Some(ix) = self.tabs.iter().position(|t| same_kind(t) && t.conn_id(cx) == conn_id && t.title(cx) == title) {
+            self.select_tab(ix, cx);
+            return;
+        }
+        let tab = match kind {
+            crate::ingest_tab::Ingest::Pipe => {
+                let (ws, id) = (cx.entity().downgrade(), conn_id.to_string());
+                let open_table: crate::schema_tree::OpenTable = Rc::new(move |schema, table, window, cx| {
+                    ws.update(cx, |ws, cx| ws.open_table(&id, schema, table, window, cx)).ok();
+                });
+                let (ws, id) = (cx.entity().downgrade(), conn_id.to_string());
+                let open_ingest: crate::ingest_tab::OpenIngest = Rc::new(move |kind, schema, name, window, cx| {
+                    ws.update(cx, |ws, cx| ws.open_ingest(&id, kind, schema, name, window, cx)).ok();
+                });
+                TabView::Pipe(cx.new(|cx| crate::ingest_tab::PipeTab::new(conn, &schema, name, open_table, open_ingest, cx)))
+            }
+            crate::ingest_tab::Ingest::Stage => {
+                let run = self.run_query_cb(conn_id, cx);
+                TabView::Stage(cx.new(|cx| crate::ingest_tab::StageTab::new(conn, &schema, name, run, window, cx)))
+            }
+        };
+        self.tabs.push(tab);
+        self.select_tab(self.tabs.len() - 1, cx);
+    }
+
     /// A function's or procedure's code (`GET_DDL`) in a new script; a procedure also gets a commented
     /// `CALL` with its argument types to fill in.
     fn open_routine(&mut self, conn_id: &str, kind: rb_core::table_info::Routine, schema: String, sig: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -733,6 +774,8 @@ impl Workspace {
             TabView::Admin(t) => t.clone().into_any_element(),
             TabView::Warehouses(t) => t.clone().into_any_element(),
             TabView::Task(t) => t.clone().into_any_element(),
+            TabView::Pipe(t) => t.clone().into_any_element(),
+            TabView::Stage(t) => t.clone().into_any_element(),
         };
         // min_w_0: without it the flex item measures at least the content width (all the grid's columns)
         // and overflows the window instead of letting the grid scroll horizontally.
@@ -1581,6 +1624,8 @@ impl Render for Workspace {
                 Some(TabView::Admin(t)) => t.update(cx, |t, cx| t.reload(cx)),
                 Some(TabView::Warehouses(t)) => t.update(cx, |t, cx| t.reload(cx)),
                 Some(TabView::Task(t)) => t.update(cx, |t, cx| t.reload(cx)),
+                Some(TabView::Pipe(t)) => t.update(cx, |t, cx| t.reload(cx)),
+                Some(TabView::Stage(t)) => t.update(cx, |t, cx| t.reload(cx)),
                 // A script reruns with ⌘↵, not ⌘R.
                 Some(TabView::Sql(_)) | None => {}
             }))
