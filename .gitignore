@@ -3,3 +3,4 @@ target/
 .DS_Store
 # The connector has its own [workspace]: running its tests creates a lock file here.
 vendor/*/Cargo.lock
+dist/

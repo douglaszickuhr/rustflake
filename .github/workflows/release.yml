@@ -1,0 +1,65 @@
+name: Release
+
+# Push a tag that matches the Cargo version: git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest # arm64
+    env:
+      # Optional: without these the app is signed ad-hoc and not notarized.
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }} # base64 of the Developer ID Application .p12
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }} # "Developer ID Application: Name (TEAMID)"
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }} # app-specific password for notarytool
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches Cargo version
+        run: |
+          v=$(cargo pkgid -p rb-app | sed 's/.*[#@]//')
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME does not match Cargo version $v"; exit 1; }
+
+      - run: rustup update stable --no-self-update
+
+      - run: cargo build --release -p rb-app
+
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          kc=$RUNNER_TEMP/build.keychain-db
+          pw=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Bundle
+        run: |
+          [ -n "$MACOS_CERTIFICATE" ] || unset MACOS_SIGN_IDENTITY
+          echo "DMG=$(scripts/bundle-macos.sh)" >> "$GITHUB_ENV"
+
+      - name: Notarize
+        if: env.MACOS_CERTIFICATE != '' && env.APPLE_ID != ''
+        run: |
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "$DMG" --verify-tag --generate-notes
