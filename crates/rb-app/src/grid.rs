@@ -365,8 +365,20 @@ impl TableDelegate for ResultGrid {
         // The full value (and its pretty JSON) is built on hover, not for every clipped cell every frame.
         let table = (!null && clipped).then(|| cx.entity().downgrade());
         let cols = self.columns_count(cx);
+        // A URL reads as a link; ⌘-click opens it (a plain click still selects the cell).
+        let link = (!null && !edited && (text.starts_with("https://") || text.starts_with("http://")) && !text.contains(char::is_whitespace)).then(|| cx.entity().downgrade());
         div()
             .id(("cell", row * cols + id_col))
+            .when_some(link, |d, table| {
+                d.text_color(cx.theme().link).hover(|s| s.underline()).on_mouse_down(MouseButton::Left, move |ev, _, cx| {
+                    if ev.modifiers.platform
+                        && let Some(url) = table.upgrade().and_then(|t| t.read(cx).delegate().full_text(row, col))
+                    {
+                        cx.open_url(url.trim());
+                        cx.stop_propagation();
+                    }
+                })
+            })
             .when_some(table, |d, table| {
                 // Hoverable: the pointer can move into the card to scroll it or copy the value.
                 d.hoverable_tooltip(move |window, cx| {

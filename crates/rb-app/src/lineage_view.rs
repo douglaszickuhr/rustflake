@@ -704,6 +704,10 @@ impl Render for LineageView {
                                     .h(px(h * z))
                                     .min_w_full()
                                     .min_h_full()
+                                    // Smaller than the area: centered (it used to sit in the top-left corner).
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
                                         if ev.modifiers.platform {
                                             cx.stop_propagation();

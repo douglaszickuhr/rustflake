@@ -455,7 +455,7 @@ impl TableTab {
                         .text_sm()
                         .text_color(theme.muted_foreground)
                         .child(if open {
-                            div().id("tv-comment").flex_1().max_h(px(200.)).overflow_y_scroll().whitespace_normal().child(c).into_any_element()
+                            div().id("tv-comment").flex_1().min_w_0().max_h(px(200.)).overflow_y_scroll().whitespace_normal().child(c).into_any_element()
                         } else {
                             div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(short).into_any_element()
                         })
