@@ -515,8 +515,12 @@ impl TableTab {
         let mono = theme.mono_font_family.clone();
         // Empty columns give their width to the description (it was being squeezed to nothing).
         let (has_policy, has_tests) = (rows.iter().any(|r| r.masked_by.is_some()), rows.iter().any(|r| !r.tests.is_empty()));
+        // No description anywhere: no empty column; tags and policy take the width instead of being cut.
+        let has_desc = rows.iter().any(|r| r.desc.is_some());
+        let tag_value_w = if has_desc { 90. } else { 240. };
+        let policy_w = if has_desc { 170. } else { 280. };
         // Narrower than this, the table scrolls sideways instead of squeezing the description.
-        let widths = [44., 200., 130., 260., 220.].into_iter().chain(has_class.then_some(64.)).chain(has_policy.then_some(170.)).chain(has_tests.then_some(140.));
+        let widths = [44., 200., 130., if has_desc { 260. } else { 0. }, 220.].into_iter().chain(has_class.then_some(64.)).chain(has_policy.then_some(policy_w)).chain(has_tests.then_some(140.));
         let (n, sum) = widths.fold((0, 0.), |(n, s), w| (n + 1, s + w));
         let min_w = sum + 12. * (n - 1) as f32 + 24.;
         let mut table = v_flex().min_w(px(min_w)).child(
@@ -531,10 +535,10 @@ impl TableTab {
                 .child(self.sort_head(DefSort::Position, "#".into(), cx).w(px(44.)).flex_shrink_0().justify_end())
                 .child(self.sort_head(DefSort::Name, t!("tv.col_column").to_string(), cx).w(px(200.)).flex_shrink_0())
                 .child(self.sort_head(DefSort::Type, t!("tv.col_type").to_string(), cx).w(px(130.)).flex_shrink_0())
-                .child(self.sort_head(DefSort::Description, t!("tv.col_desc").to_string(), cx).flex_1().min_w(px(200.)))
+                .when(has_desc, |d| d.child(self.sort_head(DefSort::Description, t!("tv.col_desc").to_string(), cx).flex_1().min_w(px(200.))))
                 .when(has_class, |d| d.child(div().w(px(64.)).flex_shrink_0().child(t!("tv.col_class").to_string())))
-                .child(self.sort_head(DefSort::Tags, t!("tv.tags").to_string(), cx).w(px(220.)).flex_shrink_0())
-                .when(has_policy, |d| d.child(self.sort_head(DefSort::Policy, t!("tv.col_policy").to_string(), cx).w(px(170.)).flex_shrink_0()))
+                .child(self.sort_head(DefSort::Tags, t!("tv.tags").to_string(), cx).w(px(220.)).flex_shrink_0().when(!has_desc, |d| d.flex_1()))
+                .when(has_policy, |d| d.child(self.sort_head(DefSort::Policy, t!("tv.col_policy").to_string(), cx).w(px(policy_w)).flex_shrink_0()))
                 .when(has_tests, |d| d.child(div().w(px(140.)).flex_shrink_0().child(t!("tv.col_tests").to_string()))),
         );
         for (i, (r, all_tags)) in shown.iter().enumerate() {
@@ -571,7 +575,7 @@ impl TableTab {
                                 .child(Icon::new(IconName::Tag).xsmall().text_color(theme.muted_foreground))
                                 .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(first.name.clone()))
                                 .child(div().h(px(12.)).w(px(1.)).bg(theme.border))
-                                .child(div().flex_shrink_0().max_w(px(90.)).overflow_hidden().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(first.value.clone())),
+                                .child(div().flex_shrink_0().max_w(px(tag_value_w)).overflow_hidden().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(first.value.clone())),
                         )
                         .when(col_tags.len() > 1, |d| d.child(pill().flex_shrink_0().text_color(theme.muted_foreground).child(format!("+{}", col_tags.len() - 1))))
                         .into_any_element()
@@ -608,10 +612,10 @@ impl TableTab {
                             .hoverable_tooltip(move |_, cx| cx.new(|cx| crate::col_lineage_card::ColLineageCard::new(tab.clone(), col.clone(), cx)).into())
                     })
                     .child(div().w(px(130.)).flex_shrink_0().font_family(mono.clone()).text_color(theme.muted_foreground).overflow_hidden().text_ellipsis().child(r.col.kind.clone()))
-                    .child(div().flex_1().min_w(px(200.)).overflow_hidden().child(desc))
+                    .when(has_desc, |d| d.child(div().flex_1().min_w(px(200.)).overflow_hidden().child(desc)))
                     .when(has_class, |d| d.child(div().w(px(64.)).flex_shrink_0().child(class_badge(r.level, r.masked_by.is_some(), &self.conn.org, cx))))
-                    .child(div().w(px(220.)).flex_shrink_0().child(tags_cell))
-                    .when(has_policy, |d| d.child(div().w(px(170.)).flex_shrink_0().text_xs().font_family(mono.clone()).overflow_hidden().text_ellipsis().children(policy)))
+                    .child(div().w(px(220.)).flex_shrink_0().when(!has_desc, |d| d.flex_1()).child(tags_cell))
+                    .when(has_policy, |d| d.child(div().w(px(policy_w)).flex_shrink_0().text_xs().font_family(mono.clone()).overflow_hidden().text_ellipsis().children(policy)))
                     .when(has_tests, |d| d.child(div().w(px(140.)).flex_shrink_0().child(tests_cell(i, &r.tests, cx))))
                     .on_click(cx.listener(move |t, _, _, cx| t.select_col(name.clone(), cx))),
             );
