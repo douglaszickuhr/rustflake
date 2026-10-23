@@ -64,6 +64,11 @@ pub enum Section {
     Custom(usize),
 }
 
+/// Postgres has only the data grid; Snowflake opens on Definition and loads data on first view.
+fn first_section(d: Dialect) -> Section {
+    if d == Dialect::Snowflake { Section::Definition } else { Section::Data }
+}
+
 /// Custom tab from the configuration: SQL (own grid, runs on open) or URL.
 pub(crate) struct CustomSection {
     pub(crate) name: SharedString,
@@ -114,7 +119,7 @@ pub struct TableTab {
     /// Data only queries when first shown (it's no longer the opening section).
     pub(crate) data_started: bool,
     pub(crate) def_sort: (DefSort, bool),
-    grid: Entity<TableState<ResultGrid>>,
+    pub(crate) grid: Entity<TableState<ResultGrid>>,
     pub(crate) target: Option<EditTarget>,
     sort: Option<(usize, bool)>,
     status: SharedString,
@@ -241,6 +246,7 @@ impl TableTab {
             _ => {}
         }));
         subs.extend(custom.iter().filter_map(|c| c.grid.as_ref()).map(|g| cx.observe(g, |_, _, cx| cx.notify())));
+        let section = first_section(meta.read(cx).cache.dialect);
         let mut this = TableTab {
             focus: cx.focus_handle(),
             schema,
@@ -260,7 +266,7 @@ impl TableTab {
             after_load: None,
             loaded_once: false,
             _busy: None,
-            section: Section::Definition,
+            section,
             data_started: false,
             dbt: dbt.clone(),
             open_query,
@@ -686,5 +692,17 @@ impl TableTab {
                     .child(self.status.clone()),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Section, first_section};
+    use rb_core::dialect::Dialect;
+
+    #[test]
+    fn postgres_tables_open_on_their_data() {
+        assert!(first_section(Dialect::Postgres) == Section::Data);
+        assert!(first_section(Dialect::Snowflake) == Section::Definition);
     }
 }
