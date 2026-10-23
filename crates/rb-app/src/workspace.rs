@@ -344,7 +344,10 @@ impl Workspace {
                         ws.objects_open = true;
                         ws.on_connected(&id, window, cx);
                     }
-                    Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => ws.confirm_trust(&id, host, port, fingerprint, key, window, cx),
+                    Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => {
+                        let (ws, id) = (cx.entity().downgrade(), id.clone());
+                        confirm_trust(host, port, fingerprint, key, move |window, cx| ws.update(cx, |ws, cx| ws.connect(&id, window, cx)).unwrap_or(()), window, cx);
+                    }
                     Err(e) => window.push_notification(Notification::error(t!("ws.connect_failed", error = e).to_string()), cx),
                 }
                 ws.reconnect_next(window, cx);
@@ -865,30 +868,6 @@ impl Workspace {
             return;
         }
         self.disconnect(id, cx);
-    }
-
-    /// SSH host not in known_hosts: shows the fingerprint and, if the user trusts it, saves and reconnects.
-    #[allow(clippy::too_many_arguments)]
-    fn confirm_trust(&mut self, id: &str, host: String, port: u16, fingerprint: String, key: String, window: &mut Window, cx: &mut Context<Self>) {
-        let ws = cx.entity().downgrade();
-        let id = id.to_string();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let (ws, host, key, id) = (ws.clone(), host.clone(), key.clone(), id.clone());
-            dialog.title(t!("ws.unknown_host_title").to_string()).w(px(480.)).child(t!("ws.unknown_host_body", host = host, port = port, fingerprint = fingerprint).to_string()).footer(
-                h_flex().justify_end().gap_2().child(Button::new("trust-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx))).child(
-                    Button::new("trust-ok").label(t!("ws.trust").to_string()).primary().on_click(move |_, window, cx| {
-                        window.close_dialog(cx);
-                        // ponytail: one-line append to known_hosts on the UI thread; small file.
-                        match ssh::trust_host(&SshEnv::system().known_hosts, &host, port, &key) {
-                            Ok(()) => {
-                                ws.update(cx, |ws, cx| ws.connect(&id, window, cx)).ok();
-                            }
-                            Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
-                        }
-                    }),
-                ),
-            )
-        });
     }
 
     /// Lists warehouses or roles (`SHOW …`) and runs `USE …` on the chosen one; the session is shared.
@@ -1649,4 +1628,24 @@ mod tests {
         assert_eq!(tab_width(1000., 9), (TAB_MIN, true), "below the minimum: scroll and show the menu");
         assert_eq!(tab_width(0., 3), (TAB_MAX, false), "before the first measurement");
     }
+}
+
+/// SSH host not in known_hosts: shows the fingerprint and, if the user trusts it, saves it and runs `on_trusted`.
+pub(crate) fn confirm_trust(host: String, port: u16, fingerprint: String, key: String, on_trusted: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+    let on_trusted = Rc::new(on_trusted);
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (host, key, on_trusted) = (host.clone(), key.clone(), on_trusted.clone());
+        dialog.title(t!("ws.unknown_host_title").to_string()).w(px(480.)).child(t!("ws.unknown_host_body", host = host, port = port, fingerprint = fingerprint).to_string()).footer(
+            h_flex().justify_end().gap_2().child(Button::new("trust-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx))).child(
+                Button::new("trust-ok").label(t!("ws.trust").to_string()).primary().on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    // ponytail: one-line append to known_hosts on the UI thread; small file.
+                    match ssh::trust_host(&SshEnv::system().known_hosts, &host, port, &key) {
+                        Ok(()) => on_trusted(window, cx),
+                        Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+                    }
+                }),
+            ),
+        )
+    });
 }

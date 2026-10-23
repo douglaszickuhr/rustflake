@@ -189,6 +189,44 @@ impl Engine {
     }
 }
 
+/// What a successful connection test found.
+#[derive(Debug, Clone)]
+pub struct TestReport {
+    /// Server and who the session runs as, e.g. `PostgreSQL 17.2 · postgres`.
+    pub summary: String,
+    /// From the start to the answer of the first query (login included).
+    pub elapsed: Duration,
+}
+
+impl Engine {
+    /// Connects with `cfg`/`creds`, runs one query and closes. Skips the shared tunnels and Snowflake
+    /// sessions, so an open connection with the same id never stands in for new settings. SSO opens the
+    /// browser and leaves the stored ID token alone.
+    pub async fn test(&self, cfg: &ConnectionConfig, creds: Credentials) -> Result<TestReport, DbError> {
+        let (cfg, env, handle) = (cfg.clone(), self.ssh_env.clone(), self.rt.handle().clone());
+        self.rt
+            .spawn(async move {
+                let started = Instant::now();
+                let (session, sql) = if cfg.snowflake.is_some() {
+                    let shared = Arc::new(SfShared::login(&cfg, &creds, false).await?);
+                    (Session::open_snowflake(shared, handle), "select 'Snowflake ' || current_version(), current_user(), current_role(), current_warehouse()")
+                } else {
+                    let tunnel = match &cfg.ssh {
+                        None => None,
+                        Some(ssh) => Some((Arc::new(Tunnel::connect(ssh.resolve(&env)?, creds.ssh_passphrase.clone()).await?), cfg.host.clone(), cfg.port)),
+                    };
+                    let pg = cfg.pg_config(creds.password.as_deref());
+                    (Session::open(Connector { pg, tunnel }, handle).await?, "select 'PostgreSQL ' || split_part(current_setting('server_version'), ' ', 1), current_user")
+                };
+                let (_, rows) = session.query_named(sql).await?;
+                let summary = rows.into_iter().next().unwrap_or_default().into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                Ok(TestReport { summary, elapsed: started.elapsed() })
+            })
+            .await
+            .map_err(|e| DbError::Connection(e.to_string()))?
+    }
+}
+
 /// ponytail: two sessions opening at the same time may do two logins; the second stays in the cache.
 async fn shared_snowflake(cache: &SnowflakeCache, cfg: &ConnectionConfig, creds: &Credentials) -> Result<Arc<SfShared>, DbError> {
     let s = cfg.snowflake.clone().expect("called only with a snowflake block");
@@ -196,7 +234,7 @@ async fn shared_snowflake(cache: &SnowflakeCache, cfg: &ConnectionConfig, creds:
     if let Some(t) = cache.lock().expect("cache Snowflake").get(&key).and_then(Weak::upgrade) {
         return Ok(t);
     }
-    let shared = Arc::new(SfShared::login(cfg, creds).await?);
+    let shared = Arc::new(SfShared::login(cfg, creds, true).await?);
     cache.lock().expect("cache Snowflake").insert(key, Arc::downgrade(&shared));
     Ok(shared)
 }

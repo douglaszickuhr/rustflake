@@ -5,6 +5,15 @@ use rb_core::session::{Engine, Session};
 
 /// Test connection from RB_TEST_DATABASE_URL; `None` if the variable is not set.
 pub fn open() -> Option<(Engine, Session)> {
+    let (cfg, password) = target()?;
+    let engine = Engine::new().expect("runtime");
+    let creds = rb_core::session::Credentials { password, ..Default::default() };
+    let session = pollster::block_on(engine.connect(&cfg, creds)).expect("connect to the test Postgres");
+    Some((engine, session))
+}
+
+/// Config and password from RB_TEST_DATABASE_URL; `None` if the variable is not set.
+pub fn target() -> Option<(ConnectionConfig, Option<String>)> {
     let url = std::env::var("RB_TEST_DATABASE_URL").ok()?;
     let pg: tokio_postgres::Config = url.parse().expect("RB_TEST_DATABASE_URL invalid");
     let host = match &pg.get_hosts()[0] {
@@ -24,10 +33,7 @@ pub fn open() -> Option<(Engine, Session)> {
         snowflake: None,
     };
     let password = pg.get_password().map(|p| String::from_utf8_lossy(p).into_owned());
-    let engine = Engine::new().expect("runtime");
-    let creds = rb_core::session::Credentials { password, ..Default::default() };
-    let session = pollster::block_on(engine.connect(&cfg, creds)).expect("connect to the test Postgres");
-    Some((engine, session))
+    Some((cfg, password))
 }
 
 pub fn skip() {

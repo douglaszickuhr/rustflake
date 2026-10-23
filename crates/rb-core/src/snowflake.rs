@@ -303,7 +303,8 @@ impl Sso {
 }
 
 impl SfShared {
-    pub(crate) async fn login(cfg: &ConnectionConfig, creds: &Credentials) -> Result<SfShared, DbError> {
+    /// `remember_sso`: SSO reads and stores the ID token in the Keychain (off for connection tests).
+    pub(crate) async fn login(cfg: &ConnectionConfig, creds: &Credentials, remember_sso: bool) -> Result<SfShared, DbError> {
         let s = cfg.snowflake.as_ref().ok_or_else(|| DbError::Config(t!("err.sf_no_block").to_string()))?;
         let auth = match s.auth {
             SnowflakeAuth::ExternalBrowser => sf::AuthConfig::external_browser(sf::ExternalBrowserConfig::default()),
@@ -327,7 +328,7 @@ impl SfShared {
             // The connector presents itself as the Go driver (to get the SSO ID token) and the server
             // then answers in Arrow, which the connector can't read: asks for JSON.
             .with_session_parameter("GO_QUERY_RESULT_FORMAT", serde_json::Value::String("JSON".into()));
-        let is_sso = s.auth == SnowflakeAuth::ExternalBrowser;
+        let is_sso = s.auth == SnowflakeAuth::ExternalBrowser && remember_sso;
         if is_sso {
             // Asks for the ID token on SSO login (the account needs ALLOW_ID_TOKEN = true).
             session = session.with_session_parameter("CLIENT_STORE_TEMPORARY_CREDENTIAL", serde_json::Value::Bool(true));

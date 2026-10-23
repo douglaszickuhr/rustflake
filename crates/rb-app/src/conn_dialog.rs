@@ -4,21 +4,25 @@ use std::rc::Rc;
 
 use std::path::Path;
 
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::form::{field, v_form};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{Select, SelectState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{IconName, IndexPath, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rb_core::config::{ConnectionConfig, DbtConfig, Environment, SnowflakeAuth, SnowflakeConfig, SshConfig, SslMode, new_id};
+use rb_core::secrets;
+use rb_core::session::Credentials;
 use rb_core::ssh::{SshEnv, host_aliases};
 
 use crate::dbt_store::DbtStore;
-use crate::workspace::{Workspace, kind_logo};
+use crate::workspace::{Workspace, confirm_trust, kind_logo};
 
 const SSL_MODES: [&str; 3] = ["disable", "prefer", "require"];
 
@@ -64,6 +68,79 @@ struct Fields {
     org_paste: Entity<TextareaState>,
     /// Result of the last import (Ok = what was installed), shown under the field.
     org_msg: Rc<RefCell<Option<Result<String, String>>>>,
+    test: Rc<RefCell<TestState>>,
+}
+
+/// "Test connection" in the footer: a run in progress (by number) or the last result.
+#[derive(Default)]
+enum TestState {
+    #[default]
+    Idle,
+    Running(u64),
+    Done(Result<String, String>),
+}
+
+/// Tests what the form holds without saving it; blank secrets come from the Keychain (editing keeps them
+/// blank). Clicking while it runs cancels: the result of that run is ignored.
+fn run_test(f: &Rc<Fields>, window: &mut Window, cx: &mut App) {
+    // ponytail: cancelling ignores the run; a pending login (SSO browser) times out on its own.
+    if matches!(*f.test.borrow(), TestState::Running(_)) {
+        *f.test.borrow_mut() = TestState::Idle;
+        window.refresh();
+        return;
+    }
+    let (cfg, password, passphrase) = match f.read(cx) {
+        Ok(v) => v,
+        Err(e) => {
+            *f.test.borrow_mut() = TestState::Done(Err(e));
+            window.refresh();
+            return;
+        }
+    };
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    *f.test.borrow_mut() = TestState::Running(run);
+    window.refresh();
+    let engine = cx.global::<crate::Db>().0.clone();
+    let f = f.clone();
+    window
+        .spawn(cx, async move |cx| {
+            let (id, has_ssh, is_sf) = (cfg.id.clone(), cfg.ssh.is_some(), cfg.snowflake.is_some());
+            let creds = cx
+                .background_executor()
+                .spawn(async move {
+                    let secret = |account: String, typed: String| if typed.is_empty() { secrets::get_password(&account) } else { Ok(Some(typed)) };
+                    Ok::<_, rb_core::DbError>(Credentials {
+                        password: secret(id.clone(), password)?,
+                        ssh_passphrase: if has_ssh && !is_sf { secret(secrets::ssh_account(&id), passphrase.clone())? } else { None },
+                        key_passphrase: if is_sf { secret(secrets::key_account(&id), passphrase)? } else { None },
+                    })
+                })
+                .await;
+            let result = match creds {
+                Ok(creds) => engine.test(&cfg, creds).await,
+                Err(e) => Err(e),
+            };
+            cx.update(|window, cx| {
+                if !matches!(*f.test.borrow(), TestState::Running(r) if r == run) {
+                    return;
+                }
+                let done = match result {
+                    Ok(r) => Ok(t!("conn.test_ok", info = r.summary, ms = r.elapsed.as_millis()).to_string()),
+                    Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => {
+                        *f.test.borrow_mut() = TestState::Idle;
+                        let f = f.clone();
+                        confirm_trust(host, port, fingerprint, key, move |window, cx| run_test(&f, window, cx), window, cx);
+                        return;
+                    }
+                    Err(e) => Err(e.to_string()),
+                };
+                *f.test.borrow_mut() = TestState::Done(done);
+                window.refresh();
+            })
+            .ok();
+        })
+        .detach();
 }
 
 /// Installs a configuration's text (validated, saved under configurations/) and selects it.
@@ -376,6 +453,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
         org_url: cx.new(|cx| InputState::new(window, cx).placeholder("https://…/acme.toml")),
         org_paste: cx.new(|cx| TextareaState::new(window, cx).rows(8).placeholder(t!("conn.config_paste_hint").to_string())),
         org_msg: Rc::new(RefCell::new(None)),
+        test: Rc::default(),
     });
     // Folder/target changed: the card reloads its manifest.
     for input in [f.dbt_dir.clone(), f.dbt_target.clone(), f.dbt_aws.clone()] {
@@ -410,7 +488,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
 
     let ws = cx.entity().downgrade();
     let (title, keep) = if editing { (t!("conn.edit_title").to_string(), format!(" {}", t!("conn.keep_current"))) } else { (t!("conn.new_title").to_string(), String::new()) };
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    window.open_dialog(cx, move |dialog, _window, cx| {
         let (f, ws, aliases, targets) = (f.clone(), ws.clone(), aliases.clone(), resolved_targets.clone());
         // The builder runs on every render: the type and auth buttons swap the fields.
         let snowflake = f.snowflake.get();
@@ -527,9 +605,25 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                     .child(field().child(f.dbt_card.clone()))
             }
         };
-        let form = v_flex().gap_3().child(bar).child(form);
-        dialog.title(title.clone()).w(px(560.)).child(form).footer(
-            h_flex().justify_end().gap_2().child(Button::new("conn-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx))).child(
+        let (running, outcome) = match &*f.test.borrow() {
+            TestState::Running(_) => (true, None),
+            TestState::Done(r) => (false, Some(r.clone())),
+            TestState::Idle => (false, None),
+        };
+        let outcome = outcome.map(|r| match r {
+            Ok(msg) => div().text_sm().text_color(cx.theme().success).child(format!("✓ {msg}")),
+            Err(msg) => div().text_sm().text_color(cx.theme().danger).child(format!("✗ {msg}")),
+        });
+        let form = v_flex().gap_3().child(bar).child(form).children(outcome);
+        let test = {
+            let f = f.clone();
+            h_flex()
+                .gap_2()
+                .when(running, |d| d.child(Spinner::new().small()))
+                .child(Button::new("conn-test").label(if running { t!("conn.test_cancel") } else { t!("conn.test") }.to_string()).on_click(move |_, window, cx| run_test(&f, window, cx)))
+        };
+        dialog.title(title.clone()).w(px(560.)).child(form).footer(h_flex().justify_between().w_full().child(test).child(
+            h_flex().gap_2().child(Button::new("conn-cancel").label(t!("common.cancel").to_string()).on_click(|_, window, cx| window.close_dialog(cx))).child(
                 Button::new("conn-save").label(t!("common.save").to_string()).primary().on_click(move |_, window, cx| match f.read(cx) {
                     Ok((cfg, password, passphrase)) => {
                         let saved = ws.update(cx, |ws, cx| ws.save_connection(cfg, password, passphrase, window, cx)).unwrap_or(false);
@@ -540,7 +634,7 @@ pub fn open(existing: Option<ConnectionConfig>, window: &mut Window, cx: &mut Co
                     Err(msg) => window.push_notification(Notification::error(msg), cx),
                 }),
             ),
-        )
+        ))
     });
 }
 

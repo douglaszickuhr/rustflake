@@ -153,6 +153,21 @@ en = "Edit connection"
 pt = "Editar conexão"
 es = "Editar conexión"
 
+[conn.test]
+en = "Test connection"
+pt = "Testar conexão"
+es = "Probar conexión"
+
+[conn.test_cancel]
+en = "Cancel test"
+pt = "Cancelar teste"
+es = "Cancelar prueba"
+
+[conn.test_ok]
+en = "Connected · %{info} · %{ms} ms"
+pt = "Conectado · %{info} · %{ms} ms"
+es = "Conectado · %{info} · %{ms} ms"
+
 [conn.keep_current]
 en = "(leave blank to keep the current one)"
 pt = "(em branco mantém a atual)"
