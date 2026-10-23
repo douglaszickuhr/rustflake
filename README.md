@@ -12,9 +12,6 @@ It is written in Rust on [GPUI](https://www.gpui.rs/). It starts in less than on
 1. Download the `.dmg` file from [Releases](https://github.com/douglaszickuhr/rustflake/releases/latest).
 2. Open the file and move **rustflake** to **Applications**.
 
-The app is signed and notarized. It needs macOS 11 or later on Apple Silicon.
-When macOS asks for Keychain access, click **Always Allow**.
-
 ## Features
 
 - **Editor**: autocomplete, column hover with sample values, formatter, query history.
