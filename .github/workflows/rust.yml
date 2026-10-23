@@ -16,7 +16,20 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - uses: Swatinem/rust-cache@v2
+
+    # The integration and flow tests run against it (they are skipped without RB_TEST_DATABASE_URL).
+    # Password auth, so the wrong-password checks mean something.
+    - name: Start PostgreSQL
+      run: |
+        brew install postgresql@17
+        pg="$(brew --prefix postgresql@17)/bin"
+        echo rb > "$RUNNER_TEMP/pgpass"
+        "$pg/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=scram-sha-256 --pwfile="$RUNNER_TEMP/pgpass"
+        "$pg/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 55432" -l "$RUNNER_TEMP/pg.log" -w start
+        echo "RB_TEST_DATABASE_URL=postgres://postgres:rb@localhost:55432/postgres" >> "$GITHUB_ENV"
+
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --workspace --verbose

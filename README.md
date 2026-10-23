@@ -56,6 +56,9 @@ cargo run --release -p rb-app   # build and run
 cargo test --workspace          # unit tests
 ```
 
+To also run the integration and app flow tests, set `RB_TEST_DATABASE_URL` to a PostgreSQL URL with a password
+(for example `postgres://postgres:rb@localhost:55432/postgres`).
+
 To stop Keychain prompts after each build, run `scripts/dev-cert.sh` one time.
 
 To make a release, set the same `version` in `crates/*/Cargo.toml`. Then push a tag:
