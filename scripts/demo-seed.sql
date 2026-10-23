@@ -1,4 +1,4 @@
--- Demo shop for README recordings (scripts/record-demo.sh). Deterministic; recreates the `shop` schema.
+-- Demo shop for README recordings: docker run -d --name rb-demo -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=demo -p 55433:5432 postgres:17
 select setseed(0.42);
 drop schema if exists shop cascade;
 create schema shop;
@@ -82,4 +82,5 @@ where o.status in ('delivered', 'shipped')
 group by c.id, c.name, c.country;
 
 comment on table shop.orders is 'One row per checkout; total is the sum of its items.';
+alter database demo set search_path = shop, public;
 analyze;
