@@ -46,12 +46,6 @@ Click **+** in the status bar to see all shortcuts.
 rustflake keeps its data in `~/Library/Application Support/rustflake/`.
 Only your user can read this folder. Passwords are not in this folder.
 
-## Snowflake SSO
-
-rustflake keeps the SSO token in the Keychain. Thus, the browser does not open each time you connect.
-For this, the app connects as the Snowflake Go driver. The account must have `ALLOW_ID_TOKEN = TRUE`.
-See [`vendor/snowflake-connector-rs/PATCH.md`](vendor/snowflake-connector-rs/PATCH.md).
-
 ## Development
 
 You need macOS and Rust stable (edition 2024).
