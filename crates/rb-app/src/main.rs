@@ -29,6 +29,9 @@ mod warehouse_tab;
 mod workspace;
 mod zoom;
 
+#[cfg(test)]
+mod flows;
+
 use std::time::Instant;
 
 use gpui_kit::*;
@@ -145,6 +148,72 @@ fn set_dock_icon() {
     }
 }
 
+/// Globals, settings and key bindings: everything but the window (shared with the flow tests).
+fn init(cx: &mut App, engine: Engine) {
+    gpui_kit::init(cx);
+    settings::init(cx);
+    lang::init(cx);
+    appearance::init(cx);
+    cx.set_global(Db(engine));
+    cx.bind_keys([
+        KeyBinding::new("secondary-enter", RunStatement, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-shift-enter", RunScript, Some("SqlTab > Input")),
+        // The editor binds nothing to ShowCompletions by default. macOS takes ⌃Space for "previous input
+        // source" unless the user turns it off, so ⌘I (as in VS Code) always works.
+        KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-i", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
+        // Tab accepts the autocomplete suggestion like Enter; with no menu open, it indents.
+        KeyBinding::new("tab", TabKey, Some("SqlTab > Input")),
+        // ⌘⇧F formats (like DBeaver); the editor's find and replace, which used ⌘⇧F, moves to ⌘⌥F.
+        KeyBinding::new("secondary-shift-f", FormatSql, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-/", ToggleComment, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-alt-f", gpui_kit::component::input::Replace, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-e", ExplainEstimate, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-shift-e", ExplainAnalyze, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-=", PlanZoomIn, Some("PlanView")),
+        KeyBinding::new("secondary-+", PlanZoomIn, Some("PlanView")),
+        KeyBinding::new("secondary--", PlanZoomOut, Some("PlanView")),
+        KeyBinding::new("secondary-0", PlanFit, Some("PlanView")),
+        KeyBinding::new("escape", ClearLineage, Some("PlanView")),
+        KeyBinding::new("secondary-=", PlanZoomIn, Some("SqlTab")),
+        KeyBinding::new("secondary-+", PlanZoomIn, Some("SqlTab")),
+        KeyBinding::new("secondary--", PlanZoomOut, Some("SqlTab")),
+        KeyBinding::new("secondary-0", PlanFit, Some("SqlTab")),
+        KeyBinding::new("secondary-.", CancelQuery, Some("SqlTab")),
+        // The editor binds cmd-. to ToggleCodeActions; the deeper binding wins.
+        KeyBinding::new("secondary-.", CancelQuery, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-.", CancelQuery, Some("TableTab")),
+        KeyBinding::new("secondary-s", SaveEdits, Some("TableTab")),
+        KeyBinding::new("secondary-t", NewSqlTab, Some("Workspace")),
+        KeyBinding::new("secondary-w", CloseTab, Some("Workspace")),
+        KeyBinding::new("f5", RefreshNode, Some("SchemaTree")),
+        KeyBinding::new("secondary-r", RefreshNode, Some("SchemaTree")),
+        KeyBinding::new("secondary-c", CopyCells, Some("ResultGrid")),
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-k", QuickOpen, Some("Workspace")),
+        KeyBinding::new("secondary-y", ShowHistory, Some("Workspace")),
+        KeyBinding::new("secondary-,", EditConnection, Some("Workspace")),
+        KeyBinding::new("secondary-r", Refresh, Some("Workspace")),
+        KeyBinding::new("secondary-1", SelectTab(0), Some("Workspace")),
+        KeyBinding::new("secondary-2", SelectTab(1), Some("Workspace")),
+        KeyBinding::new("secondary-3", SelectTab(2), Some("Workspace")),
+        KeyBinding::new("secondary-4", SelectTab(3), Some("Workspace")),
+        KeyBinding::new("secondary-5", SelectTab(4), Some("Workspace")),
+        KeyBinding::new("secondary-6", SelectTab(5), Some("Workspace")),
+        KeyBinding::new("secondary-7", SelectTab(6), Some("Workspace")),
+        KeyBinding::new("secondary-8", SelectTab(7), Some("Workspace")),
+        // Like browsers: ⌘9 is the last tab, however many there are.
+        KeyBinding::new("secondary-9", SelectTab(usize::MAX), Some("Workspace")),
+        // The field uses ↑↓ to move the cursor; the deeper binding wins.
+        KeyBinding::new("up", QuickPrev, Some("QuickOpen > Input")),
+        KeyBinding::new("down", QuickNext, Some("QuickOpen > Input")),
+        // Enter as our own action, like ↑↓: the field's Enter is an event delivered later and also
+        // reaches the dialog's Confirm, which can close it before the pick runs.
+        KeyBinding::new("enter", QuickPick, Some("QuickOpen > Input")),
+    ]);
+    cx.on_action(|_: &Quit, cx| cx.quit());
+}
+
 fn main() {
     let started = Instant::now();
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
@@ -152,7 +221,7 @@ fn main() {
     let engine = Engine::new().expect("create database runtime");
 
     gpui_kit::application().with_assets(AppAssets).run(move |cx: &mut App| {
-        gpui_kit::init(cx);
+        init(cx, engine);
         // Geist (OFL) in the binary: the canvas look doesn't depend on what's installed.
         let fonts: Vec<std::borrow::Cow<'static, [u8]>> = vec![
             include_bytes!("../assets/fonts/Geist-Regular.ttf").as_slice().into(),
@@ -166,69 +235,8 @@ fn main() {
         if let Err(e) = cx.text_system().add_fonts(fonts) {
             tracing::warn!("Geist fonts: {e}");
         }
-        settings::init(cx);
-        lang::init(cx);
-        appearance::init(cx);
         #[cfg(target_os = "macos")]
         set_dock_icon();
-        cx.set_global(Db(engine));
-        cx.bind_keys([
-            KeyBinding::new("secondary-enter", RunStatement, Some("SqlTab > Input")),
-            KeyBinding::new("secondary-shift-enter", RunScript, Some("SqlTab > Input")),
-            // The editor binds nothing to ShowCompletions by default. macOS takes ⌃Space for "previous input
-            // source" unless the user turns it off, so ⌘I (as in VS Code) always works.
-            KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
-            KeyBinding::new("secondary-i", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
-            // Tab accepts the autocomplete suggestion like Enter; with no menu open, it indents.
-            KeyBinding::new("tab", TabKey, Some("SqlTab > Input")),
-            // ⌘⇧F formats (like DBeaver); the editor's find and replace, which used ⌘⇧F, moves to ⌘⌥F.
-            KeyBinding::new("secondary-shift-f", FormatSql, Some("SqlTab > Input")),
-            KeyBinding::new("secondary-/", ToggleComment, Some("SqlTab > Input")),
-            KeyBinding::new("secondary-alt-f", gpui_kit::component::input::Replace, Some("SqlTab > Input")),
-            KeyBinding::new("secondary-e", ExplainEstimate, Some("SqlTab > Input")),
-            KeyBinding::new("secondary-shift-e", ExplainAnalyze, Some("SqlTab > Input")),
-            KeyBinding::new("secondary-=", PlanZoomIn, Some("PlanView")),
-            KeyBinding::new("secondary-+", PlanZoomIn, Some("PlanView")),
-            KeyBinding::new("secondary--", PlanZoomOut, Some("PlanView")),
-            KeyBinding::new("secondary-0", PlanFit, Some("PlanView")),
-            KeyBinding::new("escape", ClearLineage, Some("PlanView")),
-            KeyBinding::new("secondary-=", PlanZoomIn, Some("SqlTab")),
-            KeyBinding::new("secondary-+", PlanZoomIn, Some("SqlTab")),
-            KeyBinding::new("secondary--", PlanZoomOut, Some("SqlTab")),
-            KeyBinding::new("secondary-0", PlanFit, Some("SqlTab")),
-            KeyBinding::new("secondary-.", CancelQuery, Some("SqlTab")),
-            // The editor binds cmd-. to ToggleCodeActions; the deeper binding wins.
-            KeyBinding::new("secondary-.", CancelQuery, Some("SqlTab > Input")),
-            KeyBinding::new("secondary-.", CancelQuery, Some("TableTab")),
-            KeyBinding::new("secondary-s", SaveEdits, Some("TableTab")),
-            KeyBinding::new("secondary-t", NewSqlTab, Some("Workspace")),
-            KeyBinding::new("secondary-w", CloseTab, Some("Workspace")),
-            KeyBinding::new("f5", RefreshNode, Some("SchemaTree")),
-            KeyBinding::new("secondary-r", RefreshNode, Some("SchemaTree")),
-            KeyBinding::new("secondary-c", CopyCells, Some("ResultGrid")),
-            KeyBinding::new("secondary-q", Quit, None),
-            KeyBinding::new("secondary-k", QuickOpen, Some("Workspace")),
-            KeyBinding::new("secondary-y", ShowHistory, Some("Workspace")),
-            KeyBinding::new("secondary-,", EditConnection, Some("Workspace")),
-            KeyBinding::new("secondary-r", Refresh, Some("Workspace")),
-            KeyBinding::new("secondary-1", SelectTab(0), Some("Workspace")),
-            KeyBinding::new("secondary-2", SelectTab(1), Some("Workspace")),
-            KeyBinding::new("secondary-3", SelectTab(2), Some("Workspace")),
-            KeyBinding::new("secondary-4", SelectTab(3), Some("Workspace")),
-            KeyBinding::new("secondary-5", SelectTab(4), Some("Workspace")),
-            KeyBinding::new("secondary-6", SelectTab(5), Some("Workspace")),
-            KeyBinding::new("secondary-7", SelectTab(6), Some("Workspace")),
-            KeyBinding::new("secondary-8", SelectTab(7), Some("Workspace")),
-            // Like browsers: ⌘9 is the last tab, however many there are.
-            KeyBinding::new("secondary-9", SelectTab(usize::MAX), Some("Workspace")),
-            // The field uses ↑↓ to move the cursor; the deeper binding wins.
-            KeyBinding::new("up", QuickPrev, Some("QuickOpen > Input")),
-            KeyBinding::new("down", QuickNext, Some("QuickOpen > Input")),
-            // Enter as our own action, like ↑↓: the field's Enter is an event delivered later and also
-            // reaches the dialog's Confirm, which can close it before the pick runs.
-            KeyBinding::new("enter", QuickPick, Some("QuickOpen > Input")),
-        ]);
-        cx.on_action(|_: &Quit, cx| cx.quit());
 
         let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
         let options = WindowOptions {

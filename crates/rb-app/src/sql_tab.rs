@@ -181,6 +181,12 @@ pub struct SqlTab {
 }
 
 impl SqlTab {
+    /// Rows in each result pane (flow tests).
+    #[cfg(test)]
+    pub(crate) fn result_rows(&self, cx: &App) -> Vec<usize> {
+        self.results.iter().map(|r| r.grid.read(cx).delegate().rs.as_ref().map_or(0, |rs| rs.rows())).collect()
+    }
+
     /// A query starts: clears the last error and closes the completion popup (it stayed open over the results).
     fn start_running(&mut self, cx: &mut Context<Self>) {
         self.running = true;

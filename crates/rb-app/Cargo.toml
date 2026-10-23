@@ -29,3 +29,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
+
+# Headless windows for the flow tests (src/flows.rs). gpui-kit's own `test-support` also names the optional
+# gpui-fast backend, which pulls a conflicting `cocoa`; turning it on in the crates gpui-kit uses avoids that.
+[dev-dependencies]
+gpui-pre = { version = "=0.3.9", features = ["test-support"] }
+gpui-pre-platform = { version = "=0.3.9", features = ["test-support"] }
+gpui-base = { version = "=0.7.3", features = ["test-support"] }
+gpui-component = { version = "=0.7.3", features = ["test-support"] }
+# Already in the build (rb-core): set up data and read RB_TEST_DATABASE_URL.
+pollster = "1"
+tokio-postgres = "0.7.18"

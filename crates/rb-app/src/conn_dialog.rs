@@ -80,6 +80,23 @@ enum TestState {
     Done(Result<String, String>),
 }
 
+/// A test's credentials: what the form holds, or the Keychain's for blank fields (editing keeps them blank).
+/// Blocks on the Keychain.
+pub(crate) fn test_creds(cfg: &ConnectionConfig, password: String, passphrase: String) -> Result<Credentials, rb_core::DbError> {
+    let (id, has_ssh, is_sf) = (&cfg.id, cfg.ssh.is_some(), cfg.snowflake.is_some());
+    let secret = |account: String, typed: String| if typed.is_empty() { secrets::get_password(&account) } else { Ok(Some(typed)) };
+    Ok(Credentials {
+        password: secret(id.clone(), password)?,
+        ssh_passphrase: if has_ssh && !is_sf { secret(secrets::ssh_account(id), passphrase.clone())? } else { None },
+        key_passphrase: if is_sf { secret(secrets::key_account(id), passphrase)? } else { None },
+    })
+}
+
+/// The line under the form once a test ends.
+pub(crate) fn test_line(r: Result<rb_core::session::TestReport, rb_core::DbError>) -> Result<String, String> {
+    r.map(|r| t!("conn.test_ok", info = r.summary, ms = r.elapsed.as_millis()).to_string()).map_err(|e| e.to_string())
+}
+
 /// Tests what the form holds without saving it; blank secrets come from the Keychain (editing keeps them
 /// blank). Clicking while it runs cancels: the result of that run is ignored.
 fn run_test(f: &Rc<Fields>, window: &mut Window, cx: &mut App) {
@@ -105,18 +122,10 @@ fn run_test(f: &Rc<Fields>, window: &mut Window, cx: &mut App) {
     let f = f.clone();
     window
         .spawn(cx, async move |cx| {
-            let (id, has_ssh, is_sf) = (cfg.id.clone(), cfg.ssh.is_some(), cfg.snowflake.is_some());
-            let creds = cx
-                .background_executor()
-                .spawn(async move {
-                    let secret = |account: String, typed: String| if typed.is_empty() { secrets::get_password(&account) } else { Ok(Some(typed)) };
-                    Ok::<_, rb_core::DbError>(Credentials {
-                        password: secret(id.clone(), password)?,
-                        ssh_passphrase: if has_ssh && !is_sf { secret(secrets::ssh_account(&id), passphrase.clone())? } else { None },
-                        key_passphrase: if is_sf { secret(secrets::key_account(&id), passphrase)? } else { None },
-                    })
-                })
-                .await;
+            let creds = {
+                let cfg = cfg.clone();
+                cx.background_executor().spawn(async move { test_creds(&cfg, password, passphrase) }).await
+            };
             let result = match creds {
                 Ok(creds) => engine.test(&cfg, creds).await,
                 Err(e) => Err(e),
@@ -126,14 +135,13 @@ fn run_test(f: &Rc<Fields>, window: &mut Window, cx: &mut App) {
                     return;
                 }
                 let done = match result {
-                    Ok(r) => Ok(t!("conn.test_ok", info = r.summary, ms = r.elapsed.as_millis()).to_string()),
                     Err(rb_core::DbError::HostKeyUnknown { host, port, fingerprint, key }) => {
                         *f.test.borrow_mut() = TestState::Idle;
                         let f = f.clone();
                         confirm_trust(host, port, fingerprint, key, move |window, cx| run_test(&f, window, cx), window, cx);
                         return;
                     }
-                    Err(e) => Err(e.to_string()),
+                    r => test_line(r),
                 };
                 *f.test.borrow_mut() = TestState::Done(done);
                 window.refresh();

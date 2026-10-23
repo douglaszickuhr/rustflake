@@ -254,6 +254,11 @@ impl Workspace {
 
     /// Closed: connects. Open: becomes current; if it already was, collapses/expands the tree.
     fn connect(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.connect_with(id, None, window, cx);
+    }
+
+    /// `creds`: None reads them from the Keychain (the flow tests pass their own).
+    pub(crate) fn connect_with(&mut self, id: &str, creds: Option<Arc<Credentials>>, window: &mut Window, cx: &mut Context<Self>) {
         // By id, not index: the list may change between a click being armed and running.
         let Some(ix) = self.conn_ix(id) else { return };
         let id = id.to_string();
@@ -280,16 +285,19 @@ impl Workspace {
                 let id = cfg.id.clone();
                 let has_ssh = cfg.ssh.is_some();
                 let is_sf = cfg.snowflake.is_some();
-                let creds: Arc<Credentials> = cx
-                    .background_spawn(async move {
-                        Ok::<_, rb_core::DbError>(Credentials {
-                            password: secrets::get_password(&id)?,
-                            ssh_passphrase: if has_ssh { secrets::get_password(&secrets::ssh_account(&id))? } else { None },
-                            key_passphrase: if is_sf { secrets::get_password(&secrets::key_account(&id))? } else { None },
+                let creds: Arc<Credentials> = match creds {
+                    Some(c) => c,
+                    None => cx
+                        .background_spawn(async move {
+                            Ok::<_, rb_core::DbError>(Credentials {
+                                password: secrets::get_password(&id)?,
+                                ssh_passphrase: if has_ssh { secrets::get_password(&secrets::ssh_account(&id))? } else { None },
+                                key_passphrase: if is_sf { secrets::get_password(&secrets::key_account(&id))? } else { None },
+                            })
                         })
-                    })
-                    .await
-                    .map(Arc::new)?;
+                        .await
+                        .map(Arc::new)?,
+                };
                 let session = engine.connect(&cfg, creds.clone()).await?;
                 // A missing or broken OrgConfig doesn't block the connection: proceeds without conventions and warns.
                 let name = cfg.snowflake.as_ref().and_then(|s| s.configuration.clone());
