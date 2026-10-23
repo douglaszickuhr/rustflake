@@ -90,7 +90,11 @@ impl From<tokio_postgres::Error> for DbError {
                     _ => None,
                 },
             },
-            None => DbError::Connection(e.to_string()),
+            // tokio-postgres's Display leaves out the cause ("error connecting to server" without "Connection refused").
+            None => DbError::Connection(match std::error::Error::source(&e) {
+                Some(cause) => format!("{e}: {cause}"),
+                None => e.to_string(),
+            }),
         }
     }
 }

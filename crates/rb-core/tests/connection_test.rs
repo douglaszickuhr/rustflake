@@ -15,3 +15,21 @@ fn test_reports_the_server_and_checks_the_password_it_is_given() {
     let _open = block_on(engine.connect(&cfg, creds(password))).expect("connect");
     assert!(block_on(engine.test(&cfg, creds(Some("wrong".into())))).is_err());
 }
+
+#[test]
+fn a_failed_test_says_why() {
+    let cfg = rb_core::config::ConnectionConfig {
+        environment: None,
+        id: "closed".into(),
+        name: "closed".into(),
+        host: "127.0.0.1".into(),
+        port: 1,
+        database: "postgres".into(),
+        user: "postgres".into(),
+        ssl: rb_core::config::SslMode::Disable,
+        ssh: None,
+        snowflake: None,
+    };
+    let err = block_on(Engine::new().expect("runtime").test(&cfg, Credentials::default())).expect_err("nothing listens on port 1").to_string();
+    assert!(err.to_lowercase().contains("refused"), "{err}");
+}
