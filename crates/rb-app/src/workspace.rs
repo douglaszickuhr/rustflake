@@ -1446,7 +1446,7 @@ fn shortcuts_list(cx: &App) -> AnyElement {
                 ("⌘/", "keys.comment"),
                 ("⌘F", "keys.find"),
                 ("⌥⌘F", "keys.replace"),
-                ("⌃Space", "keys.complete"),
+                ("⌘I", "keys.complete"),
                 ("⌘.", "keys.cancel"),
             ],
         ),

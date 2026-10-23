@@ -34,6 +34,7 @@ When macOS asks for Keychain access, click **Always Allow**.
 | ⌘↵ | Run the statement at the cursor |
 | ⌘⇧↵ | Run the script |
 | ⌘. | Stop the query |
+| ⌘I | Show the completions |
 | ⌘E / ⌘⇧E | Show the estimated / actual plan |
 | ⌘K | Go to anything |
 | ⌘Y | Show the query history |

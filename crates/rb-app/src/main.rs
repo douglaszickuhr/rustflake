@@ -175,8 +175,10 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("secondary-enter", RunStatement, Some("SqlTab > Input")),
             KeyBinding::new("secondary-shift-enter", RunScript, Some("SqlTab > Input")),
-            // The editor binds nothing to ShowCompletions by default.
+            // The editor binds nothing to ShowCompletions by default. macOS takes ⌃Space for "previous input
+            // source" unless the user turns it off, so ⌘I (as in VS Code) always works.
             KeyBinding::new("ctrl-space", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
+            KeyBinding::new("secondary-i", gpui_kit::component::input::ShowCompletions, Some("SqlTab > Input")),
             // Tab accepts the autocomplete suggestion like Enter; with no menu open, it indents.
             KeyBinding::new("tab", TabKey, Some("SqlTab > Input")),
             // ⌘⇧F formats (like DBeaver); the editor's find and replace, which used ⌘⇧F, moves to ⌘⌥F.
