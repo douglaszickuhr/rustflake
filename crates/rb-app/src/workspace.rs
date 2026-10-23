@@ -10,6 +10,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::popover::{Popover, PopoverState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex};
@@ -118,8 +119,8 @@ pub struct Workspace {
     drag_armed: bool,
     pub tabs: Vec<TabView>,
     pub active_tab: usize,
-    /// Connection being opened (name) and its task: dropping the task cancels the attempt.
-    connecting: Option<String>,
+    /// Connection being opened (id) and its task: dropping the task cancels the attempt.
+    pub(crate) connecting: Option<String>,
     connect_task: Option<Task<()>>,
     /// Connections to reopen at startup, one after the other (SSO opens one window at a time).
     reconnect_queue: VecDeque<String>,
@@ -270,7 +271,7 @@ impl Workspace {
         }
         // Another attempt in progress (SSO waiting, stuck network): this one replaces it.
         self.cancel_connect(cx);
-        self.connecting = Some(self.connections[ix].name.clone());
+        self.connecting = Some(id.clone());
         cx.notify();
         let cfg = self.connections[ix].clone();
         let engine = cx.global::<Db>().0.clone();
@@ -405,7 +406,8 @@ impl Workspace {
 
     /// "Connecting to X… · Cancel".
     fn connecting_row(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let name = self.connecting.clone()?;
+        let id = self.connecting.as_deref()?;
+        let name = self.connections.iter().find(|c| c.id == id)?.name.clone();
         Some(
             h_flex()
                 .gap_2()
@@ -1280,7 +1282,12 @@ impl Workspace {
             list = list.child(
                 h_flex()
                     .gap_1()
-                    .child(side_item(("e-conn", ix), Some(logo(c)), c.name.clone(), false, cx).flex_1().on_click(cx.listener(move |ws, _, w, cx| ws.connect(&id1, w, cx))))
+                    .child(
+                        side_item(("e-conn", ix), Some(logo(c)), c.name.clone(), false, cx)
+                            .flex_1()
+                            .when(self.connecting.as_deref() == Some(c.id.as_str()), |d| d.child(Spinner::new().xsmall()))
+                            .on_click(cx.listener(move |ws, _, w, cx| ws.connect(&id1, w, cx))),
+                    )
                     .when_some(c.environment, |d, e| d.child(div().text_xs().text_color(theme.muted_foreground).child(e.label())))
                     .child(
                         Button::new(("e-edit", ix)).label("✎").ghost().xsmall().tooltip(t!("conn.edit_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| ws.edit_connection(&id2, w, cx))),
@@ -1288,9 +1295,7 @@ impl Workspace {
                     .child(Button::new(("e-del", ix)).label("×").ghost().xsmall().tooltip(t!("ws.remove_title").to_string()).on_click(cx.listener(move |ws, _, w, cx| ws.confirm_remove(&id3, w, cx)))),
             );
         }
-        list = list
-            .child(side_item("e-new", None, t!("frame.new_connection").to_string(), false, cx).on_click(cx.listener(|_, _, w, cx| conn_dialog::open(None, w, cx))))
-            .children(self.connecting_row(cx).map(|r| div().pt_2().text_sm().text_color(theme.muted_foreground).child(r)));
+        list = list.child(side_item("e-new", None, t!("frame.new_connection").to_string(), false, cx).on_click(cx.listener(|_, _, w, cx| conn_dialog::open(None, w, cx))));
         v_flex().size_full().items_center().justify_center().p_4().child(list).into_any_element()
     }
 
