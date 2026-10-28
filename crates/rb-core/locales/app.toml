@@ -60,6 +60,11 @@ en = "Snowflake login did not finish within 90 s (SSO must complete within 60 s)
 pt = "login Snowflake não concluído em 90 s (o SSO precisa terminar em até 60 s)"
 es = "el inicio de sesión en Snowflake no terminó en 90 s (el SSO debe completarse en 60 s)"
 
+[err.sf_sso_backoff]
+en = "the last Snowflake SSO login was not completed; the browser opens again in %{min} min"
+pt = "o último login SSO do Snowflake não foi concluído; o navegador abre de novo em %{min} min"
+es = "el último inicio de sesión SSO de Snowflake no se completó; el navegador se abre de nuevo en %{min} min"
+
 [err.cancelled_code]
 en = "cancelled"
 pt = "cancelada"

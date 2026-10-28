@@ -4,7 +4,7 @@ use rust_i18n::t;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use snowflake_connector_rs as sf;
 use snowflake_connector_rs::{CellValue, VectorValue};
@@ -291,14 +291,55 @@ impl Sso {
         }
     }
 
-    /// ID token, otherwise browser (storing the new token).
+    /// ID token, otherwise browser (storing the new token). Browser logins go through `BROWSER_GATE`.
     async fn session(&self, browser: &sf::Client) -> Result<sf::Session, DbError> {
         if let Some(s) = self.with_cached_token().await {
             return Ok(s);
         }
-        let s = create_session(browser).await?;
-        self.remember(&s).await;
-        Ok(s)
+        let mut gate = BROWSER_GATE.lock().await;
+        // Whoever held the gate may have just stored a fresh token.
+        if let Some(s) = self.with_cached_token().await {
+            return Ok(s);
+        }
+        if let Some(left) = gate.wait() {
+            return Err(DbError::Connection(t!("err.sf_sso_backoff", min = left.as_secs().div_ceil(60)).to_string()));
+        }
+        match create_session(browser).await {
+            Ok(s) => {
+                *gate = BrowserGate::default();
+                self.remember(&s).await;
+                Ok(s)
+            }
+            Err(e) => {
+                gate.failed();
+                Err(e)
+            }
+        }
+    }
+}
+
+/// One SSO browser login at a time across the app; after a failed one (nobody finished it in the
+/// browser) the next waits 1 min, doubling up to 30 min. Without it an unattended app (quick-open
+/// refresh, expired sessions) opened a new tab every few minutes per connection.
+/// ponytail: global, not per account; per account if several SSO accounts are used at once.
+static BROWSER_GATE: AsyncMutex<BrowserGate> = AsyncMutex::const_new(BrowserGate { failures: 0, until: None });
+
+#[derive(Debug, Default)]
+struct BrowserGate {
+    failures: u32,
+    /// Wall clock: after a night asleep the wait is over and the first click logs in.
+    until: Option<SystemTime>,
+}
+
+impl BrowserGate {
+    fn wait(&self) -> Option<Duration> {
+        self.until?.duration_since(SystemTime::now()).ok()
+    }
+
+    fn failed(&mut self) {
+        let wait = (Duration::from_secs(60) * 2u32.pow(self.failures.min(5))).min(Duration::from_secs(30 * 60));
+        self.failures += 1;
+        self.until = Some(SystemTime::now() + wait);
     }
 }
 
@@ -558,6 +599,18 @@ mod tests {
     use chrono::{FixedOffset, NaiveDate, TimeZone, Utc};
 
     use super::*;
+
+    #[test]
+    fn browser_gate_backs_off_doubling_up_to_30_min() {
+        let mut g = BrowserGate::default();
+        assert_eq!(g.wait(), None);
+        let mut waits = Vec::new();
+        for _ in 0..8 {
+            g.failed();
+            waits.push(g.wait().unwrap().as_secs().div_ceil(60));
+        }
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
+    }
 
     #[test]
     fn use_log_keeps_last_of_each_kind_in_replay_order() {
