@@ -23,10 +23,29 @@ pub fn format_sql(sql: &str) -> String {
         .map(|chunk| {
             let chunk = chunk.trim();
             let out = sqlformat::format(chunk, &QueryParams::None, &opts);
-            if same_tokens(chunk, &out) { out } else { chunk.to_string() }
+            if same_tokens(chunk, &out) { glue_colons(chunk, &out) } else { chunk.to_string() }
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// sqlformat reads Snowflake's `col:path` as a `:name` parameter and writes `col :path`: next to a `:`,
+/// whatever was glued in the source stays glued.
+fn glue_colons(src: &str, out: &str) -> String {
+    let (ts, to) = (tokenize(src), tokenize(out));
+    let mut res = String::with_capacity(out.len());
+    let mut from = 0;
+    for i in 1..to.len() {
+        let colon = |t: &crate::lexer::Token, s: &str| &s[t.start..t.end] == ":";
+        let glued = ts[i - 1].end == ts[i].start && (colon(&ts[i - 1], src) || colon(&ts[i], src));
+        let gap = &out[to[i - 1].end..to[i].start];
+        if glued && !gap.is_empty() && gap.bytes().all(|c| c == b' ') {
+            res.push_str(&out[from..to[i - 1].end]);
+            from = to[i].start;
+        }
+    }
+    res.push_str(&out[from..]);
+    res
 }
 
 fn same_tokens(a: &str, b: &str) -> bool {
@@ -102,6 +121,15 @@ mod tests {
         let out = format_sql("select 1 -- a;b\n; select $$ x $$");
         assert!(out.contains("-- a;b"), "{out}");
         assert!(!out.lines().any(|l| l.trim() == "b;"), "comment became code: {out}");
+    }
+
+    #[test]
+    fn snowflake_paths_and_casts_stay_glued() {
+        let out = format_sql("select content:_bucket_start::TIMESTAMP as b, content:actor:email::VARCHAR as e from t where a = :name");
+        assert!(out.contains("content:_bucket_start::TIMESTAMP AS b"), "{out}");
+        assert!(out.contains("content:actor:email::VARCHAR AS e"), "{out}");
+        assert!(out.contains("= :name"), "{out}");
+        assert_eq!(format_sql(&out), out);
     }
 
     #[test]
