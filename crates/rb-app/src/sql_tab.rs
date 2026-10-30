@@ -319,6 +319,7 @@ impl SqlTab {
         if self.running {
             return;
         }
+        rb_core::snowflake::allow_sso_login();
         let state = self.editor.read(cx);
         let src = state.value().to_string();
         let cursor = state.cursor();

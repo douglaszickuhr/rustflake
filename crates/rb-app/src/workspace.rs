@@ -259,6 +259,7 @@ impl Workspace {
 
     /// `creds`: None reads them from the Keychain (the flow tests pass their own).
     pub(crate) fn connect_with(&mut self, id: &str, creds: Option<Arc<Credentials>>, window: &mut Window, cx: &mut Context<Self>) {
+        rb_core::snowflake::allow_sso_login();
         // By id, not index: the list may change between a click being armed and running.
         let Some(ix) = self.conn_ix(id) else { return };
         let id = id.to_string();
