@@ -654,7 +654,10 @@ impl TableTab {
                     .p_2()
                     .gap_2()
                     .child(div().flex_1().child(Input::new(&self.filter).small().cleanable(true)))
-                    .child(Button::new("reload").label(t!("table.reload").to_string()).ghost().tooltip(crate::ui::keys("⌘R")).on_click(cx.listener(|t, _, _, cx| t.load(cx))))
+                    .child(Button::new("reload").label(t!("table.reload").to_string()).ghost().tooltip(crate::ui::keys("⌘R")).on_click(cx.listener(|t, _, _, cx| {
+                        rb_core::snowflake::allow_sso_login();
+                        t.load(cx)
+                    })))
                     .when(editable, |d| {
                         d.child(Button::new("add-row").label(format!("+ {}", t!("table.row"))).ghost().on_click(cx.listener(|t, _, _, cx| t.with_edits(cx, |e, _| e.add_row()))))
                             .child(Button::new("del-row").label(t!("table.delete_row").to_string()).ghost().on_click(cx.listener(|t, _, _, cx| {
